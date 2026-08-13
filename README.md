@@ -276,39 +276,60 @@ We separately measure:
 
 ---
 
-## Proposed CLI
+## Getting started
 
-The CLI is under development. The intended user experience is:
+Requires Python 3.10+ on Linux.
 
 ```bash
-# Verify that the host is suitable for benchmarking.
-theodb-bench doctor
-
-# List available benchmark suites.
-theodb-bench list
-
-# Fetch and checksum a public dataset.
-theodb-bench dataset fetch sift1m
-theodb-bench dataset verify sift1m
-
-# Run a short local benchmark.
-theodb-bench run vector/sift1m \
-  --system theodb \
-  --profile smoke
-
-# Run a comparison.
-theodb-bench compare vector/sift1m \
-  --systems theodb,pgvector \
-  --profile release
-
-# Re-analyze an existing run without rerunning the DB.
-theodb-bench analyze results/<run-id>
-
-# Build a human-readable report.
-theodb-bench report results/<run-id>
+git clone <repo> && cd theodb-bench
+python -m venv .venv && . .venv/bin/activate
+pip install -e ".[dev]"          # add ",postgres" for the database adapters
 ```
 
-These commands describe the target interface and may change before the first tagged release.
+Check whether this host may measure anything:
+
+```bash
+theodb-bench doctor --profile smoke     # exit 0 means yes
+theodb-bench doctor --profile release   # exit 2 means no, and says which checks block
+```
+
+Run the pipeline end to end against the built-in fake system, which needs no
+database:
+
+```bash
+theodb-bench list
+theodb-bench describe vector/synthetic/sweep
+theodb-bench run vector/synthetic/sweep --system fake
+```
+
+That produces an immutable run bundle under `results/<run-id>/` with the
+manifest, environment, validation, raw measurements, derived statistics and
+both halves of the report.
+
+```bash
+theodb-bench validate results/<run-id>   # re-check every artifact against its schema
+theodb-bench report   results/<run-id>   # re-render without re-running the workload
+theodb-bench compare  results/<a> results/<b>
+```
+
+Against a real database:
+
+```bash
+theodb-bench run vector/synthetic/sweep --system pgvector --profile pr
+theodb-bench run vector/synthetic/sweep --system theodb  --profile pr
+```
+
+Datasets are identified by checksum, never by filename:
+
+```bash
+theodb-bench dataset list
+theodb-bench dataset fetch <id>
+theodb-bench dataset verify <id>
+```
+
+See `docs/methodology/` for the protocol, fairness rules, statistics policy,
+hardware requirements and publication preconditions, and `docs/STATUS.md` for
+what is implemented today versus specified.
 
 ---
 
