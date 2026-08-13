@@ -26,6 +26,8 @@ Verified by running it, not by reading the code.
 | Regression comparison, fails closed, advisory thresholds | **done** |
 | Reciprocal rank fusion (offline twin) | **done** |
 | Retrieval suite: lexical, dense, hybrid RRF, hybrid+rerank | **done** |
+| AI endpoints: mock / local / remote, with gate eligibility enforced | **done** |
+| Operations suite: foreground clock vs freshness clock, 5 workloads | **done** |
 | Reports: markdown + machine summary | **done** |
 | CLI: doctor, env, profiles, schema, list, describe, dataset, run, report, compare, validate | **done** |
 | CI: shared correctness + dedicated benchmark workflow | **done** |
@@ -58,12 +60,10 @@ rather than half-present.
 
 | Item | Where specified | Why not yet |
 |---|---|---|
-| Agent workload suite | `AGENT-WORKLOAD.md`, TRD §12 | The methodology is settled; the workload needs a memory schema and reference agent trajectories, which are open questions in that document. |
+| Agent workload suite | `AGENT-WORKLOAD.md`, TRD §12 | The methodology is settled and its two hardest pieces now exist as parts: the freshness clock (operations suite) is read-your-writes, and the mock endpoint provides the declared non-zero model latency the surface requires. What is missing is the composite step itself, a memory schema and reference trajectories -- open questions in that document. |
 | Paired significance testing | `STATISTICS.md` | Specified in full. **Until it exists, no comparative significance claim may be made from this framework.** |
-| Analytical / columnar / Parquet | PRD §9.3, TRD §15–16 | Requires a TheoDB instance with the columnar TAM and Parquet paths. |
-| Graph traversal | PRD §9.4, TRD §17 | Requires TheoDB's persisted CSR. |
-| Vectorizer / operations | PRD §9.5, TRD §18 | Requires TheoDB's background workers; the two-clock design (foreground write vs time-to-freshness) is specified. |
-| AI SQL (mock/local/remote) | PRD §9.6, TRD §19 | Endpoint abstraction designed, not built. |
+| Analytical / columnar / Parquet | PRD §9.3, TRD §15–16 | Requires a TheoDB instance with the columnar TAM and Parquet paths. The framework hooks exist (adapter capabilities `columnar`, `parquet`); the workload does not. |
+| Graph traversal | PRD §9.4, TRD §17 | Requires TheoDB's persisted CSR. The capability hook exists; the workload does not. |
 | HDF5 ANN dataset loading | TRD §26 | The dataset layer handles any file by checksum; the ANN-Benchmarks HDF5 parser is not written, so only synthetic corpora run today. |
 | Real dataset manifests | `datasets/manifests/` | Deliberately empty. A manifest may not be committed with a checksum that was not computed from the actual bytes. |
 

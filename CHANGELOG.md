@@ -47,6 +47,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Retrieval suite: lexical, dense, hybrid RRF and hybrid plus rerank over one
   corpus and one query set, reporting nDCG@10, Recall@k and MRR alongside
   throughput, with model latency in its own stage.
+- Model endpoint abstraction (mock, local, remote) where only the deterministic
+  mock may back a regression gate, and the mock's latency is required to be
+  non-zero because an instant model changes the loop's concurrency regime.
+- Operations suite measuring the foreground write clock and the
+  time-to-freshness clock separately, across insert, update, backlog drain and
+  worker saturation.
 - Regression comparison that fails closed on an incomparable baseline and
   reports ADVISORY for any threshold not derived from a measured noise floor.
 - Reports in both halves: a human report that leads with status and profile,
