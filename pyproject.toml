@@ -33,7 +33,7 @@ theodb-bench = "theodb_bench.cli:main"
 # below still installs them as the `theodb_bench` package, so module names stay
 # namespaced instead of claiming top-level names like `errors` or `cli`.
 package-dir = { "theodb_bench" = "src" }
-packages = ["theodb_bench", "theodb_bench.adapters"]
+packages = ["theodb_bench", "theodb_bench.adapters", "theodb_bench.analysis"]
 
 [tool.setuptools.package-data]
 theodb_bench = ["py.typed"]
