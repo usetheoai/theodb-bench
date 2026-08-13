@@ -1,0 +1,18 @@
+TheoDB Bench
+Copyright 2026 TheoDB Bench contributors
+
+Licensed under the Apache License, Version 2.0 (the "License"); see LICENSE.
+
+This project measures other systems. Where a benchmark methodology follows a
+published protocol, the protocol is cited in the code and in
+docs/methodology/, so that a reader can check the definition rather than take
+this implementation's word for it:
+
+  - Recall by distance threshold follows ANN-Benchmarks
+    (Aumüller, Bernhardsson & Faithfull, arXiv:1807.05614).
+  - Best-of-N throughput follows the same protocol.
+  - Paired significance testing follows Smucker, Allan & Carterette
+    (CIKM 2007); confidence intervals follow Urbano et al. (SIGIR 2013).
+
+No trademark of any measured system is claimed. TPC benchmark names are used
+only in the form "TPC-H-derived" and never to imply an audited result.
