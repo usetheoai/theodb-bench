@@ -1,637 +1,340 @@
 # TheoDB Bench
 
-**Open, reproducible performance benchmarking for TheoDB.**
+**Reproducible performance benchmarking for TheoDB.**
 
-TheoDB Bench is the public benchmarking framework for TheoDB.
+Most database benchmarks answer "how fast did this run on my machine?". This one
+is built to answer a stricter question:
 
-It is designed to answer a stricter question than:
+> Can another engineer reproduce this result, verify the comparison was fair,
+> inspect the raw measurements, and see exactly what was tested?
 
-> "How fast did this query run on my machine?"
+A result produced here stays valid when TheoDB **loses**. That is the point: the
+framework exists to make evidence trustworthy, not to make numbers favourable.
 
-The goal is:
-
-> "Can another engineer reproduce this result, verify that the comparison was fair, inspect the raw measurements, and understand exactly what was tested?"
-
-> **Status:** experimental. The benchmark protocol is not yet frozen and results produced before a release protocol is declared MUST NOT be treated as authoritative product claims.
-
----
-
-## Why a separate benchmark project?
-
-TheoDB contains several performance-sensitive systems:
-
-- vector KNN;
-- own-code HNSW;
-- own-code IVFFlat;
-- vector quantization;
-- lexical + vector hybrid search through RRF;
-- SQL-native AI / reranking;
-- native persisted-CSR graph traversal;
-- an own-code columnar Table Access Method;
-- own-code Parquet I/O using DataFusion + Arrow;
-- a background vectorizer.
-
-Those systems need different datasets, quality metrics, telemetry, and comparison rules.
-
-Keeping the benchmark framework separate from the database engine gives us:
-
-- independently versioned methodology;
-- reproducible competitor adapters;
-- public result schemas;
-- frozen dataset manifests;
-- raw result retention;
-- regression tooling;
-- reviewable fairness rules.
-
-Component-local microbenchmarks still belong in the TheoDB engine repository.
+> **Status: experimental.** The protocol is not frozen. Nothing produced before a
+> release protocol is declared may be treated as an authoritative product claim.
+> See [`docs/STATUS.md`](docs/STATUS.md) for exactly what works today.
 
 ---
 
-## Principles
+## Quick start
 
-TheoDB Bench follows a few non-negotiable rules.
-
-### 1. Publish evidence, not only wins
-
-A valid benchmark result remains valid if TheoDB loses.
-
-### 2. Compare equivalent resources
-
-CPU, memory, storage, durability, concurrency, dataset, warm-up, and measurement policy must be documented.
-
-### 3. Approximate search requires a quality axis
-
-ANN throughput without recall is incomplete.
-
-Hybrid retrieval throughput without nDCG/Recall/MRR is incomplete.
-
-### 4. Raw measurements are part of the result
-
-A Markdown table alone is not a benchmark artifact.
-
-### 5. Results need provenance
-
-Every publishable result must identify:
-
-- TheoDB/system commit;
-- benchmark commit;
-- dataset checksum;
-- effective configuration;
-- hardware/environment;
-- warm-up;
-- measurement duration;
-- concurrency;
-- repetitions.
-
-### 6. Microbenchmarks do not become product claims
-
-A faster function is evidence about that function, not automatically about the database.
-
----
-
-## Benchmark surfaces
-
-TheoDB is built for agents, so the primary surface is the agent workload itself — what an agent exercises on every step.
-
-| Primary surface | Examples | Primary outputs |
-|---|---|---|
-| Agent workload | step assembly, filtered memory retrieval, read-your-writes, concurrent agents | step tail latency × context quality × staleness |
-
-Measuring only the parts does not describe the whole: a system can win on per-query throughput and lose the agent step. See `docs/methodology/AGENT-WORKLOAD.md`.
-
-The seven component surfaces below explain why the primary surface moves. They do not substitute for it.
-
-| Component surface | Examples | Primary outputs |
-|---|---|---|
-| Vector ANN | HNSW, IVFFlat, quantization | recall × QPS/latency/memory |
-| Retrieval | lexical, vector, RRF, rerank | nDCG/Recall/MRR × performance |
-| AI SQL | batch generation, rerank, NL-to-SQL | DB overhead + model quality |
-| Graph | CSR traversal, GraphRAG | edges/s, ns/edge, p99 |
-| Analytical | heap vs columnar, HTAP | query latency, CPU, I/O, GB/s |
-| Lakehouse | Parquet read/aggregate | scan rate, pruning, CPU, I/O |
-| Operations | ingest, vectorizer | write overhead, throughput, freshness |
-
----
-
-## Benchmark levels
-
-```text
-B4  Competitive
-    TheoDB vs external systems
-
-B3  Workload
-    ANN / retrieval / analytical / graph / operations
-
-B2  Subsystem
-    HNSW / IVF / columnar / Parquet / CSR / vectorizer
-
-B1  Kernel
-    distance / score / decode / merge / aggregation
-
-B0  Environment
-    CPU / RAM / NUMA / SSD / kernel / toolchain
-```
-
-B1 benchmarks are normally kept close to the engine source.
-
-TheoDB Bench focuses primarily on B0 and B2–B4.
-
----
-
-## Planned suites
-
-### Vector
-
-Planned workloads include:
-
-- exact KNN baseline;
-- HNSW;
-- IVFFlat;
-- quantized ANN;
-- index build;
-- concurrent search;
-- ingestion;
-- memory sweeps.
-
-Metrics include:
-
-```text
-recall@1
-recall@10
-recall@100
-
-QPS
-
-p50
-p95
-p99
-p99.9
-
-CPU/query
-cycles/query
-cache misses/query
-
-RSS
-index bytes/vector
-index build time
-```
-
-Headline ANN comparisons should use a matched-recall point or publish the complete Pareto frontier.
-
----
-
-### Retrieval
-
-The same corpus/query set can be executed as:
-
-```text
-lexical
-vector
-hybrid RRF
-hybrid RRF + rerank
-```
-
-Quality:
-
-```text
-nDCG@10
-Recall@k
-MRR
-```
-
-Performance:
-
-```text
-QPS
-p50
-p95
-p99
-CPU
-memory
-stage timing
-```
-
----
-
-### Analytical
-
-Planned execution paths:
-
-```text
-PostgreSQL heap
-TheoDB columnar
-TheoDB Parquet
-```
-
-Workloads may include TPC-H-derived and ClickBench-style suites plus TheoDB-specific analytical workloads.
-
-TheoDB Bench will not describe a result as an official TPC result unless all applicable official requirements are actually satisfied.
-
----
-
-### Graph
-
-Planned tests:
-
-```text
-1-hop
-2-hop
-3-hop
-BFS-like expansion
-fanout sweep
-graph build/rebuild
-GraphRAG neighborhood expansion
-```
-
-Metrics:
-
-```text
-edges/s
-ns/edge visited
-p50/p95/p99
-memory/edge
-build time
-```
-
----
-
-### Vectorizer / operations
-
-Planned tests:
-
-```text
-INSERT without vectorizer
-INSERT with vectorizer
-source UPDATE
-backlog recovery
-worker saturation
-```
-
-We separately measure:
-
-- foreground write latency;
-- embedding worker throughput;
-- queue depth;
-- time-to-freshness.
-
----
-
-## Getting started
-
-Requires Python 3.10+ on Linux.
+Sixty seconds, no database required. The built-in `fake` system exercises the
+whole pipeline in-process.
 
 ```bash
 git clone <repo> && cd theodb-bench
-python -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"          # add ",postgres" for the database adapters
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+theodb-bench run vector/synthetic/smoke --system fake
 ```
 
-Check whether this host may measure anything:
-
-```bash
-theodb-bench doctor --profile smoke     # exit 0 means yes
-theodb-bench doctor --profile release   # exit 2 means no, and says which checks block
+```
+run       20260813T100948Z-vector-synthetic-smoke-fake-e02b807d
+status    VALID
+bundle    results/20260813T100948Z-vector-synthetic-smoke-fake-e02b807d
+  none                             qps=     1,784.0  recall=1.0000  (unstable)
 ```
 
-Run the pipeline end to end against the built-in fake system, which needs no
-database:
+That single command ran all eleven lifecycle phases and produced an immutable
+run bundle. `(unstable)` is the framework telling you the repetitions disagreed
+more than the threshold allows — reported, never hidden.
+
+---
+
+## Step by step
+
+### 1. Check the host
+
+Preflight decides whether this machine may measure anything, and the answer
+depends on what you intend to claim.
 
 ```bash
-theodb-bench list
-theodb-bench describe vector/synthetic/sweep
-theodb-bench run vector/synthetic/sweep --system fake
+theodb-bench doctor --profile smoke      # exit 0: fine for local validation
+theodb-bench doctor --profile release    # exit 2: says which checks block you
 ```
 
-That produces an immutable run bundle under `results/<run-id>/` with the
-manifest, environment, validation, raw measurements, derived statistics and
-both halves of the report.
+```
+PASS  cpu                12 logical CPUs, 10 physical cores
+WARN  cpu_governor       governor is 'powersave'; frequency scaling varies results
+WARN  swap               9.7 GiB swap enabled; paging silently distorts latency
+PASS  cgroup_v2          cgroup v2 available
+...
+Host may NOT run a 'release' benchmark. Blocking: cpu_governor, swap
+```
+
+A warning that is mandatory for a profile **blocks** that profile. A release
+claim measured under frequency scaling is a methodology defect, not a footnote.
+To prepare a benchmark host, see
+[`docs/methodology/HARDWARE.md`](docs/methodology/HARDWARE.md).
+
+### 2. See what is available
 
 ```bash
-theodb-bench validate results/<run-id>   # re-check every artifact against its schema
-theodb-bench report   results/<run-id>   # re-render without re-running the workload
+theodb-bench list                              # benchmarks and systems
+theodb-bench describe vector/synthetic/smoke   # what a benchmark actually does
+```
+
+```
+vector/synthetic/smoke
+  Small seeded synthetic corpus. Fast local validation of the whole pipeline;
+  never a performance claim.
+
+  corpus_size      2000
+  dimension        32
+  query_count      200
+  k                10
+  metric           l2
+  seed             20260813
+  warmup_queries   20
+```
+
+A system whose driver is missing stays in the list with the reason. "Not
+listed" and "not installed" lead you to different actions.
+
+### 3. Run
+
+```bash
+theodb-bench run vector/synthetic/sweep --system fake --profile smoke
+```
+
+| Flag | Meaning |
+|---|---|
+| `--system` | `fake`, `postgres`, `pgvector`, `theodb` |
+| `--profile` | `smoke`, `pr`, `nightly`, `release`, `research` |
+| `--repetitions` | overrides the benchmark default |
+| `--dataset` | measure a verified dataset instead of the synthetic corpus |
+| `--perf` | collect hardware counters, where the kernel permits |
+| `--output` | where bundles are written (default `results/`) |
+
+Exit code is `0` for a `VALID` or `EXPLORATORY` run and `1` for `INVALID`.
+
+### 4. Inspect the bundle
+
+```bash
+theodb-bench validate results/<run-id>    # re-check every artifact against its schema
+theodb-bench report   results/<run-id>    # re-render without re-running the workload
 theodb-bench compare  results/<a> results/<b>
 ```
 
-Against a real database:
+Re-analysis never re-executes the workload. That separation is why a stored run
+stays useful after the analysis code changes.
 
-```bash
-theodb-bench run vector/synthetic/sweep --system pgvector --profile pr
-theodb-bench run vector/synthetic/sweep --system theodb  --profile pr
+### 5. Read the report
+
+`report/report.md` leads with the status and the profile **before any number**,
+so a reader who skims has already been told what the table is worth:
+
+```markdown
+**Status:** VALID · **Profile:** smoke · **Run:** `20260813T100948Z-...`
+
+> This result is **not publishable evidence**: the profile it ran under does not
+> freeze methodology or datasets.
 ```
 
-Datasets are identified by checksum, never by filename:
+---
+
+## Running against a real database
+
+```bash
+pip install -e ".[dev,postgres]"
+
+export PGHOST=localhost PGUSER=postgres PGDATABASE=bench
+theodb-bench run vector/synthetic/sweep --system pgvector --profile pr
+theodb-bench run vector/synthetic/sweep --system theodb   --profile pr
+theodb-bench compare results/<pgvector-run> results/<theodb-run>
+```
+
+The adapters enforce fairness rather than trusting it: IVFFlat `lists` derives
+from the real row count, `probes` is clamped to `lists`, a missing operator
+class is reported unsupported rather than emitted as invalid DDL, and index use
+is verified from `EXPLAIN` — forcing a scan off proves nothing on its own.
+
+> The PostgreSQL-family adapters implement the **vector surface only** and have
+> not yet been exercised against a live server. See
+> [`docs/STATUS.md`](docs/STATUS.md).
+
+---
+
+## Running against a real dataset
+
+A dataset is identified by its **checksums**, never by a filename. The runner
+refuses to measure bytes it has not verified.
 
 ```bash
 theodb-bench dataset list
-theodb-bench dataset fetch <id>
-theodb-bench dataset verify <id>
+theodb-bench dataset fetch sift1m
+theodb-bench dataset verify sift1m
+
+theodb-bench run vector/synthetic/sweep --system theodb --dataset sift1m
 ```
 
-See `docs/methodology/` for the protocol, fairness rules, statistics policy,
-hardware requirements and publication preconditions, and `docs/STATUS.md` for
-what is implemented today versus specified.
+```
+dataset   sift1m v1: verified, 1000000 vectors x 128 dims, 10000 queries
+```
+
+Declaring a dataset **requires** supplying its vectors, and supplying vectors
+requires declaring their identity. Without that rule a manifest could name
+`sift1m` while the run measured generated noise, and every other artifact in the
+bundle would still look correct.
+
+`datasets/manifests/` ships empty on purpose: a manifest may not carry a
+checksum that was not computed from the actual bytes. To add one, fetch the
+files, compute `sha256sum`, and write the manifest —
+[`datasets/manifests/README.md`](datasets/manifests/README.md).
+
+---
+
+## What it measures
+
+TheoDB is built for agents, so the primary surface is the **agent workload** —
+what an agent exercises on every step. A system can win on per-query throughput
+and lose the step ([`docs/methodology/AGENT-WORKLOAD.md`](docs/methodology/AGENT-WORKLOAD.md)).
+
+The component surfaces below explain why the primary surface moves. They do not
+substitute for it.
+
+| Surface | Measures | Key outputs |
+|---|---|---|
+| **Vector ANN** | exact KNN, HNSW, IVFFlat | recall@k × QPS × latency × memory |
+| **Retrieval** | lexical, dense, hybrid RRF, rerank | nDCG@10, Recall@k, MRR × performance |
+| **Analytical** | row vs columnar vs Parquet | wall time, rows/s, bytes read, per-stage timing |
+| **Graph** | 1/2/3-hop, BFS, fanout sweep, build | edges/s, ns/edge, bytes/edge |
+| **Operations** | vectorizer under write load | foreground write latency **and** time-to-freshness |
+| **AI SQL** | mock, local and remote endpoints | database vs network vs inference time, separated |
+
+Every approximate result carries a quality axis. Throughput alone cannot
+distinguish a fast system from one returning worse answers faster.
 
 ---
 
 ## Profiles
 
-### `smoke`
+A profile declares what a result may be used for, not how fast it runs.
 
-Fast local validation.
+| Profile | Min reps | Isolation | Preflight | Publishable |
+|---|---|---|---|---|
+| `smoke` | 1 | optional | optional | no |
+| `pr` | 3 | required | required | no |
+| `nightly` | 3 | required | required | no |
+| `release` | 5 | required | required | **yes** |
+| `research` | 1 | optional | optional | no |
 
-Not suitable for public performance claims.
-
-### `pr`
-
-Regression detection on controlled benchmark hardware.
-
-### `nightly`
-
-Larger datasets, more repetitions, broader telemetry.
-
-### `release`
-
-Frozen methodology and publishable result bundles.
-
-### `research`
-
-Exploratory work. Results are explicitly non-authoritative.
+Only `release` is publishable, and it additionally requires frozen methodology,
+frozen datasets, complete telemetry and a clean source tree. A `research` run is
+marked `EXPLORATORY` even when technically clean.
 
 ---
 
-## Result bundle
+## What a run produces
 
-A completed run is stored as an immutable bundle.
-
-```text
-results/
-└── <run-id>/
-    ├── manifest.json
-    ├── environment.json
-    ├── benchmark.json
-    ├── system.json
-    ├── dataset.json
-    ├── validation.json
-    │
-    ├── raw/
-    │   ├── latency.hdr
-    │   ├── client.jsonl
-    │   ├── perf-stat.csv
-    │   └── system.log
-    │
-    ├── derived/
-    │   ├── statistics.json
-    │   ├── quality.json
-    │   └── pareto.json
-    │
-    └── report/
-        └── report.md
+```
+results/<run-id>/
+├── manifest.json        identity, provenance, status
+├── environment.json     CPU, memory, storage, toolchain, capabilities
+├── benchmark.json       the declarative definition that was executed
+├── system.json          capabilities and the configuration actually in force
+├── validation.json      every protocol check and its outcome
+├── result.json          per-configuration, per-repetition measurements
+├── raw/                 telemetry, logs, client output
+├── derived/             statistics, Pareto frontier, regression
+└── report/              report.md and summary.json
 ```
 
-A result can be:
+Finalization freezes the manifest and every raw measurement. Re-analysis may add
+new derived artifacts; it may never rewrite what was measured.
 
-```text
-VALID
-INVALID
-EXPLORATORY
-```
-
-Invalidation is based on protocol failure, never on whether the number looks good or bad.
+Statuses: `VALID`, `INVALID`, `EXPLORATORY`. **Invalidation is based on protocol
+criteria, never on whether the number looked good.**
 
 ---
 
-## Reproducibility
+## What this framework refuses to do
 
-A release-grade run records at minimum:
+These are enforced in code and covered by tests, not stated as intentions.
 
-```text
-benchmark id/version
-benchmark git commit
+- **Report an unmeasured value as zero.** Four distinct absences are recorded —
+  `unsupported`, `unavailable`, `not_collected`, `invalid` — because zero cache
+  misses is a finding and an unavailable counter is not.
+- **Fabricate an unsupported feature.** A capability the system lacks produces an
+  explicit `unsupported` result, never a substituted measurement.
+- **Accept a timing that came with a wrong answer.** Graph traversals and
+  analytical queries are validated against an oracle the benchmark computes
+  itself, before their timings are used.
+- **Extend warm-up until the number improves.** The warm-up policy is declared
+  and a deviation invalidates the run.
+- **Compare across an incomparable baseline.** A different hardware class or
+  benchmark version yields `INCOMPARABLE`, not `PASS` or `FAIL`.
+- **Fail a build on a guessed threshold.** A gate whose budget was not derived
+  from a measured noise floor reports `ADVISORY` and says so.
+- **Attribute model latency to the database.** Inference, network and database
+  time are separated in every report.
+- **Delete an unfavourable run.** No code path filters a run by a metric's value.
 
-system name/version
-system git commit
-
-dataset id/version/checksum
-
-CPU
-RAM
-NUMA
-storage
-kernel
-filesystem
-toolchain
-
-database config
-index config
-resource limits
-
-warm-up
-duration
-concurrency
-repetitions
-
-raw measurements
-derived metrics
-validation result
-```
-
-Dirty source trees, broken isolation, incomplete telemetry, or mismatched datasets may invalidate release runs.
-
----
-
-## Fairness
-
-Competitive reports must make relevant configuration visible.
-
-For PostgreSQL-derived systems this can include:
-
-```text
-shared_buffers
-work_mem
-maintenance_work_mem
-parallelism
-WAL/durability settings
-extension configuration
-index reloptions
-```
-
-If two systems need materially different configurations, the benchmark must document why.
-
-TheoDB-specific tuning is allowed only when equivalent system-specific tuning is also allowed for competitors under the same published policy.
-
----
-
-## Statistics
-
-TheoDB Bench reports distributions.
-
-We do not reduce a run to one average.
-
-Depending on the suite, reports can include:
-
-```text
-median
-p50
-p95
-p99
-p99.9
-dispersion
-confidence interval
-throughput
-quality metrics
-memory
-CPU
-I/O
-```
-
-Hard regression gates will only be frozen after the natural noise floor of the benchmark hardware has been measured.
+Full rules: [`docs/methodology/`](docs/methodology/) — protocol, fairness,
+statistics, hardware, publication, and the 23 measurement-integrity invariants.
 
 ---
 
 ## Repository layout
 
-Target layout:
-
-```text
-.
-├── README.md
-├── PRD.md
-├── TRD.md
-├── LICENSE
-├── CHANGELOG.md
-│
-├── docs/
-│   └── methodology/
-│
-├── runner/
-├── adapters/
-├── bench/
-│   ├── vector/
-│   ├── retrieval/
-│   ├── analytical/
-│   ├── lakehouse/
-│   ├── graph/
-│   ├── ai/
-│   └── operations/
-│
-├── datasets/
-├── telemetry/
-├── analysis/
-├── report/
-├── schemas/
-├── ci/
-└── tests/
 ```
+src/                 the theodb_bench package (flat; see CLAUDE.md)
+├── adapters/        fake, postgres, pgvector, theodb
+├── analysis/        quality, statistics, significance, pareto, regression, fusion
+├── bench/           vector, retrieval, analytical, graph, operations
+├── runner.py        the eleven-phase orchestrator
+└── ...              doctor, environment, isolation, telemetry, bundle, report
+
+schemas/             eleven versioned JSON Schemas
+datasets/manifests/  dataset identity by checksum
+docs/methodology/    the normative rules
+docs/decisions/      ADRs
+tests/               627 tests
+```
+
+---
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+ruff format src tests && ruff check . && mypy && pytest -q
+```
+
+CI runs in two classes. Shared CI checks correctness on every push and its
+performance numbers are **explicitly discarded** — a GitHub-hosted runner is
+shared and of unknown hardware class. Real benchmarks are dispatched to a
+dedicated self-hosted runner that never triggers on a pull request
+([`ci/README.md`](ci/README.md)).
 
 ---
 
 ## Relationship with TheoDB
 
-TheoDB Bench is not the database implementation.
+| [`theo-db`](../theo-db) | This repository |
+|---|---|
+| engine, Rust extension, correctness tests | public workload definitions, system-level runner |
+| component-local microbenchmarks | adapters, isolation, statistics, reports, provenance |
 
-The repositories have different responsibilities.
-
-### TheoDB
-
-Owns:
-
-- database engine;
-- extension code;
-- correctness tests;
-- component-local microbenchmarks;
-- profiling of internal functions.
-
-### TheoDB Bench
-
-Owns:
-
-- public workload definitions;
-- system-level benchmark runner;
-- datasets/manifests;
-- external system adapters;
-- isolation policy;
-- statistical analysis;
-- reports;
-- public result provenance;
-- regression policy.
-
-A change to TheoDB does not require changing benchmark methodology.
-
-A change to benchmark methodology creates a new benchmark version.
-
----
-
-## Roadmap
-
-### v0.1
-
-- runner core;
-- environment capture;
-- dataset checksums;
-- TheoDB adapter;
-- PostgreSQL/pgvector baseline adapter;
-- vector ANN suite;
-- raw result bundle;
-- Markdown/JSON report.
-
-### v0.2
-
-- retrieval / hybrid suite;
-- quality metrics;
-- Pareto and comparison reports.
-
-### v0.3
-
-- analytical row/columnar/Parquet suite.
-
-### v0.4
-
-- graph suite.
-
-### v0.5
-
-- vectorizer / operations suite.
-
-### v1.0
-
-Requires:
-
-- frozen methodology;
-- stable schemas;
-- documented fairness rules;
-- controlled release hardware policy;
-- third-party reproduction;
-- public raw artifacts for headline claims.
+A change to TheoDB does not require changing the methodology. A change to the
+methodology creates a new benchmark version.
 
 ---
 
 ## Contributing
 
-Contributions are welcome, especially:
+Contributions are welcome, particularly benchmark suites, dataset manifests,
+system adapters, telemetry collectors and reproducibility fixes.
 
-- benchmark suites;
-- datasets/manifests;
-- system adapters;
-- telemetry collectors;
-- statistical validation;
-- reproducibility fixes.
-
-A contribution that makes one system look faster by weakening comparability will not be accepted.
-
-Benchmark changes that materially alter measurement semantics must increment the benchmark version and document the reason.
+**A contribution that makes one system look faster by weakening comparability
+will not be accepted.** A change that materially alters measurement semantics
+must increment the benchmark version and say why.
 
 ---
 
-## Result philosophy
+## Licence
 
-TheoDB Bench is successful when someone can use it to prove that TheoDB is faster **or** slower under a clearly defined workload.
-
-The framework exists to make the evidence trustworthy.
-
----
-
-## License
-
-Apache-2.0 is the intended license for TheoDB Bench.
-
-See `LICENSE` once the repository is initialized.
+Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE), which cites the
+published protocols this implementation follows.
