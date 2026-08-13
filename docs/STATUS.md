@@ -31,6 +31,7 @@ Verified by running it, not by reading the code.
 | Graph suite: 1/2/3-hop, BFS, fanout sweep, build, rebuild, bounded expansion | **done** |
 | Analytical suite: row vs columnar vs Parquet on identical data | **done** |
 | Paired significance testing (randomisation, bootstrap CI, t-test) | **done** |
+| ANN dataset readers: HDF5, fvecs, ivecs; `run --dataset` | **done** |
 | Reports: markdown + machine summary | **done** |
 | CLI: doctor, env, profiles, schema, list, describe, dataset, run, report, compare, validate | **done** |
 | CI: shared correctness + dedicated benchmark workflow | **done** |
@@ -40,10 +41,16 @@ it without a database.
 
 ## Written but not exercised against a real database
 
-The PostgreSQL, pgvector and TheoDB adapters are implemented, and their SQL
-construction, index sizing, opclass resolution and identifier handling are
-covered by tests. **They have not been run against a live server in this
-environment**, because none was available.
+The PostgreSQL, pgvector and TheoDB adapters implement the **vector surface
+only**, and their SQL construction, index sizing, opclass resolution and
+identifier handling are covered by tests. **They have not been run against a
+live server in this environment**, because none was available.
+
+TheoDB the database has hybrid search, a columnar TAM, Parquet I/O, graph
+traversal and a background vectorizer. This adapter reaches none of them: the
+lifecycle methods those surfaces need are not implemented for the PostgreSQL
+family. Its declared capabilities say so, and a structural test keeps them
+honest.
 
 What that means concretely:
 
@@ -64,8 +71,7 @@ rather than half-present.
 | Item | Where specified | Why not yet |
 |---|---|---|
 | Agent workload suite | `AGENT-WORKLOAD.md`, TRD §12 | The methodology is settled and its two hardest pieces now exist as parts: the freshness clock (operations suite) is read-your-writes, and the mock endpoint provides the declared non-zero model latency the surface requires. What is missing is the composite step itself, a memory schema and reference trajectories -- open questions in that document. |
-| HDF5 ANN dataset loading | TRD §26 | The dataset layer handles any file by checksum; the ANN-Benchmarks HDF5 parser is not written, so only synthetic corpora run today. |
-| Real dataset manifests | `datasets/manifests/` | Deliberately empty. A manifest may not be committed with a checksum that was not computed from the actual bytes. |
+| Real dataset manifests | `datasets/manifests/` | Deliberately empty. A manifest may not be committed with a checksum that was not computed from the actual bytes. The machinery is complete and proven end to end against a locally generated HDF5 file; what is missing is a download of each public corpus to compute its digest. |
 
 ## Measured against the fake, not against TheoDB
 

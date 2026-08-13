@@ -42,6 +42,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   recall@n, latency percentiles, best-of-N throughput, aggregation that keeps
   every repetition, stability detection, Pareto frontiers and matched-quality
   selection.
+- ANN dataset readers for ANN-Benchmarks HDF5 and the fvecs/ivecs family, and
+  `theodb-bench run --dataset` to measure a verified corpus. Published
+  distances are never read; recall recomputes them from the vectors.
 - Reciprocal rank fusion, as an offline twin of the system's own fusion so the
   two can be compared rather than one trusted.
 - Retrieval suite: lexical, dense, hybrid RRF and hybrid plus rerank over one
@@ -70,6 +73,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
   request.
 - Methodology documents covering the measurement-integrity invariants and the
   agent workload surface.
+
+### Fixed
+
+- A run manifest could name a dataset the run never measured: `dataset_id` was
+  recorded while the workload generated a synthetic corpus. Declaring a dataset
+  now requires supplying the vectors, and supplying vectors requires declaring
+  their identity.
+- The TheoDB adapter declared hybrid, lexical, columnar, Parquet, graph and
+  vectorizer capabilities it does not implement, putting false claims into
+  every `system.json`. It now declares only the vector surface it can exercise.
 
 ### Changed
 
