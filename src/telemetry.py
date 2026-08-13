@@ -310,7 +310,8 @@ class PerfStatCollector(Collector):
             str(self.pid),
         ]
         try:
-            self._process = subprocess.Popen(
+            # S603: fixed argv built from a validated event list and a pid.
+            self._process = subprocess.Popen(  # noqa: S603
                 argv,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,

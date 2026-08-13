@@ -61,7 +61,9 @@ def run_command(
     if not args:
         raise ValueError("run_command requires at least the program name")
     try:
-        completed = subprocess.run(
+        # S603: argv is a list and shell is never used, by construction of
+        # this helper -- that is the whole reason it exists.
+        completed = subprocess.run(  # noqa: S603
             args,
             capture_output=True,
             text=True,

@@ -47,7 +47,14 @@ src = ["src", "tests"]
 extend-exclude = ["theodb_bench"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "PTH", "RUF"]
+# S (flake8-bandit) is on deliberately: adapters spawn external processes and
+# the dataset layer downloads files, so subprocess and URL handling are the
+# places this project must not be careless.
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "PTH", "RUF", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests spawn subprocesses and assert on them by design.
+"tests/**" = ["S101", "S603", "S607"]
 
 [tool.mypy]
 python_version = "3.10"

@@ -26,7 +26,7 @@ from theodb_bench.profiles import Profile
 
 
 class Outcome(str, Enum):
-    PASS = "PASS"
+    PASS = "PASS"  # noqa: S105 - an outcome label, not a credential
     WARN = "WARN"
     FAIL = "FAIL"
     UNAVAILABLE = "UNAVAILABLE"
