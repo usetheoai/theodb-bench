@@ -140,6 +140,64 @@ class LoadOutcome:
         return self.rows_loaded == self.rows_expected
 
 
+@dataclass(frozen=True)
+class Document:
+    """A corpus document: text for the lexical leg, a vector for the dense leg."""
+
+    id: int
+    text: str
+    vector: VectorArray
+
+
+@dataclass(frozen=True)
+class DocumentTableSpec:
+    """A table holding documents for retrieval."""
+
+    table: str
+    dimension: int
+    metric: Metric = "cosine"
+    text_column: str = "content"
+    embedding_column: str = "embedding"
+
+
+@dataclass(frozen=True)
+class LexicalQuery:
+    """A keyword request against the lexical leg."""
+
+    table: str
+    text: str
+    n: int
+
+
+@dataclass(frozen=True)
+class HybridQuery:
+    """A request the system fuses internally.
+
+    The benchmark also fuses the individual legs itself, so the system's own
+    fusion can be checked rather than trusted.
+    """
+
+    table: str
+    text: str
+    vector: VectorArray
+    n: int
+    metric: Metric = "cosine"
+    rrf_k: int = 60
+    weights: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RankedResult:
+    """An ordered list of document ids, and how long it took to produce."""
+
+    ids: tuple[int, ...]
+    scores: tuple[float, ...]
+    latency_seconds: float
+    stage_seconds: dict[str, float] = field(default_factory=dict)
+    """Per-stage breakdown. Model inference, when involved, is a separate stage
+    so it is never folded into the database's time."""
+
+
 class SystemAdapter(ABC):
     """Everything the runner needs in order to measure one system."""
 
@@ -211,6 +269,42 @@ class SystemAdapter(ABC):
 
     @abstractmethod
     def cleanup(self) -> None: ...
+
+    # ---------------------------------------------------------- retrieval
+
+    def load_documents(self, spec: DocumentTableSpec, documents: Sequence[Document]) -> LoadOutcome:
+        """Load a document corpus. Systems without a lexical leg do not have one."""
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} cannot load a document corpus",
+            context=ErrorContext(phase=Phase.DATASET_LOAD, system=self.system_id),
+        )
+
+    def execute_lexical(self, query: LexicalQuery) -> RankedResult:
+        """Keyword retrieval."""
+        self.require("lexical")
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} declares lexical support but does not implement it",
+            context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+        )
+
+    def execute_hybrid(self, query: HybridQuery) -> RankedResult:
+        """Retrieval fused by the system itself."""
+        self.require("hybrid")
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} declares hybrid support but does not implement it",
+            context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+        )
+
+    def execute_rerank(self, text: str, candidate_ids: Sequence[int]) -> RankedResult:
+        """Reorder candidates with a cross-encoder or equivalent.
+
+        Model latency belongs in `stage_seconds`, separate from database time.
+        """
+        self.require("rerank")
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} declares rerank support but does not implement it",
+            context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+        )
 
     # ------------------------------------------------------------- convenience
 

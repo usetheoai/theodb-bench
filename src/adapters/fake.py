@@ -15,6 +15,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -23,10 +24,15 @@ import numpy as np
 from theodb_bench.adapters.base import (
     CAPABILITIES,
     BuildOutcome,
+    Document,
+    DocumentTableSpec,
+    HybridQuery,
     IndexSpec,
     KnnQuery,
     KnnResult,
+    LexicalQuery,
     LoadOutcome,
+    RankedResult,
     SystemAdapter,
     VectorArray,
     VectorTableSpec,
@@ -38,6 +44,20 @@ from theodb_bench.errors import (
     Phase,
     SystemUnavailableError,
 )
+
+
+def _tokenise(text: str) -> list[str]:
+    """Lower-case alphanumeric tokens. Deliberately simple and stated as such."""
+    return "".join(c if c.isalnum() else " " for c in text.lower()).split()
+
+
+def _build_postings(documents: Sequence[Document]) -> dict[str, dict[int, int]]:
+    postings: dict[str, dict[int, int]] = {}
+    for document in documents:
+        for term in _tokenise(document.text):
+            postings.setdefault(term, {})
+            postings[term][document.id] = postings[term].get(document.id, 0) + 1
+    return postings
 
 
 class Fault(str, Enum):
@@ -90,11 +110,15 @@ class FakeConfig:
             "vector_hnsw": True,
             "vector_ivfflat": False,
             "vector_filtered": True,
-            "lexical": False,
-            "hybrid": False,
+            "lexical": True,
+            "hybrid": True,
+            "rerank": True,
         }
     )
     seed: int = 20260813
+    rerank_latency_seconds: float = 0.001
+    """A model that answers instantly would flatter any system that overlaps
+    I/O with inference, so the mock has a declared non-zero cost."""
 
 
 class FakeAdapter(SystemAdapter):
@@ -112,6 +136,8 @@ class FakeAdapter(SystemAdapter):
         self._running = False
         self._ready = False
         self._children: list[subprocess.Popen[bytes]] = []
+        self._documents: dict[int, Document] = {}
+        self._postings: dict[str, dict[int, int]] = {}
         self._rng = np.random.default_rng(self.config.seed)
 
     # ------------------------------------------------------------ capabilities
@@ -267,6 +293,111 @@ class FakeAdapter(SystemAdapter):
         for position, replacement in enumerate(wrong):
             mutated[len(ids) - 1 - position] = int(replacement)
         return tuple(mutated), distances
+
+    # ---------------------------------------------------------------- retrieval
+
+    def load_documents(self, spec: DocumentTableSpec, documents: Sequence[Document]) -> LoadOutcome:
+        self._require_ready(Phase.DATASET_LOAD)
+        started = time.perf_counter()
+        self._documents = {document.id: document for document in documents}
+        self._postings = _build_postings(documents)
+        vectors = np.vstack([document.vector for document in documents]).astype(np.float32)
+        self._vectors[spec.table] = vectors
+        self._metric[spec.table] = spec.metric
+        return LoadOutcome(
+            seconds=time.perf_counter() - started,
+            rows_loaded=len(self._documents),
+            rows_expected=len(documents),
+        )
+
+    def execute_lexical(self, query: LexicalQuery) -> RankedResult:
+        """Deterministic term-frequency scoring.
+
+        Not BM25: this exists to exercise the pipeline, and calling it BM25
+        would invite someone to compare its numbers with a real one.
+        """
+        self.require("lexical")
+        self._require_ready(Phase.MEASUREMENT)
+        started = time.perf_counter()
+        scores: dict[int, float] = {}
+        for term in _tokenise(query.text):
+            for doc_id, count in self._postings.get(term, {}).items():
+                scores[doc_id] = scores.get(doc_id, 0.0) + float(count)
+        ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))[: query.n]
+        self._sleep_for_fault()
+        return RankedResult(
+            ids=tuple(doc_id for doc_id, _ in ranked),
+            scores=tuple(score for _, score in ranked),
+            latency_seconds=time.perf_counter() - started,
+            stage_seconds={"lexical": time.perf_counter() - started},
+        )
+
+    def execute_hybrid(self, query: HybridQuery) -> RankedResult:
+        """Fuse the two legs the way the system would, with stage timings."""
+        self.require("hybrid")
+        self._require_ready(Phase.MEASUREMENT)
+        from theodb_bench.analysis.fusion import fuse_to_ids
+
+        lexical_started = time.perf_counter()
+        lexical = self.execute_lexical(LexicalQuery(query.table, query.text, query.n))
+        lexical_seconds = time.perf_counter() - lexical_started
+
+        vector_started = time.perf_counter()
+        dense = self.execute(
+            KnnQuery(table=query.table, vector=query.vector, k=query.n, metric=query.metric)
+        )
+        vector_seconds = time.perf_counter() - vector_started
+
+        fusion_started = time.perf_counter()
+        fused = fuse_to_ids(
+            {"lexical": list(lexical.ids), "vector": list(dense.ids)},
+            n=query.n,
+            k=query.rrf_k,
+            weights=query.weights or None,
+        )
+        fusion_seconds = time.perf_counter() - fusion_started
+
+        return RankedResult(
+            ids=tuple(fused),
+            scores=tuple(float(len(fused) - position) for position in range(len(fused))),
+            latency_seconds=lexical_seconds + vector_seconds + fusion_seconds,
+            stage_seconds={
+                "lexical": lexical_seconds,
+                "vector": vector_seconds,
+                "fusion": fusion_seconds,
+            },
+        )
+
+    def execute_rerank(self, text: str, candidate_ids: Sequence[int]) -> RankedResult:
+        """Reorder candidates, charging the model's time to a separate stage.
+
+        The model here is a fixed function of the text and the document, which
+        keeps the pipeline deterministic. Its declared latency is non-zero
+        because a zero-latency model changes the concurrency regime of the
+        whole loop.
+        """
+        self.require("rerank")
+        self._require_ready(Phase.MEASUREMENT)
+        database_started = time.perf_counter()
+        terms = set(_tokenise(text))
+        database_seconds = time.perf_counter() - database_started
+
+        model_started = time.perf_counter()
+        scored: list[tuple[int, float]] = []
+        for doc_id in candidate_ids:
+            document = self._documents.get(doc_id)
+            overlap = len(terms & set(_tokenise(document.text))) if document else 0
+            scored.append((doc_id, float(overlap)))
+        time.sleep(self.config.rerank_latency_seconds)
+        model_seconds = time.perf_counter() - model_started
+
+        ranked = sorted(scored, key=lambda item: (-item[1], item[0]))
+        return RankedResult(
+            ids=tuple(doc_id for doc_id, _ in ranked),
+            scores=tuple(score for _, score in ranked),
+            latency_seconds=database_seconds + model_seconds,
+            stage_seconds={"database": database_seconds, "model": model_seconds},
+        )
 
     # ------------------------------------------------------------------ faults
 

@@ -1,0 +1,405 @@
+"""The retrieval workload: lexical, dense, hybrid RRF, and hybrid plus rerank.
+
+All four pipelines run over **the same corpus and the same query set**. That is
+not a convenience — comparing pipelines evaluated on different data measures
+the data.
+
+Two rules this module exists to enforce:
+
+Quality and performance are separate axes. A pipeline is described by nDCG@10,
+Recall@k and MRR *together with* throughput and latency. Throughput alone
+cannot distinguish a fast pipeline from one returning worse answers faster.
+
+Model time is never charged to the database. A reranking pipeline reports the
+model's stage separately, so the database's contribution stays visible.
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import Any, Final
+
+import numpy as np
+import numpy.typing as npt
+from theodb_bench.adapters.base import (
+    Document,
+    DocumentTableSpec,
+    HybridQuery,
+    KnnQuery,
+    LexicalQuery,
+    SystemAdapter,
+)
+from theodb_bench.analysis.fusion import fuse_to_ids
+from theodb_bench.analysis.quality import mrr_at_k, ndcg_at_k, recall_at_n
+from theodb_bench.analysis.statistics import LatencySummary, summarise_latency
+from theodb_bench.errors import (
+    BenchError,
+    ConfigError,
+    ErrorContext,
+    MeasurementError,
+    Phase,
+    SystemUnavailableError,
+    UnsupportedCapabilityError,
+)
+
+DEFAULT_TABLE: Final[str] = "bench_documents"
+
+LEXICAL: Final[str] = "lexical"
+VECTOR: Final[str] = "vector"
+HYBRID_RRF: Final[str] = "hybrid_rrf"
+HYBRID_RRF_RERANK: Final[str] = "hybrid_rrf_rerank"
+
+PIPELINES: Final[tuple[str, ...]] = (LEXICAL, VECTOR, HYBRID_RRF, HYBRID_RRF_RERANK)
+
+_CAPABILITY: Final[dict[str, str]] = {
+    LEXICAL: "lexical",
+    VECTOR: "vector_exact",
+    HYBRID_RRF: "hybrid",
+    HYBRID_RRF_RERANK: "rerank",
+}
+
+_VOCABULARY: Final[tuple[str, ...]] = (
+    "vector",
+    "index",
+    "recall",
+    "latency",
+    "throughput",
+    "storage",
+    "query",
+    "planner",
+    "cache",
+    "buffer",
+    "replication",
+    "durability",
+    "checkpoint",
+    "segment",
+    "shard",
+    "partition",
+    "embedding",
+    "token",
+    "corpus",
+    "ranking",
+    "fusion",
+    "rerank",
+    "traversal",
+    "columnar",
+    "parquet",
+    "graph",
+    "agent",
+    "memory",
+)
+
+
+@dataclass(frozen=True)
+class RetrievalWorkload:
+    """A declarative retrieval workload."""
+
+    corpus_size: int
+    query_count: int
+    dimension: int = 64
+    k: int = 10
+    n: int = 50
+    """Candidate depth each leg retrieves before fusion."""
+
+    metric: str = "cosine"
+    seed: int = 20260813
+    table: str = DEFAULT_TABLE
+    pipelines: tuple[str, ...] = PIPELINES
+    rrf_k: int = 60
+    warmup_queries: int = 0
+
+    def __post_init__(self) -> None:
+        unknown = set(self.pipelines) - set(PIPELINES)
+        if unknown:
+            raise ConfigError(
+                f"unknown pipeline(s): {', '.join(sorted(unknown))}",
+                context=ErrorContext(phase=Phase.PREFLIGHT),
+            )
+        if self.k > self.n:
+            raise ConfigError(
+                f"k={self.k} exceeds the candidate depth n={self.n}",
+                context=ErrorContext(phase=Phase.PREFLIGHT),
+            )
+
+    def table_spec(self) -> DocumentTableSpec:
+        return DocumentTableSpec(table=self.table, dimension=self.dimension, metric=self.metric)
+
+
+@dataclass(frozen=True)
+class QuerySet:
+    """Queries with their relevance judgements."""
+
+    texts: tuple[str, ...]
+    vectors: npt.NDArray[np.float32]
+    relevance: tuple[dict[int, float], ...]
+    """Graded relevance per query, document id to gain."""
+
+    def relevant_ids(self, index: int) -> set[int]:
+        return {doc_id for doc_id, gain in self.relevance[index].items() if gain > 0}
+
+
+def generate_corpus(workload: RetrievalWorkload) -> tuple[list[Document], QuerySet]:
+    """A seeded corpus, query set and judgement set.
+
+    Judgements are constructed rather than assumed: each query is built from the
+    terms of a small set of documents, and exactly those documents are graded
+    relevant. That makes the ground truth exact for this corpus, which is what
+    lets a pipeline defect show up as a quality drop rather than as noise.
+
+    This is a synthetic corpus. It exercises the pipeline and the metrics; it
+    does not resemble natural language, and no quality claim about a real
+    system should be read from it.
+    """
+    rng = np.random.default_rng(workload.seed)
+    documents: list[Document] = []
+    doc_terms: list[set[str]] = []
+
+    for doc_id in range(workload.corpus_size):
+        term_count = int(rng.integers(6, 12))
+        terms = list(rng.choice(_VOCABULARY, size=term_count, replace=True))
+        doc_terms.append(set(terms))
+        vector = rng.standard_normal(workload.dimension).astype(np.float32)
+        documents.append(Document(id=doc_id, text=" ".join(terms), vector=vector))
+
+    corpus_vectors = np.vstack([document.vector for document in documents])
+
+    texts: list[str] = []
+    vectors: list[npt.NDArray[np.float32]] = []
+    relevance: list[dict[int, float]] = []
+
+    for _ in range(workload.query_count):
+        # Two documents seed each query: one strongly relevant, one partially.
+        primary, secondary = (
+            int(i) for i in rng.choice(workload.corpus_size, size=2, replace=False)
+        )
+        primary_terms = sorted(doc_terms[primary])
+        secondary_terms = sorted(doc_terms[secondary])
+        chosen = primary_terms[: max(2, len(primary_terms) // 2)] + secondary_terms[:1]
+        texts.append(" ".join(chosen))
+        # The query vector sits near the primary document, with noise, so the
+        # dense leg and the lexical leg agree on the primary and disagree
+        # elsewhere -- which is the situation fusion exists for.
+        noise = rng.standard_normal(workload.dimension).astype(np.float32) * 0.35
+        vectors.append((corpus_vectors[primary] + noise).astype(np.float32))
+        relevance.append({primary: 3.0, secondary: 1.0})
+
+    return documents, QuerySet(
+        texts=tuple(texts),
+        vectors=np.vstack(vectors).astype(np.float32),
+        relevance=tuple(relevance),
+    )
+
+
+@dataclass
+class PipelineResult:
+    """One pipeline over the whole query set, for one repetition."""
+
+    pipeline: str
+    repetition: int
+    successes: int = 0
+    errors: int = 0
+    timeouts: int = 0
+    duration_seconds: float = 0.0
+    latency: LatencySummary | None = None
+    ndcg_at_10: float | None = None
+    recall_at_k: float | None = None
+    mrr: float | None = None
+    stage_seconds: dict[str, float] = field(default_factory=dict)
+    status: str = "measured"
+    status_detail: str | None = None
+
+    @property
+    def throughput(self) -> float | None:
+        return self.successes / self.duration_seconds if self.duration_seconds > 0 else None
+
+    def metric_series(self) -> dict[str, list[float]]:
+        series: dict[str, list[float]] = {}
+        throughput = self.throughput
+        if throughput is not None:
+            series["throughput_per_second"] = [throughput]
+        for name, value in (
+            ("ndcg_at_10", self.ndcg_at_10),
+            ("recall_at_k", self.recall_at_k),
+            ("mrr", self.mrr),
+        ):
+            if value is not None:
+                series[name] = [value]
+        if self.latency is not None:
+            for name in ("p50", "p95", "p99"):
+                measured = getattr(self.latency, name)
+                if isinstance(measured, float):
+                    series[f"latency_{name}_ms"] = [measured]
+        for stage, seconds in self.stage_seconds.items():
+            series[f"stage_{stage}_seconds"] = [seconds]
+        return series
+
+
+class RetrievalBenchmark:
+    """Runs every declared pipeline over one corpus and one query set."""
+
+    def __init__(self, workload: RetrievalWorkload) -> None:
+        self.workload = workload
+        self.documents, self.queries = generate_corpus(workload)
+
+    def load(self, adapter: SystemAdapter) -> float:
+        outcome = adapter.load_documents(self.workload.table_spec(), self.documents)
+        if not outcome.complete:
+            raise MeasurementError(
+                f"loaded {outcome.rows_loaded} of {outcome.rows_expected} documents",
+                context=ErrorContext(phase=Phase.DATASET_LOAD, system=adapter.system_id),
+            )
+        return outcome.seconds
+
+    def warm_up(self, adapter: SystemAdapter, pipeline: str) -> None:
+        """Untimed queries, discarded."""
+        for index in range(min(self.workload.warmup_queries, len(self.queries.texts))):
+            try:
+                self._run_one(adapter, pipeline, index)
+            except BenchError:
+                # A warm-up failure is not a measurement; the measured window
+                # will surface the same problem where it can be counted.
+                return
+
+    def run_pipeline(
+        self, adapter: SystemAdapter, pipeline: str, repetition: int
+    ) -> PipelineResult:
+        """One timed pass of one pipeline over the whole query set."""
+        result = PipelineResult(pipeline=pipeline, repetition=repetition)
+
+        capability = _CAPABILITY[pipeline]
+        if not adapter.supports(capability):
+            result.status = "unsupported"
+            result.status_detail = f"{adapter.system_id} does not support {capability}"
+            return result
+
+        latencies: list[float] = []
+        ndcgs: list[float] = []
+        recalls: list[float] = []
+        reciprocal_ranks: list[float] = []
+        stages: dict[str, float] = {}
+
+        started = time.perf_counter()
+        for index in range(len(self.queries.texts)):
+            try:
+                ranked, elapsed, stage_seconds = self._run_one(adapter, pipeline, index)
+            except SystemUnavailableError:
+                raise
+            except MeasurementError:
+                result.timeouts += 1
+                continue
+            except UnsupportedCapabilityError as exc:
+                result.status = "unsupported"
+                result.status_detail = exc.message
+                return result
+            except BenchError:
+                result.errors += 1
+                continue
+
+            latencies.append(elapsed * 1000.0)
+            for stage, seconds in stage_seconds.items():
+                stages[stage] = stages.get(stage, 0.0) + seconds
+
+            judgements = self.queries.relevance[index]
+            relevant = self.queries.relevant_ids(index)
+            ndcgs.append(ndcg_at_k(list(ranked), judgements, 10))
+            recalls.append(recall_at_n(list(ranked), relevant, self.workload.k))
+            reciprocal_ranks.append(mrr_at_k(list(ranked), relevant, self.workload.k))
+        result.duration_seconds = time.perf_counter() - started
+
+        result.successes = len(latencies)
+        result.latency = summarise_latency(latencies)
+        result.stage_seconds = stages
+        # None rather than 0.0 when nothing came back: a pipeline that answered
+        # nothing has no measured quality, and zero would read as terrible
+        # quality instead of an absence of measurement.
+        result.ndcg_at_10 = float(np.mean(ndcgs)) if ndcgs else None
+        result.recall_at_k = float(np.mean(recalls)) if recalls else None
+        result.mrr = float(np.mean(reciprocal_ranks)) if reciprocal_ranks else None
+        return result
+
+    # ------------------------------------------------------------------ stages
+
+    def _run_one(
+        self, adapter: SystemAdapter, pipeline: str, index: int
+    ) -> tuple[Sequence[int], float, dict[str, float]]:
+        text = self.queries.texts[index]
+        vector = self.queries.vectors[index]
+        table = self.workload.table
+        n = self.workload.n
+
+        if pipeline == LEXICAL:
+            outcome = adapter.execute_lexical(LexicalQuery(table, text, n))
+            return outcome.ids, outcome.latency_seconds, dict(outcome.stage_seconds)
+
+        if pipeline == VECTOR:
+            knn = adapter.execute(
+                KnnQuery(table=table, vector=vector, k=n, metric=self.workload.metric)
+            )
+            return knn.ids, knn.latency_seconds, {"vector": knn.latency_seconds}
+
+        if pipeline == HYBRID_RRF:
+            outcome = adapter.execute_hybrid(
+                HybridQuery(
+                    table=table,
+                    text=text,
+                    vector=vector,
+                    n=n,
+                    metric=self.workload.metric,
+                    rrf_k=self.workload.rrf_k,
+                )
+            )
+            return outcome.ids, outcome.latency_seconds, dict(outcome.stage_seconds)
+
+        # hybrid + rerank: fuse first, then reorder the candidates. The model's
+        # time arrives in its own stage and is never added to the database's.
+        fused = adapter.execute_hybrid(
+            HybridQuery(
+                table=table,
+                text=text,
+                vector=vector,
+                n=n,
+                metric=self.workload.metric,
+                rrf_k=self.workload.rrf_k,
+            )
+        )
+        reranked = adapter.execute_rerank(text, list(fused.ids))
+        stages = dict(fused.stage_seconds)
+        for stage, seconds in reranked.stage_seconds.items():
+            stages[f"rerank_{stage}"] = stages.get(f"rerank_{stage}", 0.0) + seconds
+        return (
+            reranked.ids,
+            fused.latency_seconds + reranked.latency_seconds,
+            stages,
+        )
+
+    # ------------------------------------------------------------- offline twin
+
+    def offline_fusion(self, lexical_ids: Sequence[int], vector_ids: Sequence[int]) -> list[int]:
+        """Fuse two legs here, so the system's own fusion can be checked."""
+        return fuse_to_ids(
+            {"lexical": list(lexical_ids), "vector": list(vector_ids)},
+            n=self.workload.n,
+            k=self.workload.rrf_k,
+        )
+
+    def summary(self, results: Sequence[PipelineResult]) -> dict[str, Any]:
+        """A comparison across pipelines on the same corpus and query set."""
+        return {
+            "corpus_size": self.workload.corpus_size,
+            "query_count": self.workload.query_count,
+            "k": self.workload.k,
+            "candidate_depth": self.workload.n,
+            "pipelines": {
+                result.pipeline: {
+                    "status": result.status,
+                    "ndcg_at_10": result.ndcg_at_10,
+                    "recall_at_k": result.recall_at_k,
+                    "mrr": result.mrr,
+                    "throughput_per_second": result.throughput,
+                    "stage_seconds": result.stage_seconds,
+                }
+                for result in results
+            },
+        }
