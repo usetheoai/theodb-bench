@@ -16,7 +16,7 @@ a reader assume otherwise.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -253,7 +253,7 @@ class PointStatistics:
 
 
 def summarise_points(
-    points: Sequence[tuple[str, dict[str, Any], dict[str, Sequence[float]]]],
+    points: Sequence[tuple[str, dict[str, Any], Mapping[str, Sequence[float]]]],
     threshold_cv: float = DEFAULT_UNSTABLE_CV,
 ) -> list[PointStatistics]:
     """Aggregate every metric of every point across its repetitions."""
