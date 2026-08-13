@@ -12,20 +12,24 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Final
 
 from theodb_bench import __version__
 from theodb_bench.bundle import RunBundle
 from theodb_bench.datasets import (
+    DatasetManifest,
     DatasetRegistry,
     default_registry,
     fetch_dataset,
+    require_verified,
     verify_dataset,
 )
 from theodb_bench.doctor import render_report, run_doctor
 from theodb_bench.environment import capture_environment
 from theodb_bench.errors import BenchError, ConfigError, ErrorContext, Phase
+from theodb_bench.formats import AnnDataset, read_ann_hdf5
 from theodb_bench.profiles import PROFILES, ProfileName, get_profile
 from theodb_bench.registry import ADAPTERS, BENCHMARKS, get_adapter, get_benchmark
 from theodb_bench.report import render_comparison, write_report
@@ -223,21 +227,82 @@ def cmd_dataset_fetch(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _load_ann_dataset(
+    manifest: DatasetManifest, root: Path, workload: object
+) -> tuple[AnnDataset, str]:
+    """Verify a dataset, then read the vectors the run will actually measure.
+
+    Verification happens first and unconditionally. Reading unverified bytes
+    would produce a number about a dataset nobody can identify, and the
+    manifest would still name one.
+    """
+    verification = require_verified(manifest, root)
+    entry = manifest.file_by_role("train") or (manifest.files[0] if manifest.files else None)
+    if entry is None:
+        raise ConfigError(
+            f"dataset {manifest.id} declares no files",
+            context=ErrorContext(phase=Phase.DATASET_LOAD),
+        )
+    path = manifest.resolve(root, entry)
+    if path.suffix.lower() not in {".hdf5", ".h5"}:
+        raise ConfigError(
+            f"dataset {manifest.id}: only ANN-Benchmarks HDF5 files can be loaded today; "
+            f"{path.name} is not one",
+            context=ErrorContext(phase=Phase.DATASET_LOAD),
+        )
+    dataset = read_ann_hdf5(path)
+    digest = next((f.expected_sha256 for f in verification.files if f.path == entry.path), "")
+    return dataset, digest
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     entry = get_benchmark(args.benchmark)
     adapter = get_adapter(args.system)
     profile = get_profile(args.profile)
     repetitions = args.repetitions if args.repetitions is not None else entry.default_repetitions
 
+    workload = entry.workload
+    corpus = queries = None
+    dataset_id = dataset_version = dataset_sha256 = None
+
+    if args.dataset:
+        manifest = _dataset_registry(args).load(args.dataset)
+        loaded, dataset_sha256 = _load_ann_dataset(manifest, args.dataset_root, workload)
+        reduced = loaded.subsample(
+            min(workload.corpus_size, loaded.corpus_size),
+            min(workload.query_count, loaded.query_count),
+        )
+        # The workload adopts the data's own shape rather than the other way
+        # round: reshaping real vectors to fit a declared dimension would
+        # measure something the dataset does not contain.
+        workload = replace(
+            workload,
+            dimension=reduced.dimension,
+            corpus_size=reduced.corpus_size,
+            query_count=reduced.query_count,
+        )
+        corpus, queries = reduced.train, reduced.test
+        dataset_id, dataset_version = manifest.id, manifest.version
+        print(
+            f"dataset   {manifest.id} v{manifest.version}: verified, "
+            f"{reduced.corpus_size} vectors x {reduced.dimension} dims, "
+            f"{reduced.query_count} queries"
+        )
+
     outcome = run_benchmark(
         RunRequest(
             benchmark_id=entry.id,
-            workload=entry.workload,
+            workload=workload,
             adapter_factory=adapter.build,
             profile=profile,
             repetitions=repetitions,
             results_root=args.output,
             collect_perf_telemetry=args.perf,
+            corpus=corpus,
+            queries=queries,
+            dataset_id=dataset_id,
+            dataset_version=dataset_version,
+            dataset_sha256=dataset_sha256,
         )
     )
     write_report(outcome.bundle)
@@ -368,6 +433,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--repetitions", type=int, default=None)
     run.add_argument("--output", type=Path, default=DEFAULT_RESULTS_ROOT)
     run.add_argument("--perf", action="store_true", help="enable hardware counter collection")
+    run.add_argument(
+        "--dataset",
+        default=None,
+        help="measure a verified dataset instead of the seeded synthetic corpus",
+    )
+    run.add_argument("--manifest-dir", type=Path, default=None)
+    run.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
     run.set_defaults(func=cmd_run)
 
     report = subparsers.add_parser("report", help="render the report for an existing run")

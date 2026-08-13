@@ -522,18 +522,23 @@ class TheoDBAdapter(PgvectorAdapter):
     extension = "theodb_rs"
 
     def capabilities(self) -> dict[str, bool]:
+        """What this adapter can actually exercise, not what TheoDB can do.
+
+        TheoDB the database has hybrid search, a columnar table access method,
+        Parquet I/O, persisted-CSR graph traversal and a background vectorizer.
+        This adapter reaches none of them yet: the lifecycle methods those
+        surfaces need (load_documents, traverse, load_analytical,
+        insert_document and the rest) are not implemented here.
+
+        Declaring a capability the adapter cannot exercise would put a false
+        claim into every system.json and into `theodb-bench list`. A capability
+        is a statement about this code path, not about the product.
+        """
         return {
             "vector_exact": True,
             "vector_hnsw": True,
             "vector_ivfflat": True,
             "vector_filtered": True,
-            "hybrid": True,
-            "lexical": True,
-            "columnar": True,
-            "parquet": True,
-            "graph": True,
-            "vectorizer": True,
-            "ai_sql": True,
         }
 
     def export_config(self) -> dict[str, Any]:

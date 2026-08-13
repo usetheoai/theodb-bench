@@ -32,6 +32,7 @@ from theodb_bench.bundle import RunBundle
 from theodb_bench.doctor import run_doctor
 from theodb_bench.environment import capture_environment
 from theodb_bench.errors import (
+    ConfigError,
     ErrorContext,
     Phase,
     PreflightError,
@@ -70,6 +71,12 @@ class RunRequest:
     dataset_id: str | None = None
     dataset_version: str | None = None
     dataset_sha256: str | None = None
+    corpus: Any = None
+    """Vectors from a verified dataset. Required whenever a dataset identity is
+    declared: recording an id while measuring generated data would put a false
+    provenance claim into an immutable bundle."""
+
+    queries: Any = None
 
 
 @dataclass
@@ -169,10 +176,39 @@ def _result_payload(run_id: str, points: list[PointResult]) -> dict[str, Any]:
     }
 
 
+def _check_dataset_declaration(request: RunRequest) -> None:
+    """A declared dataset identity must be the data that was actually measured.
+
+    Without this the manifest could say `sift1m` while the run measured a
+    seeded synthetic corpus, and nothing downstream could tell. Every artifact
+    in the bundle would look correct; the provenance chain the whole project
+    exists to provide would be broken at its first link.
+    """
+    declared = request.dataset_id is not None
+    supplied = request.corpus is not None
+    if declared and not supplied:
+        raise ConfigError(
+            f"run declares dataset {request.dataset_id!r} but supplies no vectors; "
+            "a manifest may not name a dataset the run did not measure",
+            context=ErrorContext(
+                phase=Phase.PREFLIGHT,
+                benchmark=request.benchmark_id,
+                details={"dataset": request.dataset_id},
+            ),
+        )
+    if supplied and not declared:
+        raise ConfigError(
+            "run supplies vectors but declares no dataset identity; measured data "
+            "must be identifiable in the manifest",
+            context=ErrorContext(phase=Phase.PREFLIGHT, benchmark=request.benchmark_id),
+        )
+
+
 def run_benchmark(request: RunRequest) -> RunOutcome:
     """Execute the full lifecycle and return an immutable bundle."""
     profile = request.profile
     profile.require_repetitions(request.repetitions)
+    _check_dataset_declaration(request)
 
     # Phase 0 -- preflight. Before anything is measured, and before the system
     # is even started.
@@ -199,7 +235,7 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
     bundle.write_artifact("environment", environment)
     bundle.write_artifact("benchmark", _benchmark_payload(request))
 
-    benchmark = VectorBenchmark(request.workload)
+    benchmark = VectorBenchmark(request.workload, request.corpus, request.queries)
     collectors = _build_collectors(request)
 
     sut_crashed = False

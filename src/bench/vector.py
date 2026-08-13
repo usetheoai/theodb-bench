@@ -172,12 +172,55 @@ def build_label(index: IndexSpec, search: dict[str, Any], query_cap: int | None)
     return " ".join(parts)
 
 
+def _check_supplied(workload: VectorWorkload, corpus: FloatArray, queries: FloatArray) -> None:
+    """Refuse a supplied corpus that does not match what the workload declared."""
+    if corpus.ndim != 2 or queries.ndim != 2:
+        raise ConfigError(
+            f"corpus and queries must be 2-D; got {corpus.shape} and {queries.shape}",
+            context=ErrorContext(phase=Phase.DATASET_LOAD),
+        )
+    if corpus.shape[1] != workload.dimension or queries.shape[1] != workload.dimension:
+        raise ConfigError(
+            f"workload declares dimension {workload.dimension}; corpus has "
+            f"{corpus.shape[1]} and queries have {queries.shape[1]}",
+            context=ErrorContext(phase=Phase.DATASET_LOAD),
+        )
+    if workload.k > corpus.shape[0]:
+        raise ConfigError(
+            f"k={workload.k} exceeds the supplied corpus of {corpus.shape[0]} vectors",
+            context=ErrorContext(phase=Phase.DATASET_LOAD),
+        )
+
+
 class VectorBenchmark:
     """Executes a vector workload against one adapter."""
 
-    def __init__(self, workload: VectorWorkload) -> None:
+    def __init__(
+        self,
+        workload: VectorWorkload,
+        corpus: FloatArray | None = None,
+        queries: FloatArray | None = None,
+    ) -> None:
+        """Measure a workload, over a supplied corpus or a seeded synthetic one.
+
+        Passing real vectors is how a verified dataset reaches the measurement.
+        Nothing else may supply them: a run that recorded a dataset id while
+        measuring generated noise would put a false provenance claim into an
+        immutable bundle, which is the one failure this project cannot have.
+        """
         self.workload = workload
-        self.corpus, self.queries = generate_corpus(workload)
+        if (corpus is None) != (queries is None):
+            raise ConfigError(
+                "supply both a corpus and a query set, or neither",
+                context=ErrorContext(phase=Phase.DATASET_LOAD),
+            )
+        if corpus is None or queries is None:
+            self.corpus, self.queries = generate_corpus(workload)
+            self.synthetic = True
+        else:
+            _check_supplied(workload, corpus, queries)
+            self.corpus, self.queries = corpus, queries
+            self.synthetic = False
         # The oracle is computed once, by us, from the same bytes the system
         # was given -- never taken from the system's own answer (TRD D6).
         self._ground_truth_ids, self._ground_truth = brute_force_ground_truth(

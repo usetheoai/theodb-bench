@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from theodb_bench.adapters.base import IndexSpec, KnnQuery, VectorTableSpec
+from theodb_bench.adapters.base import IndexSpec, KnnQuery, SystemAdapter, VectorTableSpec
 from theodb_bench.adapters.postgres import (
     PgvectorAdapter,
     PostgresAdapter,
@@ -190,10 +190,51 @@ def test_pgvector_declares_both_index_families() -> None:
     assert adapter.supports("vector_ivfflat")
 
 
-def test_theodb_declares_the_surfaces_it_owns() -> None:
+def test_theodb_declares_only_the_vector_surface_it_can_exercise() -> None:
+    # TheoDB the database has hybrid, columnar, Parquet, graph and a
+    # vectorizer. This adapter reaches none of them, and declaring them would
+    # put a false claim into every system.json and into `theodb-bench list`.
     adapter = TheoDBAdapter()
-    for capability in ("vector_hnsw", "hybrid", "columnar", "parquet", "graph", "vectorizer"):
-        assert adapter.supports(capability), capability
+    assert adapter.supports("vector_hnsw")
+    for capability in ("hybrid", "lexical", "columnar", "parquet", "graph", "vectorizer"):
+        assert not adapter.supports(capability), capability
+
+
+# The surfaces beyond vector need these adapter methods. A capability may only
+# be declared once the corresponding method is implemented.
+_CAPABILITY_METHODS: dict[str, tuple[str, ...]] = {
+    "lexical": ("load_documents", "execute_lexical"),
+    "hybrid": ("load_documents", "execute_hybrid"),
+    "rerank": ("execute_rerank",),
+    "graph": ("load_graph", "traverse", "graph_stats"),
+    "columnar": ("load_analytical", "execute_analytical"),
+    "parquet": ("load_analytical", "execute_analytical"),
+    "vectorizer": ("insert_document", "is_fresh", "queue_depth", "vectorizer_stats"),
+}
+
+
+@pytest.mark.parametrize("adapter_cls", [PostgresAdapter, PgvectorAdapter, TheoDBAdapter])
+def test_no_adapter_declares_a_capability_it_cannot_exercise(adapter_cls: type) -> None:
+    """Structural guard against the defect this file previously encoded.
+
+    A capability is a statement about the adapter's own code path. Declaring
+    one whose lifecycle methods fall through to the base class puts a false
+    claim into system.json, where a reader has no way to check it.
+    """
+    adapter = adapter_cls()
+    base_methods = {
+        name: getattr(SystemAdapter, name, None)
+        for names in _CAPABILITY_METHODS.values()
+        for name in names
+    }
+    for capability, methods in _CAPABILITY_METHODS.items():
+        if not adapter.supports(capability):
+            continue
+        for name in methods:
+            assert getattr(type(adapter), name, None) is not base_methods[name], (
+                f"{adapter.system_id} declares {capability!r} but inherits {name}() "
+                "from the base class, which only raises"
+            )
 
 
 def test_theodb_uses_its_own_extension() -> None:
