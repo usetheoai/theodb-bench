@@ -213,6 +213,40 @@ class WriteOutcome:
     accepted: bool = True
 
 
+@dataclass(frozen=True)
+class GraphSpec:
+    """A graph to load and traverse."""
+
+    name: str
+    directed: bool = True
+    edge_type: str | None = None
+
+
+@dataclass(frozen=True)
+class TraversalQuery:
+    """A k-hop neighbourhood expansion from one source vertex."""
+
+    graph: str
+    source: int
+    hops: int
+    limit: int | None = None
+    edge_type: str | None = None
+
+
+@dataclass(frozen=True)
+class TraversalResult:
+    """Vertices reached, and what it cost to reach them.
+
+    ``edges_visited`` is the work done, not the answer size. A traversal that
+    returns few vertices after walking many edges is expensive, and reporting
+    only the result size would hide that.
+    """
+
+    vertices: tuple[int, ...]
+    edges_visited: int
+    latency_seconds: float
+
+
 class SystemAdapter(ABC):
     """Everything the runner needs in order to measure one system."""
 
@@ -358,6 +392,32 @@ class SystemAdapter(ABC):
         """Worker counters: processed, retries, failures."""
         raise UnsupportedCapabilityError(
             f"{self.system_id} does not expose vectorizer statistics",
+            context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+        )
+
+    # ---------------------------------------------------------------- graph
+
+    def load_graph(
+        self, spec: GraphSpec, edges: Sequence[tuple[int, int]], vertex_count: int
+    ) -> BuildOutcome:
+        """Build the graph structure. Timed as the build, not as a query."""
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} cannot load a graph",
+            context=ErrorContext(phase=Phase.INDEX_BUILD, system=self.system_id),
+        )
+
+    def traverse(self, query: TraversalQuery) -> TraversalResult:
+        """Expand a neighbourhood."""
+        self.require("graph")
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} declares graph support but does not implement traversal",
+            context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+        )
+
+    def graph_stats(self) -> dict[str, Any]:
+        """Structure size, for bytes-per-edge accounting."""
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} does not expose graph statistics",
             context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
         )
 

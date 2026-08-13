@@ -26,6 +26,7 @@ from theodb_bench.adapters.base import (
     BuildOutcome,
     Document,
     DocumentTableSpec,
+    GraphSpec,
     HybridQuery,
     IndexSpec,
     KnnQuery,
@@ -34,6 +35,8 @@ from theodb_bench.adapters.base import (
     LoadOutcome,
     RankedResult,
     SystemAdapter,
+    TraversalQuery,
+    TraversalResult,
     VectorArray,
     VectorTableSpec,
     WriteOutcome,
@@ -115,6 +118,7 @@ class FakeConfig:
             "hybrid": True,
             "rerank": True,
             "vectorizer": True,
+            "graph": True,
         }
     )
     seed: int = 20260813
@@ -155,6 +159,9 @@ class FakeAdapter(SystemAdapter):
         self._worker_failures = 0
         self._worker_budget_seconds = 0.0
         self._worker_last_tick: float | None = None
+        self._adjacency: dict[int, list[int]] = {}
+        self._graph_edges = 0
+        self._graph_vertices = 0
         self._rng = np.random.default_rng(self.config.seed)
 
     # ------------------------------------------------------------ capabilities
@@ -504,6 +511,97 @@ class FakeAdapter(SystemAdapter):
                 self._queue.append(row_id)
                 continue
             self._fresh.add(row_id)
+
+    # -------------------------------------------------------------------- graph
+
+    def load_graph(
+        self, spec: GraphSpec, edges: Sequence[tuple[int, int]], vertex_count: int
+    ) -> BuildOutcome:
+        self.require("graph")
+        self._require_ready(Phase.INDEX_BUILD)
+        started = time.perf_counter()
+        adjacency: dict[int, list[int]] = {v: [] for v in range(vertex_count)}
+        for source, target in edges:
+            if not (0 <= source < vertex_count and 0 <= target < vertex_count):
+                raise AdapterError(
+                    f"edge ({source}, {target}) references a vertex outside "
+                    f"the declared {vertex_count}",
+                    context=ErrorContext(phase=Phase.INDEX_BUILD, system=self.system_id),
+                )
+            adjacency[source].append(target)
+            if not spec.directed:
+                adjacency[target].append(source)
+        # Sorted so traversal order is deterministic; without it the same
+        # limit would return different vertices between runs.
+        self._adjacency = {v: sorted(set(targets)) for v, targets in adjacency.items()}
+        self._graph_edges = sum(len(t) for t in self._adjacency.values())
+        self._graph_vertices = vertex_count
+        # Eight bytes per edge plus an offset per vertex: the shape a CSR has.
+        size = self._graph_edges * 8 + vertex_count * 8
+        return BuildOutcome(
+            seconds=time.perf_counter() - started,
+            index_size_bytes=size,
+            parameters_in_force={"directed": spec.directed, "vertices": vertex_count},
+        )
+
+    def traverse(self, query: TraversalQuery) -> TraversalResult:
+        """Breadth-first expansion, counting edges walked rather than answered."""
+        self.require("graph")
+        self._require_ready(Phase.MEASUREMENT)
+        if query.source not in self._adjacency:
+            raise AdapterError(
+                f"vertex {query.source} is not in the graph",
+                context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+            )
+
+        started = time.perf_counter()
+        seen = {query.source}
+        frontier = [query.source]
+        reached: list[int] = []
+        edges_visited = 0
+
+        for _ in range(query.hops):
+            next_frontier: list[int] = []
+            for vertex in frontier:
+                for neighbour in self._adjacency.get(vertex, ()):
+                    edges_visited += 1
+                    if neighbour in seen:
+                        continue
+                    seen.add(neighbour)
+                    reached.append(neighbour)
+                    next_frontier.append(neighbour)
+                    if query.limit is not None and len(reached) >= query.limit:
+                        # The cap is honoured mid-walk, and the edges already
+                        # walked are still counted: stopping early does not
+                        # make the work disappear.
+                        self._sleep_for_fault()
+                        return TraversalResult(
+                            vertices=tuple(reached),
+                            edges_visited=edges_visited,
+                            latency_seconds=time.perf_counter() - started,
+                        )
+            frontier = next_frontier
+            if not frontier:
+                break
+
+        self._sleep_for_fault()
+        return TraversalResult(
+            vertices=tuple(reached),
+            edges_visited=edges_visited,
+            latency_seconds=time.perf_counter() - started,
+        )
+
+    def graph_stats(self) -> dict[str, Any]:
+        self.require("graph")
+        return {
+            "vertices": self._graph_vertices,
+            "edges": self._graph_edges,
+            "bytes_per_edge": (
+                (self._graph_edges * 8 + self._graph_vertices * 8) / self._graph_edges
+                if self._graph_edges
+                else None
+            ),
+        }
 
     # ------------------------------------------------------------------ faults
 
