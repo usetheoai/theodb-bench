@@ -198,6 +198,21 @@ class RankedResult:
     so it is never folded into the database's time."""
 
 
+@dataclass(frozen=True)
+class WriteOutcome:
+    """One foreground write, timed as the writing transaction experienced it.
+
+    This is the first of the two clocks an operations benchmark measures. The
+    second -- how long until the derived embedding is queryable -- is observed
+    separately, because a system that moves embedding work out of the
+    transaction improves this number while leaving the other one to be checked.
+    """
+
+    row_id: int
+    latency_seconds: float
+    accepted: bool = True
+
+
 class SystemAdapter(ABC):
     """Everything the runner needs in order to measure one system."""
 
@@ -303,6 +318,46 @@ class SystemAdapter(ABC):
         self.require("rerank")
         raise UnsupportedCapabilityError(
             f"{self.system_id} declares rerank support but does not implement it",
+            context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+        )
+
+    # ---------------------------------------------------------- operations
+
+    def insert_document(self, spec: DocumentTableSpec, document: Document) -> WriteOutcome:
+        """Write one row in the foreground, returning the transaction's own latency."""
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} does not support foreground document writes",
+            context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+        )
+
+    def update_document_text(self, spec: DocumentTableSpec, row_id: int, text: str) -> WriteOutcome:
+        """Change a source column, which should invalidate any derived embedding."""
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} does not support source updates",
+            context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+        )
+
+    def is_fresh(self, spec: DocumentTableSpec, row_id: int) -> bool:
+        """Whether the row's derived embedding reflects its current source.
+
+        The second clock stops when this turns true.
+        """
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} does not expose embedding freshness",
+            context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+        )
+
+    def queue_depth(self) -> int:
+        """Rows waiting for the background vectorizer."""
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} does not expose a vectorizer queue",
+            context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+        )
+
+    def vectorizer_stats(self) -> dict[str, Any]:
+        """Worker counters: processed, retries, failures."""
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} does not expose vectorizer statistics",
             context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
         )
 

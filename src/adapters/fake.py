@@ -36,6 +36,7 @@ from theodb_bench.adapters.base import (
     SystemAdapter,
     VectorArray,
     VectorTableSpec,
+    WriteOutcome,
 )
 from theodb_bench.errors import (
     AdapterError,
@@ -113,10 +114,19 @@ class FakeConfig:
             "lexical": True,
             "hybrid": True,
             "rerank": True,
+            "vectorizer": True,
         }
     )
     seed: int = 20260813
     rerank_latency_seconds: float = 0.001
+    embed_seconds: float = 0.004
+    """What the background worker spends per row. The freshness clock is a
+    function of this and of how far behind the queue is."""
+
+    worker_count: int = 1
+    write_latency_seconds: float = 0.0002
+    vectorizer_failure_every: int = 0
+    """Fail every Nth job, to exercise retry accounting. 0 disables."""
     """A model that answers instantly would flatter any system that overlaps
     I/O with inference, so the mock has a declared non-zero cost."""
 
@@ -138,6 +148,13 @@ class FakeAdapter(SystemAdapter):
         self._children: list[subprocess.Popen[bytes]] = []
         self._documents: dict[int, Document] = {}
         self._postings: dict[str, dict[int, int]] = {}
+        self._queue: list[int] = []
+        self._fresh: set[int] = set()
+        self._worker_processed = 0
+        self._worker_retries = 0
+        self._worker_failures = 0
+        self._worker_budget_seconds = 0.0
+        self._worker_last_tick: float | None = None
         self._rng = np.random.default_rng(self.config.seed)
 
     # ------------------------------------------------------------ capabilities
@@ -398,6 +415,95 @@ class FakeAdapter(SystemAdapter):
             latency_seconds=database_seconds + model_seconds,
             stage_seconds={"database": database_seconds, "model": model_seconds},
         )
+
+    # --------------------------------------------------------------- operations
+
+    def insert_document(self, spec: DocumentTableSpec, document: Document) -> WriteOutcome:
+        """A foreground write. The embedding is queued, not computed here.
+
+        That is the whole design under test: the transaction returns before the
+        derived embedding exists, so the write looks fast and the freshness
+        clock has to be measured separately.
+        """
+        self.require("vectorizer")
+        self._require_ready(Phase.MEASUREMENT)
+        started = time.perf_counter()
+        self._documents[document.id] = document
+        for term in _tokenise(document.text):
+            self._postings.setdefault(term, {})
+            self._postings[term][document.id] = self._postings[term].get(document.id, 0) + 1
+        self._queue.append(document.id)
+        self._fresh.discard(document.id)
+        time.sleep(self.config.write_latency_seconds)
+        return WriteOutcome(row_id=document.id, latency_seconds=time.perf_counter() - started)
+
+    def update_document_text(self, spec: DocumentTableSpec, row_id: int, text: str) -> WriteOutcome:
+        self.require("vectorizer")
+        self._require_ready(Phase.MEASUREMENT)
+        existing = self._documents.get(row_id)
+        if existing is None:
+            raise AdapterError(
+                f"row {row_id} does not exist",
+                context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+            )
+        started = time.perf_counter()
+        self._documents[row_id] = Document(id=row_id, text=text, vector=existing.vector)
+        # Changing the source invalidates the derived embedding, which is what
+        # makes an update a harder case than an insert.
+        self._fresh.discard(row_id)
+        self._queue.append(row_id)
+        time.sleep(self.config.write_latency_seconds)
+        return WriteOutcome(row_id=row_id, latency_seconds=time.perf_counter() - started)
+
+    def is_fresh(self, spec: DocumentTableSpec, row_id: int) -> bool:
+        self.require("vectorizer")
+        self._drain_worker()
+        return row_id in self._fresh
+
+    def queue_depth(self) -> int:
+        self.require("vectorizer")
+        self._drain_worker()
+        return len(self._queue)
+
+    def vectorizer_stats(self) -> dict[str, Any]:
+        self.require("vectorizer")
+        self._drain_worker()
+        return {
+            "queue_depth": len(self._queue),
+            "processed": self._worker_processed,
+            "retries": self._worker_retries,
+            "failures": self._worker_failures,
+            "workers": self.config.worker_count,
+        }
+
+    def _drain_worker(self) -> None:
+        """Advance the background worker by the wall time that has passed.
+
+        Modelled rather than threaded: a real worker consumes the queue at a
+        rate, and a simulated one that consumed it instantly would make every
+        freshness measurement zero.
+        """
+        now = time.perf_counter()
+        if self._worker_last_tick is None:
+            self._worker_last_tick = now
+            return
+        elapsed = now - self._worker_last_tick
+        self._worker_last_tick = now
+        self._worker_budget_seconds += elapsed * self.config.worker_count
+
+        per_row = self.config.embed_seconds
+        while self._queue and self._worker_budget_seconds >= per_row:
+            self._worker_budget_seconds -= per_row
+            row_id = self._queue.pop(0)
+            self._worker_processed += 1
+            failure_every = self.config.vectorizer_failure_every
+            if failure_every and self._worker_processed % failure_every == 0:
+                # A failed job goes back on the queue and is counted, rather
+                # than silently disappearing and leaving the row stale forever.
+                self._worker_retries += 1
+                self._queue.append(row_id)
+                continue
+            self._fresh.add(row_id)
 
     # ------------------------------------------------------------------ faults
 
