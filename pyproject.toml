@@ -79,7 +79,7 @@ mypy_path = "."
 explicit_package_bases = true
 
 [[tool.mypy.overrides]]
-module = ["jsonschema.*", "h5py.*"]
+module = ["jsonschema.*", "h5py.*", "scipy.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
