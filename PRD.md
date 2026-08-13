@@ -29,6 +29,8 @@ TheoDB is a PostgreSQL 18-based database distribution with its own Rust extensio
 
 The benchmark project MUST evaluate these capabilities with methodologies appropriate to each subsystem. A single synthetic workload or a single aggregate score is not sufficient.
 
+TheoDB is built for **agents**, and the benchmark's primary surface is the agent workload itself — the composite an agent exercises on every step. The capability list above describes the components that explain an agent result; none of them substitutes for measuring the agent loop directly (§9.0, P6).
+
 The benchmark repository is intentionally separate from the TheoDB engine repository.
 
 The split is:
@@ -168,7 +170,13 @@ Provide a public runner capable of executing supported workloads with:
 
 ### G2. Benchmark every major TheoDB performance surface
 
-The project SHOULD cover seven major surfaces:
+TheoDB is built for agents. The **primary** surface is therefore the agent workload — the composite an agent actually exercises — and it MUST be measured as such rather than inferred from its parts.
+
+**Primary surface:**
+
+0. Agent workload — step assembly, filtered retrieval, memory read-your-writes, concurrent agents, read/write interference, task success
+
+**Component surfaces**, which explain why the primary surface moves and MUST NOT be treated as substitutes for it (P6):
 
 1. Vector ANN
 2. Retrieval / hybrid search
@@ -428,6 +436,29 @@ A B4 result MUST include comparison-policy metadata and SHOULD include a rationa
 ---
 
 ## 9. Initial benchmark programs
+
+### 9.0 Agent program — primary
+
+The unit of measurement is the **agent step**, not the query. Full methodology in `docs/methodology/AGENT-WORKLOAD.md`; technical design in TRD §12.
+
+Deterministic measurements, suitable for regression gates:
+
+- step assembly latency — p50/p95/p99/p99.9 of the composite of every database call within one step, plus a per-leg breakdown;
+- filtered retrieval recall and latency across a selectivity sweep;
+- read-your-writes staleness window and failure rate at a given step gap;
+- concurrent agent scaling with small disjoint working sets;
+- read/write interference delta, loaded versus quiesced.
+
+Model-dependent measurements, environment-dependent and never a hard gate:
+
+- task success rate;
+- cost per step (tokens + database CPU).
+
+Primary result:
+
+**Step assembly tail latency at a declared context-quality target, under a declared staleness bound.**
+
+A run that violates the declared staleness bound is INVALID, not unfavorable: the agent lost a write it believed it had stored.
 
 ### 9.1 Vector program
 
