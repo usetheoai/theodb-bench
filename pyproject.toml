@@ -52,7 +52,9 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "PTH", "RUF"]
 [tool.mypy]
 python_version = "3.10"
 strict = true
-files = ["src", "tests"]
+# Checked through the symlink rather than through src/, so each module is
+# analysed once under the name it is imported by.
+files = ["theodb_bench", "tests"]
 # Sources are flat in src/ but import as `theodb_bench.*`. A repo-root symlink
 # `theodb_bench -> src` gives every tool that resolves imports by path (mypy,
 # IDEs, pytest without an install) the same view the installed package has.
