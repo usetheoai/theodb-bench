@@ -247,6 +247,44 @@ class TraversalResult:
     latency_seconds: float
 
 
+@dataclass(frozen=True)
+class AnalyticalTable:
+    """A table for the analytical surface, with its execution path."""
+
+    name: str
+    columns: tuple[str, ...]
+    path: str = "row"
+    """``row``, ``columnar`` or ``parquet``. The same data, stored three ways."""
+
+
+@dataclass(frozen=True)
+class AnalyticalQuery:
+    """One analytical query, with the answer it must produce.
+
+    ``expected`` is not documentation: the runner compares against it and
+    refuses the timing when they disagree. A query that returns the wrong
+    answer quickly is not a fast query.
+    """
+
+    id: str
+    description: str
+    expected: tuple[tuple[Any, ...], ...] | None = None
+    tolerance: float = 1e-6
+
+
+@dataclass(frozen=True)
+class AnalyticalResult:
+    """The answer and what producing it cost."""
+
+    rows: tuple[tuple[Any, ...], ...]
+    wall_seconds: float
+    rows_processed: int | None = None
+    bytes_read: int | None = None
+    stage_seconds: dict[str, float] = field(default_factory=dict)
+    """Where a scan spent its time: metadata, pruning, read, decode, filter,
+    aggregate. A single wall time cannot say which of those a change moved."""
+
+
 class SystemAdapter(ABC):
     """Everything the runner needs in order to measure one system."""
 
@@ -418,6 +456,26 @@ class SystemAdapter(ABC):
         """Structure size, for bytes-per-edge accounting."""
         raise UnsupportedCapabilityError(
             f"{self.system_id} does not expose graph statistics",
+            context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+        )
+
+    # ----------------------------------------------------------- analytical
+
+    def load_analytical(
+        self, table: AnalyticalTable, rows: Sequence[tuple[Any, ...]]
+    ) -> LoadOutcome:
+        """Load the same data into a named execution path."""
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} has no analytical execution path",
+            context=ErrorContext(phase=Phase.DATASET_LOAD, system=self.system_id),
+        )
+
+    def execute_analytical(
+        self, table: AnalyticalTable, query: AnalyticalQuery
+    ) -> AnalyticalResult:
+        """Run an analytical query and report where the time went."""
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} cannot execute analytical queries",
             context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
         )
 

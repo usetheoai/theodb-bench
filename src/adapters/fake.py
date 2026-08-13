@@ -18,11 +18,14 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 from theodb_bench.adapters.base import (
     CAPABILITIES,
+    AnalyticalQuery,
+    AnalyticalResult,
+    AnalyticalTable,
     BuildOutcome,
     Document,
     DocumentTableSpec,
@@ -62,6 +65,32 @@ def _build_postings(documents: Sequence[Document]) -> dict[str, dict[int, int]]:
             postings.setdefault(term, {})
             postings[term][document.id] = postings[term].get(document.id, 0) + 1
     return postings
+
+
+def _analytical_scan(
+    rows: Sequence[tuple[Any, ...]], columns: Sequence[str], query_id: str
+) -> list[tuple[Any, ...]]:
+    """Apply the query's filter. Deliberately tiny and query-id driven."""
+    if query_id == "filtered_sum":
+        index = list(columns).index("amount")
+        category = list(columns).index("category")
+        return [row for row in rows if row[category] == "a" and float(row[index]) > 0]
+    return list(rows)
+
+
+def _analytical_aggregate(
+    rows: Sequence[tuple[Any, ...]], query_id: str
+) -> tuple[tuple[Any, ...], ...]:
+    if query_id in {"total_rows"}:
+        return ((len(rows),),)
+    if query_id in {"sum_amount", "filtered_sum"}:
+        return ((round(sum(float(row[1]) for row in rows), 6),),)
+    if query_id == "group_by_category":
+        totals: dict[Any, float] = {}
+        for row in rows:
+            totals[row[2]] = totals.get(row[2], 0.0) + float(row[1])
+        return tuple((key, round(value, 6)) for key, value in sorted(totals.items()))
+    return ((len(rows),),)
 
 
 class Fault(str, Enum):
@@ -119,6 +148,8 @@ class FakeConfig:
             "rerank": True,
             "vectorizer": True,
             "graph": True,
+            "columnar": True,
+            "parquet": True,
         }
     )
     seed: int = 20260813
@@ -162,6 +193,8 @@ class FakeAdapter(SystemAdapter):
         self._adjacency: dict[int, list[int]] = {}
         self._graph_edges = 0
         self._graph_vertices = 0
+        self._analytical: dict[str, list[tuple[Any, ...]]] = {}
+        self._analytical_columns: dict[str, tuple[str, ...]] = {}
         self._rng = np.random.default_rng(self.config.seed)
 
     # ------------------------------------------------------------ capabilities
@@ -602,6 +635,86 @@ class FakeAdapter(SystemAdapter):
                 else None
             ),
         }
+
+    # --------------------------------------------------------------- analytical
+
+    # Per-row cost by execution path. A row store reads whole rows; a column
+    # store touches only the columns a query needs; Parquet adds metadata and
+    # row-group pruning before it reads anything. These factors make the fake
+    # exhibit the shape the real paths have, and they are declared rather than
+    # implied so nobody mistakes them for a measurement of TheoDB.
+    _PATH_ROW_COST: ClassVar[dict[str, float]] = {
+        "row": 4.0e-7,
+        "columnar": 1.2e-7,
+        "parquet": 1.6e-7,
+    }
+    _PATH_OPEN_COST: ClassVar[dict[str, float]] = {
+        "row": 0.0,
+        "columnar": 0.0,
+        "parquet": 2.0e-4,
+    }
+
+    def load_analytical(
+        self, table: AnalyticalTable, rows: Sequence[tuple[Any, ...]]
+    ) -> LoadOutcome:
+        capability = {"columnar": "columnar", "parquet": "parquet"}.get(table.path)
+        if capability is not None:
+            self.require(capability, f"execution path {table.path!r}")
+        self._require_ready(Phase.DATASET_LOAD)
+        started = time.perf_counter()
+        self._analytical[table.name] = list(rows)
+        self._analytical_columns[table.name] = table.columns
+        return LoadOutcome(
+            seconds=time.perf_counter() - started,
+            rows_loaded=len(rows),
+            rows_expected=len(rows),
+        )
+
+    def execute_analytical(
+        self, table: AnalyticalTable, query: AnalyticalQuery
+    ) -> AnalyticalResult:
+        capability = {"columnar": "columnar", "parquet": "parquet"}.get(table.path)
+        if capability is not None:
+            self.require(capability, f"execution path {table.path!r}")
+        self._require_ready(Phase.MEASUREMENT)
+        rows = self._analytical.get(table.name)
+        columns = self._analytical_columns.get(table.name)
+        if rows is None or columns is None:
+            raise AdapterError(
+                f"analytical table {table.name!r} was never loaded",
+                context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+            )
+
+        stages: dict[str, float] = {}
+        started = time.perf_counter()
+
+        open_cost = self._PATH_OPEN_COST.get(table.path, 0.0)
+        if open_cost:
+            time.sleep(open_cost)
+            stages["metadata"] = open_cost
+
+        prune_started = time.perf_counter()
+        scanned = _analytical_scan(rows, columns, query.id)
+        stages["prune"] = time.perf_counter() - prune_started
+
+        read_cost = len(rows) * self._PATH_ROW_COST.get(table.path, 4.0e-7)
+        time.sleep(read_cost)
+        stages["read"] = read_cost
+
+        aggregate_started = time.perf_counter()
+        answer = _analytical_aggregate(scanned, query.id)
+        stages["aggregate"] = time.perf_counter() - aggregate_started
+
+        self._sleep_for_fault()
+        return AnalyticalResult(
+            rows=answer,
+            wall_seconds=time.perf_counter() - started,
+            rows_processed=len(rows),
+            # A column store reads only what the query needs; that is the whole
+            # claim, so the fake reflects it in bytes rather than only in time.
+            bytes_read=int(len(rows) * (8 if table.path == "row" else 3)),
+            stage_seconds=stages,
+        )
 
     # ------------------------------------------------------------------ faults
 

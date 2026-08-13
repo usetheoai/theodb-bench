@@ -78,10 +78,14 @@ def test_an_unknown_capability_name_is_a_programming_error() -> None:
 
 
 def test_context_manager_starts_and_stops() -> None:
-    with FakeAdapter() as adapter:
-        assert adapter.execute is not None
-        adapter.load_dataset(SPEC, _corpus())
-    assert not FakeAdapter().capabilities()["graph"]
+    # The assertion here is about the lifecycle, not about capabilities: on
+    # entry the system must be ready to serve, and on exit it must be stopped.
+    adapter = FakeAdapter()
+    with adapter as entered:
+        entered.load_dataset(SPEC, _corpus())
+        entered.execute(KnnQuery(table="items", vector=_corpus(1)[0], k=1))
+    with pytest.raises(SystemUnavailableError, match="not ready"):
+        adapter.execute(KnnQuery(table="items", vector=_corpus(1)[0], k=1))
 
 
 # --------------------------------------------------------------------- search
