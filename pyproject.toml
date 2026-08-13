@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "theodb-bench"
+version = "0.1.0.dev0"
+description = "Open, reproducible performance benchmarking for TheoDB"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "numpy>=1.24",
+    "jsonschema>=4.17",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.4",
+    "mypy>=1.8",
+]
+# Kept separate: a plain `doctor` or schema validation must not require a
+# database driver or an HDF5 stack to be installed.
+postgres = ["psycopg[binary]>=3.1"]
+datasets = ["h5py>=3.10"]
+
+[project.scripts]
+theodb-bench = "theodb_bench.cli:main"
+
+[tool.setuptools]
+# Sources live flat under src/ with no nested package directory; the mapping
+# below still installs them as the `theodb_bench` package, so module names stay
+# namespaced instead of claiming top-level names like `errors` or `cli`.
+package-dir = { "theodb_bench" = "src" }
+packages = ["theodb_bench"]
+
+[tool.setuptools.package-data]
+theodb_bench = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+# `theodb_bench` is a symlink to `src` (see [tool.mypy]); linting through it
+# would report every finding twice.
+extend-exclude = ["theodb_bench"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "PTH", "RUF"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src", "tests"]
+# Sources are flat in src/ but import as `theodb_bench.*`. A repo-root symlink
+# `theodb_bench -> src` gives every tool that resolves imports by path (mypy,
+# IDEs, pytest without an install) the same view the installed package has.
+mypy_path = "."
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = ["jsonschema.*", "h5py.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: requires an external system (database, container) to be running",
+    "slow: takes more than a few seconds",
+]

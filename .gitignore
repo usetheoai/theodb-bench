@@ -1,0 +1,17 @@
+OBJETIVO.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Run bundles are produced locally; only curated results are published,
+# and large raw artifacts never live in Git (TRD section 26).
+/results/
+
+# Datasets are identified by manifest and checksum, never committed.
+/.datasets/
