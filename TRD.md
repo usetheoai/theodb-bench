@@ -1129,20 +1129,21 @@ Requirements:
 
 ## 26. Dataset management
 
-Manifest example:
+Manifest example (JSON; see `docs/decisions/0002-json-dataset-manifests.md`):
 
-```yaml
-id: example
-version: "1"
-license: "..."
-source: "..."
-files:
-  - path: base.fvecs
-    sha256: "..."
-  - path: query.fvecs
-    sha256: "..."
-preprocess:
-  version: 1
+```json
+{
+  "schema_version": 1,
+  "id": "example",
+  "version": "1",
+  "license": { "name": "CC0-1.0", "redistributable": false },
+  "source": { "url": "https://example.invalid/" },
+  "files": [
+    { "path": "base.fvecs", "sha256": "...", "role": "train" },
+    { "path": "query.fvecs", "sha256": "...", "role": "queries" }
+  ],
+  "preprocess": { "version": 1 }
+}
 ```
 
 Commands:
