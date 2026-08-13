@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theodb.dev/schemas/pareto.schema.json",
+  "title": "Pareto frontier",
+  "description": "Non-dominated configurations over declared objectives. A dominated point never appears on the frontier (TRD 13.4).",
+  "type": "object",
+  "required": ["schema_version", "objectives", "points", "frontier"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": { "type": "string" },
+    "objectives": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["metric", "direction"],
+        "additionalProperties": false,
+        "properties": {
+          "metric": { "type": "string" },
+          "direction": { "type": "string", "enum": ["maximize", "minimize"] }
+        }
+      }
+    },
+    "points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "values"],
+        "additionalProperties": false,
+        "properties": {
+          "label": { "type": "string" },
+          "values": { "type": "object", "additionalProperties": { "type": "number" } },
+          "dominated_by": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Labels of the points that dominate this one; empty for frontier members."
+          }
+        }
+      }
+    },
+    "frontier": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Labels of the non-dominated points."
+    },
+    "matched_quality": {
+      "type": ["object", "null"],
+      "description": "Headline comparison at a stated quality target, with the selection method named (TRD 13.5).",
+      "required": ["metric", "target", "method"],
+      "additionalProperties": false,
+      "properties": {
+        "metric": { "type": "string" },
+        "target": { "type": "number" },
+        "method": {
+          "type": "string",
+          "enum": ["nearest_at_or_above", "linear_interpolation", "none_available"]
+        },
+        "selected": { "type": ["string", "null"] },
+        "detail": { "type": "string" }
+      }
+    }
+  }
+}

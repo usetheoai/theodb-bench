@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theodb.dev/schemas/dataset.schema.json",
+  "title": "Dataset manifest",
+  "description": "Content-based dataset identity (TRD D5). A dataset is its checksums, never its filename.",
+  "type": "object",
+  "required": ["schema_version", "id", "version", "license", "files", "preprocess"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:[-_][a-z0-9]+)*$" },
+    "version": { "type": "string" },
+    "description": { "type": "string" },
+    "source": {
+      "type": "object",
+      "required": ["url"],
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string" },
+        "citation": { "type": "string" },
+        "retrieved_at": { "type": "string", "format": "date" }
+      }
+    },
+    "license": {
+      "type": "object",
+      "required": ["name", "redistributable"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "url": { "type": "string" },
+        "redistributable": {
+          "type": "boolean",
+          "description": "False means the manifest points at the source; we never mirror the bytes."
+        },
+        "notes": { "type": "string" }
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Relative path inside the dataset directory. Absolute paths and parent traversal are rejected by the loader.",
+            "pattern": "^[^/][^\\u0000]*$"
+          },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "size_bytes": { "type": "integer", "minimum": 0 },
+          "url": { "type": "string" },
+          "role": {
+            "type": "string",
+            "enum": ["train", "test", "queries", "neighbors", "distances", "corpus", "qrels", "other"]
+          }
+        }
+      }
+    },
+    "preprocess": {
+      "type": "object",
+      "required": ["version"],
+      "additionalProperties": false,
+      "properties": {
+        "version": { "type": "integer", "minimum": 1 },
+        "description": { "type": "string" }
+      }
+    },
+    "properties": {
+      "type": "object",
+      "description": "Declared dataset facts a benchmark may rely on (dimension, metric, sizes).",
+      "additionalProperties": true
+    }
+  }
+}

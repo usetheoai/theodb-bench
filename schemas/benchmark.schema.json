@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theodb.dev/schemas/benchmark.schema.json",
+  "title": "Benchmark definition",
+  "description": "Declarative specification of a benchmark. Benchmark behaviour must never depend on undocumented shell state (TRD D1).",
+  "type": "object",
+  "required": ["schema_version", "id", "version", "workload"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "id": {
+      "type": "string",
+      "description": "Hierarchical benchmark id, e.g. vector/sift1m/hnsw.",
+      "pattern": "^[a-z0-9]+(?:[-_][a-z0-9]+)*(?:/[a-z0-9]+(?:[-_][a-z0-9]+)*)*$"
+    },
+    "version": { "type": "integer", "minimum": 1 },
+    "description": { "type": "string" },
+    "dataset": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "manifest": { "type": "string" }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["ann", "retrieval", "analytical", "lakehouse", "graph", "operations", "ai_sql", "agent", "synthetic"]
+        },
+        "loop": {
+          "type": "string",
+          "enum": ["closed", "open"],
+          "default": "closed",
+          "description": "Closed-loop and open-loop workloads must be identified explicitly (TRD section 11)."
+        },
+        "target_rate_per_second": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Required for open-loop workloads; enables coordinated-omission correction."
+        },
+        "concurrency": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "minItems": 1
+        },
+        "duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "operation_count": { "type": "integer", "minimum": 1 },
+        "k": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "minItems": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "loop": { "const": "open" } }, "required": ["loop"] },
+          "then": { "required": ["target_rate_per_second"] }
+        }
+      ]
+    },
+    "warmup": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Warm-up must not be silently extended until a desired number appears (TRD 6.6).",
+      "properties": {
+        "policy": { "type": "string", "enum": ["fixed_time", "fixed_operations", "none"] },
+        "seconds": { "type": "number", "minimum": 0 },
+        "operations": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "required": ["metric"],
+      "additionalProperties": false,
+      "properties": {
+        "metric": {
+          "type": "string",
+          "enum": ["recall", "ndcg", "mrr", "recall_at_n", "task_success", "exact_match"]
+        },
+        "ground_truth": { "type": "string", "enum": ["dataset", "computed", "none"] },
+        "target": { "type": "number" }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "latency": { "type": "string", "enum": ["samples", "hdr", "none"] },
+        "perf_stat": { "type": "boolean" },
+        "process": { "type": "boolean" },
+        "postgres": { "type": "boolean" }
+      }
+    },
+    "repetitions": { "type": "integer", "minimum": 1 },
+    "repetition_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Repetition semantics are part of the benchmark definition (TRD 6.8).",
+      "properties": {
+        "rebuild_index": { "type": "boolean" },
+        "restart_system": { "type": "boolean" },
+        "drop_caches": { "type": "boolean" },
+        "restore_database": { "type": "boolean" },
+        "restart_client_only": { "type": "boolean" }
+      }
+    },
+    "parameters": {
+      "type": "object",
+      "description": "Workload-specific parameter sweep; each key maps to the list of values to sweep.",
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1
+      }
+    }
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theodb.dev/schemas/result.schema.json",
+  "title": "Measurement results",
+  "description": "Per-configuration, per-repetition measurements. Success, error and timeout counts are kept apart; a failed operation never enters the latency distribution as if it had succeeded.",
+  "type": "object",
+  "required": ["schema_version", "run_id", "points"],
+  "additionalProperties": false,
+  "$defs": {
+    "absent": {
+      "type": "object",
+      "required": ["absent"],
+      "additionalProperties": false,
+      "properties": {
+        "absent": { "type": "string", "enum": ["unsupported", "unavailable", "not_collected", "invalid"] },
+        "detail": { "type": "string" }
+      }
+    },
+    "maybe_number": { "oneOf": [{ "type": "number" }, { "$ref": "#/$defs/absent" }] }
+  },
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": { "type": "string" },
+    "points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "parameters", "repetitions"],
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Human-readable configuration label. A reduced query sample must appear here, never be hidden."
+          },
+          "parameters": {
+            "type": "object",
+            "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+          },
+          "status": {
+            "type": "string",
+            "enum": ["measured", "unsupported", "skipped", "failed"],
+            "default": "measured"
+          },
+          "status_detail": { "type": "string" },
+          "repetitions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["repetition", "operations"],
+              "additionalProperties": false,
+              "properties": {
+                "repetition": { "type": "integer", "minimum": 1 },
+                "operations": {
+                  "type": "object",
+                  "required": ["success", "error", "timeout"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "success": { "type": "integer", "minimum": 0 },
+                    "error": { "type": "integer", "minimum": 0 },
+                    "timeout": { "type": "integer", "minimum": 0 }
+                  }
+                },
+                "duration_seconds": { "type": "number", "minimum": 0 },
+                "throughput_per_second": { "$ref": "#/$defs/maybe_number" },
+                "latency_ms": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "p50": { "$ref": "#/$defs/maybe_number" },
+                    "p95": { "$ref": "#/$defs/maybe_number" },
+                    "p99": { "$ref": "#/$defs/maybe_number" },
+                    "p999": { "$ref": "#/$defs/maybe_number" },
+                    "mean": { "$ref": "#/$defs/maybe_number" },
+                    "stdev": { "$ref": "#/$defs/maybe_number" },
+                    "min": { "$ref": "#/$defs/maybe_number" },
+                    "max": { "$ref": "#/$defs/maybe_number" },
+                    "sample_count": { "type": "integer", "minimum": 0 }
+                  }
+                },
+                "quality": {
+                  "type": "object",
+                  "additionalProperties": { "$ref": "#/$defs/maybe_number" }
+                },
+                "resources": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "rss_bytes": { "$ref": "#/$defs/maybe_number" },
+                    "cpu_seconds": { "$ref": "#/$defs/maybe_number" },
+                    "cycles": { "$ref": "#/$defs/maybe_number" },
+                    "instructions": { "$ref": "#/$defs/maybe_number" },
+                    "cache_misses": { "$ref": "#/$defs/maybe_number" },
+                    "context_switches": { "$ref": "#/$defs/maybe_number" },
+                    "page_faults": { "$ref": "#/$defs/maybe_number" },
+                    "index_size_bytes": { "$ref": "#/$defs/maybe_number" },
+                    "build_seconds": { "$ref": "#/$defs/maybe_number" }
+                  }
+                },
+                "stage_timings_ms": {
+                  "type": "object",
+                  "description": "Per-stage breakdown. Database, network and model inference are separated; a composite that hides inference measures the model vendor.",
+                  "additionalProperties": { "$ref": "#/$defs/maybe_number" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

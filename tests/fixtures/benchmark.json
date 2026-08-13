@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "vector/sift1m/hnsw",
+  "version": 1,
+  "description": "HNSW approximate search over SIFT1M.",
+  "dataset": { "id": "sift1m", "manifest": "datasets/manifests/sift1m.yaml" },
+  "workload": {
+    "type": "ann",
+    "loop": "closed",
+    "k": [1, 10, 100],
+    "concurrency": [1, 8, 32],
+    "duration_seconds": 300
+  },
+  "warmup": { "policy": "fixed_time", "seconds": 60 },
+  "quality": { "metric": "recall", "ground_truth": "dataset" },
+  "telemetry": { "latency": "samples", "perf_stat": true, "process": true, "postgres": true },
+  "repetitions": 5,
+  "repetition_policy": { "rebuild_index": false, "restart_system": false, "drop_caches": false },
+  "parameters": { "ef_search": [16, 64, 256] }
+}

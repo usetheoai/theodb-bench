@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "system": "theodb",
+  "version": "0.1.0",
+  "commit": "deadbeef",
+  "dirty": false,
+  "capabilities": { "vector_hnsw": true, "vector_ivfflat": true, "hybrid": true, "columnar": true, "parquet": true, "graph": true },
+  "effective_configuration": { "shared_buffers": "4GB", "work_mem": "64MB", "max_parallel_workers": 8 },
+  "index_configuration": { "m": 16, "ef_construction": 64 },
+  "durability": { "synchronous_commit": "on", "fsync": "on" },
+  "resource_limits": { "cpu_set": "0-5", "memory_bytes": 8589934592, "numa_node": 0 }
+}

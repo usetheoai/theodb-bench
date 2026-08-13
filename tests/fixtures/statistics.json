@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "run_id": "20260812T231000Z-vector-sift1m-theodb-abc123",
+  "outlier_policy": { "name": "none" },
+  "points": [
+    {
+      "label": "hnsw ef_search=64",
+      "parameters": { "ef_search": 64 },
+      "metrics": {
+        "throughput_per_second": { "median": 400.0, "mean": 399.1, "stdev": 3.2, "min": 394.0, "max": 403.0, "coefficient_of_variation": 0.008, "repetitions": 5, "values": [394.0, 398.0, 400.0, 401.0, 403.0] },
+        "recall_at_10": { "median": 0.983, "repetitions": 5, "values": [0.982, 0.983, 0.983, 0.984, 0.983] }
+      },
+      "stability": { "stable": true, "threshold_cv": 0.05 }
+    }
+  ]
+}

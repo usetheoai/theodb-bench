@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "run_id": "20260812T231000Z-vector-sift1m-theodb-abc123",
+  "objectives": [
+    { "metric": "recall_at_10", "direction": "maximize" },
+    { "metric": "throughput_per_second", "direction": "maximize" }
+  ],
+  "points": [
+    { "label": "ef_search=16", "values": { "recall_at_10": 0.91, "throughput_per_second": 900.0 }, "dominated_by": [] },
+    { "label": "ef_search=64", "values": { "recall_at_10": 0.983, "throughput_per_second": 400.0 }, "dominated_by": [] },
+    { "label": "ef_search=32-bad", "values": { "recall_at_10": 0.90, "throughput_per_second": 850.0 }, "dominated_by": ["ef_search=16"] }
+  ],
+  "frontier": ["ef_search=16", "ef_search=64"],
+  "matched_quality": { "metric": "recall_at_10", "target": 0.95, "method": "nearest_at_or_above", "selected": "ef_search=64" }
+}

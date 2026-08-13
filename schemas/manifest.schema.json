@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theodb.dev/schemas/manifest.schema.json",
+  "title": "Run manifest",
+  "description": "Identity and provenance of a single run (TRD section 8). Written once at finalization and never modified.",
+  "type": "object",
+  "required": ["schema_version", "run_id", "status", "benchmark", "system", "execution"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-z0-9-]+-[a-z0-9_]+-[0-9a-f]{6,}$",
+      "description": "UTC timestamp, benchmark slug, system, short hash."
+    },
+    "status": { "type": "string", "enum": ["VALID", "INVALID", "EXPLORATORY"] },
+    "profile": { "type": "string", "enum": ["smoke", "pr", "nightly", "release", "research"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "benchmark": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "integer", "minimum": 1 },
+        "profile": { "type": "string", "enum": ["smoke", "pr", "nightly", "release", "research"] },
+        "benchmark_commit": { "type": ["string", "null"] },
+        "benchmark_dirty": { "type": ["boolean", "null"] }
+      }
+    },
+    "system": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": ["string", "null"] },
+        "commit": { "type": ["string", "null"] },
+        "dirty": { "type": ["boolean", "null"] }
+      }
+    },
+    "dataset": {
+      "type": ["object", "null"],
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": ["string", "null"] },
+        "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": ["repetitions"],
+      "additionalProperties": false,
+      "properties": {
+        "warmup_seconds": { "type": ["number", "null"], "minimum": 0 },
+        "warmup_operations": { "type": ["integer", "null"], "minimum": 0 },
+        "measurement_seconds": { "type": ["number", "null"], "minimum": 0 },
+        "concurrency": { "type": ["integer", "null"], "minimum": 1 },
+        "repetitions": { "type": "integer", "minimum": 1 },
+        "loop": { "type": "string", "enum": ["closed", "open"] },
+        "target_rate_per_second": { "type": ["number", "null"] }
+      }
+    },
+    "environment_ref": { "type": "string" },
+    "benchmark_ref": { "type": "string" },
+    "system_ref": { "type": "string" },
+    "dataset_ref": { "type": "string" },
+    "validation_ref": { "type": "string" },
+    "notes": { "type": "string" }
+  }
+}

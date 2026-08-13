@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theodb.dev/schemas/validation.schema.json",
+  "title": "Run validation",
+  "description": "Protocol validation of a completed run (TRD 6.9). Invalidation is based on protocol criteria, never on whether the number looks good.",
+  "type": "object",
+  "required": ["schema_version", "status", "checks"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "status": { "type": "string", "enum": ["VALID", "INVALID", "EXPLORATORY"] },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "outcome", "required"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$" },
+          "description": { "type": "string" },
+          "outcome": { "type": "string", "enum": ["PASS", "WARN", "FAIL", "UNAVAILABLE"] },
+          "required": {
+            "type": "boolean",
+            "description": "A failed required check forces status INVALID."
+          },
+          "detail": { "type": "string" },
+          "observed": { "type": ["string", "number", "boolean", "null"] },
+          "expected": { "type": ["string", "number", "boolean", "null"] }
+        }
+      }
+    },
+    "invalidated_by": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Ids of the required checks that failed."
+    },
+    "notes": { "type": "string" }
+  }
+}

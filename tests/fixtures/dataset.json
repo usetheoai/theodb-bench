@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "sift1m",
+  "version": "1",
+  "description": "SIFT1M 128-dimensional ANN benchmark dataset.",
+  "source": { "url": "http://corpus-texmex.irisa.fr/", "retrieved_at": "2026-08-12" },
+  "license": { "name": "CC0-1.0", "redistributable": false, "notes": "Fetched from source; never mirrored." },
+  "files": [
+    {
+      "path": "base.fvecs",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "size_bytes": 516000000,
+      "role": "train"
+    },
+    {
+      "path": "query.fvecs",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "role": "queries"
+    }
+  ],
+  "preprocess": { "version": 1, "description": "None; files are used as published." },
+  "properties": { "dimension": 128, "metric": "l2", "train_size": 1000000, "query_size": 10000 }
+}

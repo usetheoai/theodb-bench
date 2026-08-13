@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theodb.dev/schemas/regression.schema.json",
+  "title": "Regression comparison",
+  "description": "Comparison of a candidate run against an accepted baseline. Fails closed when the baseline is not comparable (TRD section 22).",
+  "type": "object",
+  "required": ["schema_version", "candidate_run_id", "comparability", "verdict"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "candidate_run_id": { "type": "string" },
+    "baseline": {
+      "type": ["object", "null"],
+      "required": ["run_id", "benchmark_id", "benchmark_version", "profile", "system", "hardware_class"],
+      "additionalProperties": false,
+      "properties": {
+        "run_id": { "type": "string" },
+        "benchmark_id": { "type": "string" },
+        "benchmark_version": { "type": "integer" },
+        "profile": { "type": "string" },
+        "system": { "type": "string" },
+        "hardware_class": { "type": "string" },
+        "accepted_commit": { "type": ["string", "null"] }
+      }
+    },
+    "comparability": {
+      "type": "object",
+      "required": ["comparable", "checks"],
+      "additionalProperties": false,
+      "properties": {
+        "comparable": { "type": "boolean" },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["field", "matches"],
+            "additionalProperties": false,
+            "properties": {
+              "field": { "type": "string" },
+              "matches": { "type": "boolean" },
+              "candidate": { "type": ["string", "number", "boolean", "null"] },
+              "baseline": { "type": ["string", "number", "boolean", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "noise_floor": {
+      "type": ["object", "null"],
+      "description": "Measured variance of this benchmark on this hardware class. Thresholds must not be frozen before it exists.",
+      "required": ["source_runs", "metric_cv"],
+      "additionalProperties": false,
+      "properties": {
+        "source_runs": { "type": "integer", "minimum": 2 },
+        "metric_cv": { "type": "object", "additionalProperties": { "type": "number" } },
+        "measured_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "gates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["metric", "direction", "outcome"],
+        "additionalProperties": false,
+        "properties": {
+          "metric": { "type": "string" },
+          "direction": {
+            "type": "string",
+            "enum": ["higher_is_better", "lower_is_better"]
+          },
+          "candidate": { "type": ["number", "null"] },
+          "baseline": { "type": ["number", "null"] },
+          "delta_pct": { "type": ["number", "null"] },
+          "max_regression_pct": { "type": ["number", "null"] },
+          "max_absolute_regression": { "type": ["number", "null"] },
+          "threshold_source": {
+            "type": "string",
+            "enum": ["measured_noise_floor", "declared", "advisory"],
+            "description": "A threshold not derived from a measured noise floor is advisory, and says so."
+          },
+          "outcome": { "type": "string", "enum": ["PASS", "FAIL", "ADVISORY", "UNAVAILABLE"] },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["PASS", "FAIL", "ADVISORY", "INCOMPARABLE"],
+      "description": "INCOMPARABLE whenever comparability.comparable is false; never a silent comparison across incompatible hardware or configuration."
+    },
+    "notes": { "type": "string" }
+  }
+}

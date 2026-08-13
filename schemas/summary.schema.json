@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theodb.dev/schemas/summary.schema.json",
+  "title": "Machine-readable run summary",
+  "description": "The machine half of a published result. Carries enough provenance that a claim can be traced back to the run bundle that produced it.",
+  "type": "object",
+  "required": ["schema_version", "run_id", "status", "benchmark", "system", "headline"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": { "type": "string" },
+    "status": { "type": "string", "enum": ["VALID", "INVALID", "EXPLORATORY"] },
+    "profile": { "type": "string", "enum": ["smoke", "pr", "nightly", "release", "research"] },
+    "publishable": {
+      "type": "boolean",
+      "description": "False for smoke, pr and research regardless of how the numbers look."
+    },
+    "benchmark": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "integer" },
+        "commit": { "type": ["string", "null"] }
+      }
+    },
+    "system": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": ["string", "null"] },
+        "commit": { "type": ["string", "null"] }
+      }
+    },
+    "dataset": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": ["string", "null"] },
+        "sha256": { "type": ["string", "null"] }
+      }
+    },
+    "environment_digest": {
+      "type": ["string", "null"],
+      "description": "Digest of environment.json, so two summaries can be checked for environment equality without shipping the whole capture."
+    },
+    "headline": {
+      "type": "object",
+      "description": "The numbers a report leads with, each already aggregated across repetitions.",
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "number" },
+          { "type": "string" },
+          {
+            "type": "object",
+            "required": ["absent"],
+            "additionalProperties": false,
+            "properties": {
+              "absent": { "type": "string", "enum": ["unsupported", "unavailable", "not_collected", "invalid"] },
+              "detail": { "type": "string" }
+            }
+          }
+        ]
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Known limitations of this result, published alongside it rather than discovered later."
+    }
+  }
+}

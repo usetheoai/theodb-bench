@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "status": "VALID",
+  "checks": [
+    { "id": "sut_alive", "description": "System under test did not crash.", "outcome": "PASS", "required": true },
+    { "id": "operation_count", "description": "Observed operations match the declared window.", "outcome": "PASS", "required": true, "observed": 1500000, "expected": 1500000 },
+    { "id": "timeout_rate", "outcome": "PASS", "required": true, "observed": 0.0 },
+    { "id": "perf_counters", "description": "Hardware counters collected.", "outcome": "UNAVAILABLE", "required": false, "detail": "perf_event_paranoid=3" }
+  ],
+  "invalidated_by": []
+}

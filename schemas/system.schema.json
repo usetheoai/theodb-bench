@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theodb.dev/schemas/system.schema.json",
+  "title": "System under test",
+  "description": "Adapter identity, declared capabilities and the effective configuration that was actually in force (TRD sections 27 and 28).",
+  "type": "object",
+  "required": ["schema_version", "system", "capabilities"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "system": { "type": "string", "pattern": "^[a-z0-9]+(?:[-_][a-z0-9]+)*$" },
+    "version": { "type": ["string", "null"] },
+    "commit": { "type": ["string", "null"] },
+    "dirty": { "type": ["boolean", "null"] },
+    "capabilities": {
+      "type": "object",
+      "description": "Declared support per workload feature. A false capability yields an explicit unsupported result, never a failure or a fabricated number.",
+      "additionalProperties": { "type": "boolean" }
+    },
+    "effective_configuration": {
+      "type": "object",
+      "description": "Settings actually in force, as reported by the system itself rather than as requested. Comparative reports must show material differences between systems.",
+      "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+    },
+    "index_configuration": {
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+    },
+    "durability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "synchronous_commit": { "type": ["string", "boolean", "null"] },
+        "fsync": { "type": ["string", "boolean", "null"] },
+        "notes": { "type": "string" }
+      }
+    },
+    "resource_limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu_set": { "type": ["string", "null"] },
+        "cpu_quota": { "type": ["number", "null"] },
+        "memory_bytes": { "type": ["integer", "null"] },
+        "numa_node": { "type": ["integer", "null"] }
+      }
+    }
+  }
+}

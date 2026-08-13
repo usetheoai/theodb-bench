@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "run_id": "20260812T231000Z-vector-sift1m-theodb-abc123",
+  "status": "VALID",
+  "profile": "release",
+  "publishable": true,
+  "benchmark": { "id": "vector/sift1m/hnsw", "version": 1, "commit": "c103d06" },
+  "system": { "id": "theodb", "version": "0.1.0", "commit": "deadbeef" },
+  "dataset": { "id": "sift1m", "version": "1", "sha256": "1111111111111111111111111111111111111111111111111111111111111111" },
+  "environment_digest": "sha256:abc",
+  "headline": {
+    "recall_at_10": 0.983,
+    "throughput_per_second": 400.0,
+    "cycles_per_query": { "absent": "unavailable", "detail": "perf events not permitted" }
+  },
+  "limitations": ["Single host; no cross-NUMA measurement."]
+}

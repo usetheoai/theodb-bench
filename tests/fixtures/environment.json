@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-08-12T23:10:00Z",
+  "hostname": "bench-01",
+  "cpu": {
+    "vendor": "GenuineIntel",
+    "model": "Intel(R) Core(TM) i7-9750H",
+    "microarchitecture": { "absent": "unavailable", "detail": "not derivable from /proc/cpuinfo" },
+    "sockets": 1,
+    "physical_cores": 6,
+    "logical_cpus": 12,
+    "smt_enabled": true,
+    "frequency_policy": "powersave",
+    "numa_nodes": 1
+  },
+  "memory": { "total_bytes": 16490831872, "swap_total_bytes": 2147483648 },
+  "storage": [
+    { "device": "/dev/nvme0n1p2", "mountpoint": "/", "filesystem": "ext4", "capacity_bytes": 500107862016 }
+  ],
+  "software": {
+    "os": "Ubuntu 22.04.5 LTS",
+    "kernel": "6.8.0-136-generic",
+    "python": "3.10.12",
+    "postgres": { "absent": "unavailable", "detail": "pg_config not on PATH" },
+    "theodb": { "absent": "unavailable" },
+    "container_runtime": "docker",
+    "benchmark_runner": "theodb-bench 0.1.0.dev0"
+  },
+  "capabilities": { "perf_events": true, "cgroup_v2": true, "cpu_affinity": true, "numa_control": false },
+  "source_control": { "benchmark_commit": "c103d06", "benchmark_dirty": false }
+}

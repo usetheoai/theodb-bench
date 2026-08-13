@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "candidate_run_id": "20260812T231000Z-vector-sift1m-theodb-abc123",
+  "baseline": {
+    "run_id": "20260801T120000Z-vector-sift1m-theodb-aaa111",
+    "benchmark_id": "vector/sift1m/hnsw",
+    "benchmark_version": 1,
+    "profile": "pr",
+    "system": "theodb",
+    "hardware_class": "bench-01",
+    "accepted_commit": "aaa111"
+  },
+  "comparability": {
+    "comparable": true,
+    "checks": [
+      { "field": "benchmark_version", "matches": true, "candidate": 1, "baseline": 1 },
+      { "field": "hardware_class", "matches": true, "candidate": "bench-01", "baseline": "bench-01" }
+    ]
+  },
+  "noise_floor": { "source_runs": 12, "metric_cv": { "throughput_per_second": 0.012 }, "measured_at": "2026-08-10T00:00:00Z" },
+  "gates": [
+    { "metric": "throughput_per_second", "direction": "higher_is_better", "candidate": 400.0, "baseline": 398.0, "delta_pct": 0.5, "max_regression_pct": 3.0, "threshold_source": "measured_noise_floor", "outcome": "PASS" }
+  ],
+  "verdict": "PASS"
+}

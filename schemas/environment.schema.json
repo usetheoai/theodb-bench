@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theodb.dev/schemas/environment.schema.json",
+  "title": "Environment capture",
+  "description": "What makes two runs comparable (TRD section 10). Every field may be an absence record rather than a value; a missing capability is stated, never zeroed.",
+  "type": "object",
+  "required": ["schema_version", "captured_at", "hostname", "cpu", "memory", "software"],
+  "additionalProperties": false,
+  "$defs": {
+    "absent": {
+      "type": "object",
+      "required": ["absent"],
+      "additionalProperties": false,
+      "properties": {
+        "absent": { "type": "string", "enum": ["unsupported", "unavailable", "not_collected", "invalid"] },
+        "detail": { "type": "string" }
+      }
+    },
+    "maybe_integer": {
+      "oneOf": [{ "type": "integer" }, { "$ref": "#/$defs/absent" }]
+    },
+    "maybe_string": {
+      "oneOf": [{ "type": "string" }, { "$ref": "#/$defs/absent" }]
+    },
+    "maybe_boolean": {
+      "oneOf": [{ "type": "boolean" }, { "$ref": "#/$defs/absent" }]
+    }
+  },
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "captured_at": { "type": "string", "format": "date-time" },
+    "hostname": { "type": "string" },
+    "cpu": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "vendor": { "$ref": "#/$defs/maybe_string" },
+        "model": { "$ref": "#/$defs/maybe_string" },
+        "microarchitecture": { "$ref": "#/$defs/maybe_string" },
+        "sockets": { "$ref": "#/$defs/maybe_integer" },
+        "physical_cores": { "$ref": "#/$defs/maybe_integer" },
+        "logical_cpus": { "$ref": "#/$defs/maybe_integer" },
+        "smt_enabled": { "$ref": "#/$defs/maybe_boolean" },
+        "frequency_policy": { "$ref": "#/$defs/maybe_string" },
+        "numa_nodes": { "$ref": "#/$defs/maybe_integer" },
+        "cache": {
+          "oneOf": [
+            { "type": "object", "additionalProperties": { "type": "string" } },
+            { "$ref": "#/$defs/absent" }
+          ]
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "total_bytes": { "$ref": "#/$defs/maybe_integer" },
+        "swap_total_bytes": { "$ref": "#/$defs/maybe_integer" },
+        "hugepages": { "$ref": "#/$defs/maybe_string" },
+        "numa_distribution": {
+          "oneOf": [
+            { "type": "object", "additionalProperties": { "type": "integer" } },
+            { "$ref": "#/$defs/absent" }
+          ]
+        }
+      }
+    },
+    "storage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "device": { "type": "string" },
+          "mountpoint": { "type": "string" },
+          "filesystem": { "type": "string" },
+          "mount_options": { "type": "string" },
+          "capacity_bytes": { "$ref": "#/$defs/maybe_integer" },
+          "rotational": { "$ref": "#/$defs/maybe_boolean" }
+        }
+      }
+    },
+    "software": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "os": { "$ref": "#/$defs/maybe_string" },
+        "kernel": { "$ref": "#/$defs/maybe_string" },
+        "libc": { "$ref": "#/$defs/maybe_string" },
+        "compiler": { "$ref": "#/$defs/maybe_string" },
+        "rust_toolchain": { "$ref": "#/$defs/maybe_string" },
+        "python": { "$ref": "#/$defs/maybe_string" },
+        "postgres": { "$ref": "#/$defs/maybe_string" },
+        "theodb": { "$ref": "#/$defs/maybe_string" },
+        "container_runtime": { "$ref": "#/$defs/maybe_string" },
+        "benchmark_runner": { "type": "string" }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Host facilities the isolation and telemetry layers depend on.",
+      "properties": {
+        "perf_events": { "$ref": "#/$defs/maybe_boolean" },
+        "cgroup_v2": { "$ref": "#/$defs/maybe_boolean" },
+        "cpu_affinity": { "$ref": "#/$defs/maybe_boolean" },
+        "numa_control": { "$ref": "#/$defs/maybe_boolean" }
+      }
+    },
+    "source_control": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "benchmark_commit": { "$ref": "#/$defs/maybe_string" },
+        "benchmark_dirty": { "$ref": "#/$defs/maybe_boolean" }
+      }
+    }
+  }
+}
