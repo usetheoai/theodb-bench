@@ -1,0 +1,74 @@
+# Dedicated benchmark runner.
+#
+# Manual and scheduled only. A performance claim needs known hardware, a
+# controlled background, an exclusive lock and a measured noise floor; none of
+# those exist on a shared runner, so this workflow targets a self-hosted
+# machine labelled `benchmark`.
+#
+# The job does not run on pull_request. An untrusted contribution must never
+# execute automatically on privileged benchmark hardware (TRD section 25).
+name: benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      benchmark:
+        description: Benchmark id
+        required: true
+        default: vector/synthetic/sweep
+      system:
+        description: System under test
+        required: true
+        default: fake
+      profile:
+        description: Profile
+        required: true
+        default: nightly
+        type: choice
+        options: [pr, nightly, release]
+      repetitions:
+        description: Repetitions (blank uses the benchmark default)
+        required: false
+  schedule:
+    # Nightly, off-peak for the runner's timezone.
+    - cron: "0 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  # One benchmark at a time on the hardware: two runs sharing a host measure
+  # each other.
+  group: benchmark-hardware
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: [self-hosted, benchmark]
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install
+        run: pip install -e ".[dev,postgres,datasets]"
+
+      - name: Preflight must pass for this profile
+        run: theodb-bench doctor --profile "${{ inputs.profile || 'nightly' }}"
+
+      - name: Run
+        run: |
+          theodb-bench run "${{ inputs.benchmark || 'vector/synthetic/sweep' }}" \
+            --system "${{ inputs.system || 'fake' }}" \
+            --profile "${{ inputs.profile || 'nightly' }}" \
+            ${{ inputs.repetitions && format('--repetitions {0}', inputs.repetitions) || '' }} \
+            --perf \
+            --output results
+
+      - name: Retain the raw bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ github.run_id }}
+          path: results
+          # Raw measurements are part of the result, not a debugging aid.
+          retention-days: 90
