@@ -60,6 +60,11 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "PTH", "RUF", "S
 [tool.ruff.lint.per-file-ignores]
 # Tests spawn subprocesses and assert on them by design.
 "tests/**" = ["S101", "S603", "S607"]
+# S608: table and column names cannot be bound as query parameters, so they are
+# composed into the SQL -- but only after passing _identifier(), which accepts
+# nothing but alphanumerics and underscores and raises otherwise. Every value is
+# bound. The check is enforced by test_identifiers_that_are_not_identifiers_are_refused.
+"src/adapters/postgres.py" = ["S608"]
 
 [tool.mypy]
 python_version = "3.10"
