@@ -42,6 +42,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   recall@n, latency percentiles, best-of-N throughput, aggregation that keeps
   every repetition, stability detection, Pareto frontiers and matched-quality
   selection.
+- Reciprocal rank fusion, as an offline twin of the system's own fusion so the
+  two can be compared rather than one trusted.
+- Retrieval suite: lexical, dense, hybrid RRF and hybrid plus rerank over one
+  corpus and one query set, reporting nDCG@10, Recall@k and MRR alongside
+  throughput, with model latency in its own stage.
 - Regression comparison that fails closed on an incomparable baseline and
   reports ADVISORY for any threshold not derived from a measured noise floor.
 - Reports in both halves: a human report that leads with status and profile,

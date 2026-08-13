@@ -24,6 +24,8 @@ Verified by running it, not by reading the code.
 | Analysis: recall, nDCG, MRR, percentiles, best-of-N, aggregation, stability | **done** |
 | Pareto frontier + matched quality | **done** |
 | Regression comparison, fails closed, advisory thresholds | **done** |
+| Reciprocal rank fusion (offline twin) | **done** |
+| Retrieval suite: lexical, dense, hybrid RRF, hybrid+rerank | **done** |
 | Reports: markdown + machine summary | **done** |
 | CLI: doctor, env, profiles, schema, list, describe, dataset, run, report, compare, validate | **done** |
 | CI: shared correctness + dedicated benchmark workflow | **done** |
@@ -58,7 +60,6 @@ rather than half-present.
 |---|---|---|
 | Agent workload suite | `AGENT-WORKLOAD.md`, TRD §12 | The methodology is settled; the workload needs a memory schema and reference agent trajectories, which are open questions in that document. |
 | Paired significance testing | `STATISTICS.md` | Specified in full. **Until it exists, no comparative significance claim may be made from this framework.** |
-| Retrieval suite (lexical, hybrid RRF, rerank) | PRD §9.2, TRD §14 | Quality metrics (nDCG, MRR, recall@n) are implemented and tested; the pipelines and a corpus with judgements are not. |
 | Analytical / columnar / Parquet | PRD §9.3, TRD §15–16 | Requires a TheoDB instance with the columnar TAM and Parquet paths. |
 | Graph traversal | PRD §9.4, TRD §17 | Requires TheoDB's persisted CSR. |
 | Vectorizer / operations | PRD §9.5, TRD §18 | Requires TheoDB's background workers; the two-clock design (foreground write vs time-to-freshness) is specified. |
@@ -79,8 +80,16 @@ rather than half-present.
 - **Escape detection samples procfs.** A process that forks and exits between
   two samples can be missed. This is a property of the kernel interface and is
   stated rather than hidden.
-- **The synthetic corpus is Gaussian noise.** It exercises the pipeline. It
-  does not resemble embeddings, and no quality claim should be read from it.
+- **The synthetic corpora are synthetic.** The vector corpus is Gaussian
+  noise; the retrieval corpus draws from a 28-term vocabulary with
+  constructed judgements. Both exercise the pipeline and the metrics. Neither
+  resembles real data, and no quality claim about any system should be read
+  from them. The retrieval numbers they produce are differentiated across
+  pipelines, which is what makes them useful for testing the framework and
+  useless as evidence.
+- **The lexical leg in the fake adapter is term-frequency scoring, not
+  BM25.** It is named accordingly, so nobody compares its numbers with a real
+  BM25 implementation.
 
 ## What must never be added
 
