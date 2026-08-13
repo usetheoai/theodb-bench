@@ -1,6 +1,25 @@
-# TheoDB Bench
+<div align="center">
 
-**Reproducible performance benchmarking for TheoDB.**
+<img src="./assets/banner.svg" alt="TheoDB Bench — reproducible performance benchmarking for TheoDB" width="100%" />
+
+**Evidence, not wins — a result produced here stays valid when TheoDB _loses_.**
+
+`doctor` · `run` · `validate` · `report` · `compare` — one CLI, immutable run bundles, versioned schemas.
+Runs end to end with no database. Apache-2.0.
+
+[![License](https://img.shields.io/badge/license-Apache--2.0-0EA5E9?style=flat-square)](./LICENSE)
+[![Python](https://img.shields.io/badge/python-%E2%89%A53.10-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
+[![Tests](https://img.shields.io/badge/tests-627%20passing-brightgreen?style=flat-square)](#development)
+[![Typing](https://img.shields.io/badge/mypy-strict-2A6DB0?style=flat-square)](#development)
+[![Schemas](https://img.shields.io/badge/schemas-11%20versioned-22D3EE?style=flat-square)](#what-a-run-produces)
+[![Surfaces](https://img.shields.io/badge/surfaces-6%20measured-06B6D4?style=flat-square)](#what-it-measures)
+[![Status](https://img.shields.io/badge/status-experimental-orange?style=flat-square)](docs/STATUS.md)
+
+**Part of [Theo](https://usetheo.dev) — the open platform for AI agents.**
+
+</div>
+
+---
 
 Most database benchmarks answer "how fast did this run on my machine?". This one
 is built to answer a stricter question:
@@ -8,12 +27,36 @@ is built to answer a stricter question:
 > Can another engineer reproduce this result, verify the comparison was fair,
 > inspect the raw measurements, and see exactly what was tested?
 
-A result produced here stays valid when TheoDB **loses**. That is the point: the
-framework exists to make evidence trustworthy, not to make numbers favourable.
+That question is why the framework refuses more than it reports: it will not
+invent an unavailable metric, accept a timing that came with a wrong answer, or
+compare across a baseline that is not comparable.
 
 > **Status: experimental.** The protocol is not frozen. Nothing produced before a
 > release protocol is declared may be treated as an authoritative product claim.
 > See [`docs/STATUS.md`](docs/STATUS.md) for exactly what works today.
+
+---
+
+## Contents
+
+**Start here** — [Quick start](#quick-start) · [Step by step](#step-by-step) · [What it measures](#what-it-measures)
+
+**Run it for real** — [Against a database](#running-against-a-real-database) · [Against a dataset](#running-against-a-real-dataset) · [Profiles](#profiles)
+
+**Understand it** — [What a run produces](#what-a-run-produces) · [What it refuses to do](#what-this-framework-refuses-to-do) · [Layout](#repository-layout)
+
+**Contribute** — [Development](#development) · [Contributing](#contributing) · [Licence](#licence)
+
+| Document | What it covers |
+|---|---|
+| [`docs/STATUS.md`](docs/STATUS.md) | What works, what is written but unexercised, what is deliberately absent |
+| [`docs/methodology/PROTOCOL.md`](docs/methodology/PROTOCOL.md) | The eleven phases, validation, and what invalidates a run |
+| [`docs/methodology/FAIRNESS.md`](docs/methodology/FAIRNESS.md) | Rules for comparing systems, and the traps already found |
+| [`docs/methodology/STATISTICS.md`](docs/methodology/STATISTICS.md) | Aggregation, stability, noise floor, paired significance |
+| [`docs/methodology/MEASUREMENT-INTEGRITY.md`](docs/methodology/MEASUREMENT-INTEGRITY.md) | 23 invariants, each from a real measurement defect |
+| [`docs/methodology/AGENT-WORKLOAD.md`](docs/methodology/AGENT-WORKLOAD.md) | The primary surface: why the agent step, not the query |
+| [`docs/methodology/HARDWARE.md`](docs/methodology/HARDWARE.md) | Preparing a host whose numbers mean something |
+| [`docs/methodology/PUBLICATION.md`](docs/methodology/PUBLICATION.md) | What it takes to turn a measurement into a claim |
 
 ---
 
