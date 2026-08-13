@@ -639,13 +639,77 @@ Closed-loop and open-loop workloads MUST be identified explicitly.
 
 ---
 
-## 12. Vector benchmark design
+## 12. Agent workload benchmark design
 
-### 12.1 Correctness ground truth
+This is the **primary** benchmark surface. TheoDB is built for agents, and the sections that follow (§13–§18) describe the component surfaces that explain why this one moves.
+
+Full methodology: `docs/methodology/AGENT-WORKLOAD.md`.
+
+### 12.1 Unit of measurement
+
+The unit is the **agent step**, not the query. A step assembles context from the database through several retrievals (vector, lexical, graph — filtered by agent/session/tenant), calls a model, and writes back observations that must be retrievable on the next step.
+
+The database is exercised in context assembly and write-back. Model latency MUST NOT be attributed to the database (§14, §18).
+
+### 12.2 Headline metric
+
+**Step assembly latency:** p50/p95/p99/p99.9 of the composite of every database call within one step — not the throughput of any individual leg.
+
+A per-leg breakdown MUST accompany it, so a regression is attributable. The composite MUST be measured under real intra-step concurrency; summing independently measured legs reports a step that never happened.
+
+### 12.3 Required measurements
+
+Deterministic, gate-able, executed against the `mock` endpoint (§18):
+
+```text
+step_assembly_p50/p95/p99/p99.9
+per_leg_breakdown
+filtered_recall × selectivity sweep
+filtered_latency × selectivity sweep
+read_your_writes_staleness_window
+read_your_writes_failure_rate @ step gap
+concurrent_agents sweep (M agents, disjoint working sets)
+read_write_interference_delta (loaded vs quiesced)
+```
+
+Model-dependent, executed against a `local` frozen model, marked environment-dependent and never backing an automatic gate:
+
+```text
+task_success_rate
+cost_per_step (tokens + database CPU)
+```
+
+### 12.4 Filtered retrieval is the default case
+
+Per-tenant/session filtering applies to essentially every agent retrieval. Filter selectivity MUST be a swept axis, never a single point: graph-based indexes degrade sharply as selectivity drops, and pre-filter versus post-filter strategy dominates the result.
+
+### 12.5 Read-your-writes is a correctness property
+
+A benchmark spec MUST declare a staleness bound per pipeline. "Eventually retrievable" is not a bound.
+
+An observation written at step *N* and not retrievable within the declared bound is a **lost write from the agent's perspective**, not a slow result. Violating the bound marks the run `INVALID` at phase 9 (§6), not merely unfavorable.
+
+### 12.6 Warm-up policy
+
+Many agents holding small working sets is a cold-ish regime by construction. Warm-up MUST NOT load every tenant's data into cache — that measures a system that will not exist in production. The warm-up policy MUST be declared and MUST be justified against the working-set model of the workload.
+
+### 12.7 Failed steps
+
+Timeouts, empty retrievals, and constraint violations are counted and reported separately. A failed step MUST NOT enter the latency distribution as if it had succeeded.
+
+### 12.8 Mock endpoint profile
+
+The `mock` endpoint MUST have a declared, non-zero latency profile. A zero-latency model changes the concurrency regime of the whole loop and flatters any system that overlaps I/O with inference.
+
+---
+
+## 13. Vector benchmark design
+
+### 13.1 Correctness ground truth
 
 Each ANN dataset MUST provide or generate exact nearest-neighbor ground truth.
 
-### 12.2 Parameter sweeps
+### 13.2 Parameter sweeps
 
 HNSW example dimensions:
 
@@ -668,7 +732,7 @@ quantization
 k
 ```
 
-### 12.3 Required outputs
+### 13.3 Required outputs
 
 Per configuration:
 
@@ -687,7 +751,7 @@ instructions
 cache_misses
 ```
 
-### 12.4 Pareto calculation
+### 13.4 Pareto calculation
 
 A point is dominated when another configuration is:
 
@@ -697,13 +761,13 @@ A point is dominated when another configuration is:
 
 Reports SHOULD display the non-dominated frontier.
 
-### 12.5 Matched-recall comparison
+### 13.5 Matched-recall comparison
 
 When presenting a headline QPS comparison, the report MUST state the target recall and the interpolation/selection method.
 
 ---
 
-## 13. Retrieval benchmark design
+## 14. Retrieval benchmark design
 
 Dataset abstraction:
 
@@ -742,7 +806,7 @@ The benchmark MUST NOT attribute external model latency to the database engine w
 
 ---
 
-## 14. Analytical benchmark design
+## 15. Analytical benchmark design
 
 Execution modes:
 
@@ -778,7 +842,7 @@ The project MUST avoid using official TPC branding in a way that implies audited
 
 ---
 
-## 15. Graph benchmark design
+## 16. Graph benchmark design
 
 Dataset fields:
 
@@ -817,7 +881,7 @@ build time
 
 ---
 
-## 16. Vectorizer benchmark design
+## 17. Vectorizer benchmark design
 
 Two clocks must be measured:
 
@@ -845,7 +909,7 @@ Saturation tests SHOULD increase foreground write rate until worker backlog grow
 
 ---
 
-## 17. AI SQL benchmark design
+## 18. AI SQL benchmark design
 
 External inference creates reproducibility risk.
 
@@ -869,7 +933,7 @@ NL-to-SQL quality runs SHOULD validate generated/executed SQL against an expecte
 
 ---
 
-## 18. PostgreSQL telemetry
+## 19. PostgreSQL telemetry
 
 Where available, the TheoDB/PostgreSQL adapter SHOULD capture:
 
@@ -887,7 +951,7 @@ For release runs, telemetry overhead SHOULD be measured or collectors MAY run on
 
 ---
 
-## 19. Linux telemetry
+## 20. Linux telemetry
 
 Optional collectors:
 
@@ -906,7 +970,7 @@ Perf event availability differs by kernel and host policy. Missing events MUST b
 
 ---
 
-## 20. Statistical processing
+## 21. Statistical processing
 
 For each benchmark point:
 
@@ -926,7 +990,7 @@ Invalidation MUST be based on protocol criteria, not the measured outcome.
 
 ---
 
-## 21. Regression model
+## 22. Regression model
 
 A baseline is identified by:
 
@@ -961,7 +1025,7 @@ Actual thresholds MUST be derived after measuring runner variance.
 
 ---
 
-## 22. Profiles
+## 23. Profiles
 
 ### Smoke
 
@@ -1010,7 +1074,7 @@ publishable: yes
 
 ---
 
-## 23. CI architecture
+## 24. CI architecture
 
 Normal GitHub-hosted shared runners SHOULD NOT be treated as authoritative for small performance changes.
 
@@ -1041,7 +1105,7 @@ A dedicated runner SHOULD have:
 
 ---
 
-## 24. Security
+## 25. Security
 
 Benchmark adapters execute database binaries and external processes.
 
@@ -1056,7 +1120,7 @@ Requirements:
 
 ---
 
-## 25. Dataset management
+## 26. Dataset management
 
 Manifest example:
 
@@ -1085,7 +1149,7 @@ Large public datasets SHOULD NOT be committed directly to Git.
 
 ---
 
-## 26. Adapter contract
+## 27. Adapter contract
 
 Each adapter MUST expose machine-readable capabilities.
 
@@ -1109,7 +1173,7 @@ Unsupported workload features MUST produce a clear "unsupported" result, not a f
 
 ---
 
-## 27. Fair configuration contract
+## 28. Fair configuration contract
 
 Adapters SHOULD export the full effective configuration.
 
@@ -1131,7 +1195,7 @@ The comparison report MUST show material differences between systems.
 
 ---
 
-## 28. Testing the benchmark itself
+## 29. Testing the benchmark itself
 
 TheoDB Bench requires its own tests.
 
@@ -1165,7 +1229,7 @@ The runner SHOULD measure its own overhead for selected collectors.
 
 ---
 
-## 29. Publication model
+## 30. Publication model
 
 A published result SHOULD consist of:
 
@@ -1189,7 +1253,7 @@ Corrections SHOULD create a new report and mark the earlier result superseded.
 
 ---
 
-## 30. Initial implementation sequence
+## 31. Initial implementation sequence
 
 ### Stage 1 — Core
 
@@ -1244,7 +1308,7 @@ Only then expand to retrieval, analytical, graph, operations, and AI.
 
 ---
 
-## 31. Definition of done for v0.1
+## 32. Definition of done for v0.1
 
 `theodb-bench v0.1` is complete when a third party can:
 
@@ -1261,7 +1325,7 @@ Only then expand to retrieval, analytical, graph, operations, and AI.
 
 ---
 
-## 32. Definition of done for 1.0
+## 33. Definition of done for 1.0
 
 1. schemas are stable;
 2. benchmark protocol is versioned;
