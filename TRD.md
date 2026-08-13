@@ -190,11 +190,18 @@ A run MAY be analyzed again without rerunning the workload.
 
 ## 4. Repository layout
 
+This section is the **canonical** layout. PRD §15 and the README hold a shallower public view of the same tree; where they diverge, this section wins and the other two are corrected to match.
+
 ```text
 theodb-bench/
 ├── README.md
 ├── PRD.md
 ├── TRD.md
+├── CLAUDE.md
+│
+├── docs/
+│   ├── methodology/          # how a measurement is made honest
+│   └── decisions/            # ADRs, numbered
 │
 ├── cmd/
 │   └── theodb-bench/
