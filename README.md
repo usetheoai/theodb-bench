@@ -91,9 +91,17 @@ A faster function is evidence about that function, not automatically about the d
 
 ## Benchmark surfaces
 
-TheoDB Bench is organized around seven surfaces.
+TheoDB is built for agents, so the primary surface is the agent workload itself — what an agent exercises on every step.
 
-| Surface | Examples | Primary outputs |
+| Primary surface | Examples | Primary outputs |
+|---|---|---|
+| Agent workload | step assembly, filtered memory retrieval, read-your-writes, concurrent agents | step tail latency × context quality × staleness |
+
+Measuring only the parts does not describe the whole: a system can win on per-query throughput and lose the agent step. See `docs/methodology/AGENT-WORKLOAD.md`.
+
+The seven component surfaces below explain why the primary surface moves. They do not substitute for it.
+
+| Component surface | Examples | Primary outputs |
 |---|---|---|
 | Vector ANN | HNSW, IVFFlat, quantization | recall × QPS/latency/memory |
 | Retrieval | lexical, vector, RRF, rerank | nDCG/Recall/MRR × performance |
