@@ -53,6 +53,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Operations suite measuring the foreground write clock and the
   time-to-freshness clock separately, across insert, update, backlog drain and
   worker saturation.
+- Graph suite: 1/2/3-hop, BFS, fanout sweep, build and rebuild, with every
+  traversal validated against an oracle before its timing is accepted.
+- Analytical suite comparing row, columnar and Parquet execution on identical
+  data, with per-stage timings and answer validation.
+- Paired significance testing: randomisation test, bootstrap confidence
+  interval and t-test cross-check, with Monte-Carlo correction and a fixed
+  seed. Comparative significance claims are now possible rather than
+  forbidden.
 - Regression comparison that fails closed on an incomparable baseline and
   reports ADVISORY for any threshold not derived from a measured noise floor.
 - Reports in both halves: a human report that leads with status and profile,

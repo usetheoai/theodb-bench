@@ -77,6 +77,7 @@ Two properties are mandatory when that test is implemented:
 - **Effect size, not only `p`:** mean difference, Cohen's dz, and
   wins/losses/ties.
 
-> **Status.** Paired significance testing is specified here and not yet
-> implemented. Until it is, no comparative significance claim may be made from
-> this framework's output.
+> **Status.** Implemented in `theodb_bench.analysis.significance`. SciPy is
+> optional: without it the t-test cross-check uses a normal approximation, and
+> the artifact records which method produced the p-value rather than leaving a
+> reader to assume the exact distribution was used.

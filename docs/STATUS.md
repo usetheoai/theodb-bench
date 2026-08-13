@@ -28,6 +28,9 @@ Verified by running it, not by reading the code.
 | Retrieval suite: lexical, dense, hybrid RRF, hybrid+rerank | **done** |
 | AI endpoints: mock / local / remote, with gate eligibility enforced | **done** |
 | Operations suite: foreground clock vs freshness clock, 5 workloads | **done** |
+| Graph suite: 1/2/3-hop, BFS, fanout sweep, build, rebuild, bounded expansion | **done** |
+| Analytical suite: row vs columnar vs Parquet on identical data | **done** |
+| Paired significance testing (randomisation, bootstrap CI, t-test) | **done** |
 | Reports: markdown + machine summary | **done** |
 | CLI: doctor, env, profiles, schema, list, describe, dataset, run, report, compare, validate | **done** |
 | CI: shared correctness + dedicated benchmark workflow | **done** |
@@ -61,11 +64,22 @@ rather than half-present.
 | Item | Where specified | Why not yet |
 |---|---|---|
 | Agent workload suite | `AGENT-WORKLOAD.md`, TRD §12 | The methodology is settled and its two hardest pieces now exist as parts: the freshness clock (operations suite) is read-your-writes, and the mock endpoint provides the declared non-zero model latency the surface requires. What is missing is the composite step itself, a memory schema and reference trajectories -- open questions in that document. |
-| Paired significance testing | `STATISTICS.md` | Specified in full. **Until it exists, no comparative significance claim may be made from this framework.** |
-| Analytical / columnar / Parquet | PRD §9.3, TRD §15–16 | Requires a TheoDB instance with the columnar TAM and Parquet paths. The framework hooks exist (adapter capabilities `columnar`, `parquet`); the workload does not. |
-| Graph traversal | PRD §9.4, TRD §17 | Requires TheoDB's persisted CSR. The capability hook exists; the workload does not. |
 | HDF5 ANN dataset loading | TRD §26 | The dataset layer handles any file by checksum; the ANN-Benchmarks HDF5 parser is not written, so only synthetic corpora run today. |
 | Real dataset manifests | `datasets/manifests/` | Deliberately empty. A manifest may not be committed with a checksum that was not computed from the actual bytes. |
+
+## Measured against the fake, not against TheoDB
+
+The graph, analytical, operations and retrieval suites all run end to end and
+are covered by tests, but every number they have produced so far came from the
+fake adapter. The fake's execution-path costs are **declared constants chosen
+to give the paths their characteristic shape**, not measurements of anything.
+
+What that buys: the suites are proven to validate answers, separate stages,
+discard timings that accompany wrong results, and refuse unsupported paths.
+What it does not buy: any statement about TheoDB, pgvector or PostgreSQL. The
+PostgreSQL-family adapters implement the vector surface only; the graph,
+analytical and operations surfaces need adapter methods those systems do not
+have yet.
 
 ## Known limitations of what does exist
 
@@ -90,6 +104,9 @@ rather than half-present.
 - **The lexical leg in the fake adapter is term-frequency scoring, not
   BM25.** It is named accordingly, so nobody compares its numbers with a real
   BM25 implementation.
+- **The fake's background vectorizer is modelled, not threaded.** It consumes
+  the queue at a declared rate as wall time passes, which produces the right
+  shape for testing the two clocks and is not a concurrency model.
 
 ## What must never be added
 

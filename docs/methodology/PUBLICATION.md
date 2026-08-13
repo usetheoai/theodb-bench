@@ -73,6 +73,5 @@ TheoDB is faster **or** slower under a clearly defined workload.
   shows.
 - Throughput without a quality axis is not an approximate-search result.
 - A difference between two medians is not a significant difference; that
-  requires a paired test, which is specified in STATISTICS.md and not yet
-  implemented.
+  requires the paired test in STATISTICS.md, run over per-query values.
 - "TPC-H-derived" is not a TPC result.
