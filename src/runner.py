@@ -28,7 +28,8 @@ from theodb_bench.analysis.statistics import (
     statistics_payload,
     summarise_points,
 )
-from theodb_bench.bench.vector import PointResult, VectorBenchmark, VectorWorkload
+from theodb_bench.bench.protocol import Workload
+from theodb_bench.bench.vector import PointResult
 from theodb_bench.bundle import RunBundle
 from theodb_bench.doctor import run_doctor
 from theodb_bench.environment import capture_environment
@@ -60,7 +61,7 @@ class RunRequest:
     """Everything a run needs, decided before anything is measured."""
 
     benchmark_id: str
-    workload: VectorWorkload
+    workload: Workload
     adapter_factory: AdapterFactory
     profile: Profile = field(default_factory=lambda: get_profile("smoke"))
     benchmark_version: int = 1
@@ -100,23 +101,17 @@ class RunOutcome:
 
 def _benchmark_payload(request: RunRequest) -> dict[str, Any]:
     workload = request.workload
+    warmup = workload.warmup_operations
     return {
         "schema_version": BENCHMARK_SCHEMA_VERSION,
         "id": request.benchmark_id,
         "version": request.benchmark_version,
-        "workload": {
-            "type": "ann",
-            "loop": "closed",
-            "k": [workload.k],
-            "operation_count": workload.query_count,
-        },
+        **workload.benchmark_payload(),
         "warmup": {
-            "policy": "fixed_operations" if workload.warmup_queries else "none",
-            "operations": workload.warmup_queries,
+            "policy": "fixed_operations" if warmup else "none",
+            "operations": warmup,
         },
-        "quality": {"metric": "recall", "ground_truth": "computed"},
         "repetitions": request.repetitions,
-        "parameters": {name: list(values) for name, values in workload.search_sweep.items()},
     }
 
 
@@ -236,7 +231,9 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
     bundle.write_artifact("environment", environment)
     bundle.write_artifact("benchmark", _benchmark_payload(request))
 
-    benchmark = VectorBenchmark(request.workload, request.corpus, request.queries)
+    # The workload builds its own benchmark. The orchestrator names no concrete
+    # family, so a second one is a module rather than an edit here.
+    benchmark = request.workload.build(request.corpus, request.queries)
     collectors = _build_collectors(request)
 
     abort_kind: AbortKind | None = None
@@ -255,8 +252,7 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
         collectors.start()
         # Phases 5 to 8 -- build, warm-up, measurement and repetition, per
         # configuration. Warm-up happens inside run_point and is untimed.
-        for index, search in benchmark.configurations():
-            points.append(benchmark.run_point(adapter, index, search, request.repetitions))
+        points.extend(benchmark.points(adapter, request.repetitions))
         collectors.stop()
 
         bundle.write_artifact("system", adapter.system_payload())
@@ -328,9 +324,7 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
         escaped_processes=escapes,
         cpu_limit_respected=_cpu_limit_respected(applied, escapes),
         memory_limit_respected=applied.memory_limit_applied,
-        quality_reported=any(
-            repetition.recall is not None for point in points for repetition in point.repetitions
-        ),
+        quality_reported=request.workload.quality_was_reported(points),
         quality_required=True,
         telemetry_complete=_telemetry_complete(telemetry),
         dirty_source_tree=_dirty_tree(environment),
@@ -381,8 +375,7 @@ def _expected_operations(request: RunRequest, points: list[PointResult]) -> int 
     measured = [point for point in points if point.status == "measured"]
     if not measured:
         return None
-    sample = request.workload.query_cap or request.workload.query_count
-    return len(measured) * request.repetitions * sample
+    return request.workload.expected_operations(len(measured), request.repetitions)
 
 
 def _escaped_pids(plan: IsolationPlan) -> tuple[int, ...]:
@@ -443,7 +436,7 @@ def _manifest_payload(
         },
         "system": {"id": adapter.system_id},
         "execution": {
-            "warmup_operations": request.workload.warmup_queries,
+            "warmup_operations": request.workload.warmup_operations,
             "repetitions": request.repetitions,
             "loop": "closed",
         },

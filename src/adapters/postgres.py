@@ -638,7 +638,12 @@ class PostgresAdapter(SystemAdapter):
         "group_by_category": (
             "SELECT category, sum(amount) FROM {table} GROUP BY category ORDER BY category"
         ),
-        "filtered_sum": ("SELECT sum(amount) FROM {table} WHERE quantity < 24 AND amount > 0"),
+        # The predicate is the oracle's, read from `expected_answer` rather than
+        # invented: it filters `category = 'a' AND amount > 0`. An earlier version
+        # of this line used `quantity < 24`, copied from a published TPC-H-shaped
+        # query, and the benchmark's own correctness check caught it -- the run
+        # came back INVALID rather than reporting a fast wrong number.
+        "filtered_sum": ("SELECT sum(amount) FROM {table} WHERE category = 'a' AND amount > 0"),
     }
 
     def _analytical_column_types(self) -> str:

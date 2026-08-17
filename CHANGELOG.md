@@ -9,6 +9,30 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The orchestrator depends on a workload protocol, not on one family** (B-067), so the analytical surface can
+  finally be run. `RunRequest.workload` was typed `VectorWorkload` and the runner constructed `VectorBenchmark`
+  by hand, which is why `bench/analytical.py`, `bench/graph.py` and `bench/retrieval.py` had zero importers in
+  `src/` — 336 lines of analytical benchmark with its own oracle, the adapter methods and a four-state residency
+  gate, and no way to invoke any of it. Five questions carried the coupling, and each is one a family should
+  answer about itself: which benchmark to build, what the artefact says, how many operations were expected, how
+  many were warm-up, and **what its quality axis even is**. That last one mattered most: the runner tested
+  `recall is not None`, so an analytical run would have been invalidated for failing to produce a number that
+  does not apply to it — approximate retrieval reports recall per repetition, an analytical answer is right or
+  wrong once.
+- `analytical/synthetic/paths` is a registered suite (B-067): the same seeded rows stored three ways, four
+  aggregations against each, answers checked against the benchmark's own oracle. First VALID run, 200 000 rows
+  on TheoDB: `total_rows` and `sum_amount` are **3.5× faster** on the columnar path, `filtered_sum` is 0.74×,
+  and `group_by_category` is **0.18× — five times slower than heap**, which is the `GROUP BY` pushdown gap
+  measured earlier now carried by a validated bundle rather than by a script. Parquet reports `not measured`
+  on every query, because no adapter implements that path.
+
+### Fixed
+
+- The `filtered_sum` SQL filtered `quantity < 24` while the benchmark's oracle filters `category = 'a'`
+  (B-067). It was copied from a published TPC-H-shaped query without reading the oracle that already existed,
+  and **the harness caught it**: the run came back INVALID on both storage paths rather than reporting a fast
+  wrong number. The oracle did exactly what it is for.
+
 - **`theodb-bench head2head` measures two systems interleaved, query by query** (B-074). A paired test over two
   sequential runs removes the variance of query difficulty and leaves the variance of the machine: measured, the
   same configuration re-run on the same host varied by 24% and 46% in median throughput, and the paired test

@@ -9,6 +9,7 @@ distorts the measurement).
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from collections.abc import Sequence
@@ -18,7 +19,7 @@ from typing import Any, Final
 
 from theodb_bench import __version__
 from theodb_bench.adapters.base import IndexSpec
-from theodb_bench.bench.vector import VectorBenchmark, generate_corpus
+from theodb_bench.bench.vector import VectorBenchmark, VectorWorkload, generate_corpus
 from theodb_bench.bundle import RunBundle
 from theodb_bench.compare import render_paired_verdict
 from theodb_bench.datasets import (
@@ -164,16 +165,15 @@ def cmd_list(args: argparse.Namespace) -> int:
 def cmd_describe(args: argparse.Namespace) -> int:
     entry = get_benchmark(args.benchmark)
     workload = entry.workload
+    # The workload describes itself. Enumerating its fields here would put one
+    # family's vocabulary -- `k`, `dimension`, `search_sweep` -- in front of every
+    # family, and `describe` would start lying about an analytical suite.
     workload_payload: dict[str, object] = {
-        "corpus_size": workload.corpus_size,
-        "dimension": workload.dimension,
-        "query_count": workload.query_count,
-        "k": workload.k,
-        "metric": workload.metric,
-        "seed": workload.seed,
-        "warmup_queries": workload.warmup_queries,
-        "indexes": [index.label() for index in workload.indexes],
-        "search_sweep": {name: list(v) for name, v in workload.search_sweep.items()},
+        **workload.benchmark_payload(),
+        "declared": {
+            key: _describable(value)
+            for key, value in dataclasses.asdict(workload).items()  # type: ignore[call-overload]
+        },
     }
     payload: dict[str, object] = {
         "id": entry.id,
@@ -270,6 +270,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     dataset_id = dataset_version = dataset_sha256 = None
 
     if args.dataset:
+        if not isinstance(workload, VectorWorkload):
+            raise ConfigError(
+                f"`{entry.id}` generates its own data from its seed, and "
+                f"`--dataset {args.dataset}` supplies an ANN corpus. Accepting it "
+                f"would record a dataset identity the run never measured.",
+                context=ErrorContext(phase=Phase.PREFLIGHT),
+            )
         manifest = _dataset_registry(args).load(args.dataset)
         loaded, dataset_sha256 = _load_ann_dataset(manifest, args.dataset_root, workload)
         reduced = loaded.subsample(
@@ -342,6 +349,17 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _describable(value: object) -> object:
+    """Coerce a declared workload field into something JSON can carry."""
+    if isinstance(value, tuple):
+        return [_describable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _describable(v) for k, v in value.items()}
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
 def cmd_head2head(args: argparse.Namespace) -> int:
     """Two systems, same queries, back to back, with the order alternating.
 
@@ -360,9 +378,23 @@ def cmd_head2head(args: argparse.Namespace) -> int:
     """
     entry_a = get_benchmark(args.benchmark_a)
     entry_b = get_benchmark(args.benchmark_b)
+    for entry in (entry_a, entry_b):
+        if not isinstance(entry.workload, VectorWorkload):
+            raise ConfigError(
+                f"head2head interleaves k-NN probes and `{entry.id}` is not a vector "
+                f"benchmark. Interleaving an analytical suite would need a different "
+                f"unit of work on both sides, and pretending otherwise would compare "
+                f"two things that are not the same measurement.",
+                context=ErrorContext(phase=Phase.PREFLIGHT),
+            )
     _require_comparable(entry_a.workload, entry_b.workload)
 
     workload = entry_a.workload
+    if not isinstance(workload, VectorWorkload):  # refused above; narrows the type
+        raise ConfigError(
+            f"`{entry_a.id}` is not a vector benchmark",
+            context=ErrorContext(phase=Phase.PREFLIGHT),
+        )
     corpus, queries = generate_corpus(workload)
     if args.dataset:
         manifest = _dataset_registry(args).load(args.dataset)
@@ -387,7 +419,13 @@ def cmd_head2head(args: argparse.Namespace) -> int:
         adapter.start()
         adapter.wait_ready()
         adapter.load_dataset(spec, corpus)
-        configurations = VectorBenchmark(entry.workload, corpus, queries).configurations()
+        side_workload = entry.workload
+        if not isinstance(side_workload, VectorWorkload):  # already refused above
+            raise ConfigError(
+                f"`{entry.id}` is not a vector benchmark",
+                context=ErrorContext(phase=Phase.PREFLIGHT),
+            )
+        configurations = VectorBenchmark(side_workload, corpus, queries).configurations()
         sides.append((name, adapter, configurations))
 
     print(f"# Head to head: {args.system_a} vs {args.system_b}")

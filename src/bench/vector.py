@@ -95,6 +95,38 @@ class VectorWorkload:
     def table_spec(self) -> VectorTableSpec:
         return VectorTableSpec(table=self.table, dimension=self.dimension, metric=self.metric)
 
+    # ----------------------------------------------------- Workload protocol
+
+    def build(self, corpus: Any, queries: Any) -> VectorBenchmark:
+        if corpus is None or queries is None:
+            corpus, queries = generate_corpus(self)
+        return VectorBenchmark(self, corpus, queries)
+
+    def benchmark_payload(self) -> dict[str, Any]:
+        return {
+            "workload": {
+                "type": "ann",
+                "loop": "closed",
+                "k": [self.k],
+                "operation_count": self.query_count,
+            },
+            "quality": {"metric": "recall", "ground_truth": "computed"},
+            "parameters": {name: list(values) for name, values in self.search_sweep.items()},
+        }
+
+    def expected_operations(self, measured_points: int, repetitions: int) -> int:
+        sample = self.query_cap or self.query_count
+        return measured_points * repetitions * sample
+
+    @property
+    def warmup_operations(self) -> int:
+        return self.warmup_queries
+
+    def quality_was_reported(self, points: list[Any]) -> bool:
+        return any(
+            repetition.recall is not None for point in points for repetition in point.repetitions
+        )
+
 
 def generate_corpus(workload: VectorWorkload) -> tuple[FloatArray, FloatArray]:
     """A seeded corpus and query set.
@@ -378,6 +410,13 @@ class VectorBenchmark:
             result.index_size_bytes = build.index_size_bytes
             point.repetitions.append(result)
         return point
+
+    def points(self, adapter: SystemAdapter, repetitions: int) -> list[PointResult]:
+        """Every configuration measured, in order."""
+        return [
+            self.run_point(adapter, index, search, repetitions)
+            for index, search in self.configurations()
+        ]
 
     def configurations(self) -> list[tuple[IndexSpec, dict[str, Any]]]:
         """Every (index, search parameter) pair this workload declares."""

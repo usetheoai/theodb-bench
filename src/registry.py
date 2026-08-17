@@ -17,6 +17,8 @@ from typing import Any, Final
 
 from theodb_bench.adapters.base import IndexSpec, SystemAdapter
 from theodb_bench.adapters.fake import FakeAdapter
+from theodb_bench.bench.analytical import AnalyticalWorkload
+from theodb_bench.bench.protocol import Workload
 from theodb_bench.bench.vector import VectorWorkload
 from theodb_bench.errors import AdapterError, ConfigError, ErrorContext, Phase
 
@@ -125,11 +127,16 @@ def get_adapter(name: str) -> AdapterEntry:
 
 @dataclass(frozen=True)
 class BenchmarkEntry:
-    """A registered benchmark suite."""
+    """A registered benchmark suite.
+
+    `workload` is typed by the protocol rather than by one family: the
+    orchestrator asks a workload to build its own benchmark, so registering a
+    second family is a module and an entry rather than a change to the runner.
+    """
 
     id: str
     description: str
-    workload: VectorWorkload
+    workload: Workload
     default_repetitions: int = 3
 
 
@@ -380,6 +387,18 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
         default_repetitions=3,
     ),
 }
+
+
+BENCHMARKS["analytical/synthetic/paths"] = BenchmarkEntry(
+    id="analytical/synthetic/paths",
+    description=(
+        "The same seeded rows stored three ways -- heap, columnar, Parquet -- with "
+        "four aggregations run against each. The answer is checked against this "
+        "benchmark's own oracle, so a path that is fast and wrong is caught."
+    ),
+    workload=AnalyticalWorkload(row_count=200_000),
+    default_repetitions=3,
+)
 
 
 def get_benchmark(benchmark_id: str) -> BenchmarkEntry:
