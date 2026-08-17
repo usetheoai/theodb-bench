@@ -9,6 +9,29 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The graph, hybrid and quantized pillars are reachable** (B-073), taking the count from six of fourteen
+  capabilities to **eleven**. Verified against a real server: `theodb.graph_build` folds a CSR over 1 334 edges
+  in 0.04 s (98 KB) and `graph_expand` grows correctly with hops (3 → 6 → 10 vertices); `ai.hybrid_search_rrf`
+  fuses both legs and ranks the document that matches lexically *and* is the query vector first, at 0.0328
+  against a tight 0.0156–0.0161 for the rest.
+- Traversing a graph whose CSR was never folded is **refused** (B-073). `graph_expand` answers with an empty
+  set, and an empty neighbourhood is a legitimate answer for an isolated vertex — the two are
+  indistinguishable after the fact, which is the same shape as the BM25 case.
+- A traversal reports `edges_visited` from `graph_expand_card`, asked of the engine rather than inferred
+  (B-073). A traversal returning few vertices after walking many edges is expensive, and the answer size alone
+  would hide that.
+- **The hybrid leg on the shipped image is `ts_rank_cd`, not BM25**, and the report says so (B-073). Measured:
+  `lexical_engine='bm25'` refuses with *"requires the pg_textsearch extension … not present on the shipped
+  image"* — a clear refusal from the engine rather than a silent fallback. So a hybrid number from this image
+  does not exercise the BM25 index that `load_documents` builds, and the docstring states that rather than
+  letting a reader assume it.
+- The documents table carries a **generated** tsvector column (B-073). Not a choice: `ts_rank_cd` takes a
+  tsvector, so the column has to exist for the fusable leg to work at all. A comment claiming otherwise was
+  written first and corrected by the measurement.
+
+`rerank`, `vectorizer` and `ai_sql` remain undeclared for all three adapters, and that is the state rather than
+an omission: each reaches an external model, and without an endpoint there is nothing to measure.
+
 - **The lexical and Parquet pillars are reachable** (B-073), taking the TheoDB adapter from four declared
   capabilities to six. Both were found by reading `pg_proc` on the running server rather than the docs, and
   neither is where the documentation implied: `bm25_build` / `bm25_search` and `read_parquet` /

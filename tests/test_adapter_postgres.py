@@ -223,7 +223,13 @@ def test_theodb_declares_only_the_surface_it_can_exercise() -> None:
     # `hybrid` needs both legs measured together and is not wired yet; `rerank`,
     # `vectorizer` and `ai_sql` each reach an external model, and without an
     # endpoint there is nothing to measure.
-    for capability in ("hybrid", "graph", "vectorizer", "rerank", "ai_sql"):
+    #  folds the CSR,  walks it.
+    assert adapter.supports("graph")
+    #  fuses both legs; the quantizer reloptions are real
+    # and the pg-scann suite builds with pq_subspaces=64.
+    assert adapter.supports("hybrid")
+    assert adapter.supports("vector_quantized")
+    for capability in ("vectorizer", "rerank", "ai_sql"):
         assert not adapter.supports(capability), capability
 
 

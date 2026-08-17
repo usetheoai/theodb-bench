@@ -30,7 +30,10 @@ from theodb_bench.adapters.base import (
     AnalyticalTable,
     Document,
     DocumentTableSpec,
+    GraphSpec,
+    HybridQuery,
     LexicalQuery,
+    TraversalQuery,
 )
 from theodb_bench.adapters.postgres import TheoDBAdapter
 from theodb_bench.errors import UnsupportedCapabilityError
@@ -75,6 +78,10 @@ class _PillarStub:
             return (1,)
         if "write_parquet" in sql:
             return (len(DOCS),)
+        if "graph_expand_card" in sql:
+            return (7,)
+        if "pg_relation_size" in sql:
+            return (4096,)
         return None
 
     def fetch_all(self, sql: str, parameters: tuple[object, ...] | None = None):
@@ -210,3 +217,83 @@ def test_every_declared_capability_is_still_in_the_vocabulary() -> None:
             continue
         unknown = set(entry.factory().capabilities()) - set(CAPABILITIES)
         assert not unknown, f"{name}: {sorted(unknown)}"
+
+
+# --------------------------------------------------------------------- graph
+#
+# Read from the running server:
+#   theodb.graph_build(edge_rel text, src_col text, dst_col text) -> bigint
+#   theodb.graph_expand(edge_rel text, seeds bigint[], max_hops int) -> SETOF bigint
+#   theodb.graph_expand_card(edge_rel, seeds, max_hops) -> bigint
+
+
+def test_theodb_builds_a_persisted_csr_before_traversing() -> None:
+    server = _PillarStub()
+    server.rows = [(1,), (2,), (5,)]
+    adapter = _wire(server)
+    spec = GraphSpec(name="bench_edges")
+
+    adapter.load_graph(spec, [(0, 1), (1, 2), (2, 5)], vertex_count=6)
+
+    statements = " | ".join(server.executed)
+    assert "graph_build" in statements
+
+
+def test_traversing_a_graph_that_was_never_built_is_refused() -> None:
+    """`graph_expand` over a relation with no persisted CSR would answer with an
+    empty set, which reads as a vertex having no neighbours."""
+    adapter = _wire(_PillarStub())
+
+    with pytest.raises(UnsupportedCapabilityError, match="never built"):
+        adapter.traverse(TraversalQuery(graph="bench_edges", source=0, hops=2))
+
+
+def test_a_traversal_reports_the_work_done_not_only_the_answer() -> None:
+    """`edges_visited` is the cost. A traversal returning few vertices after
+    walking many edges is expensive, and the answer size alone would hide it."""
+    server = _PillarStub()
+    server.rows = [(1,), (2,), (5,)]
+    adapter = _wire(server)
+    spec = GraphSpec(name="bench_edges")
+    adapter.load_graph(spec, [(0, 1), (1, 2), (2, 5)], vertex_count=6)
+
+    result = adapter.traverse(TraversalQuery(graph="bench_edges", source=0, hops=2))
+
+    assert result.vertices == (1, 2, 5)
+    assert result.edges_visited > 0
+
+
+# ------------------------------------------------------- hybrid and quantized
+
+
+def test_theodb_fuses_both_legs_through_its_own_rrf() -> None:
+    """`ai.hybrid_search_rrf` fuses inside the engine. The benchmark also fuses
+    the legs itself, so the engine's fusion is checked rather than trusted."""
+    server = _PillarStub()
+    adapter = _wire(server)
+    spec = DocumentTableSpec(table="pillar_docs", dimension=8)
+    adapter.load_documents(spec, DOCS)
+
+    result = adapter.execute_hybrid(
+        HybridQuery(table="pillar_docs", text="lazy dog", vector=DOCS[0].vector, n=3)
+    )
+
+    statements = " | ".join(server.executed)
+    assert "hybrid_search_rrf" in statements
+    assert result.ids == (0, 2)
+
+
+def test_hybrid_needs_both_legs_loaded() -> None:
+    """Fusing over a corpus that only has text would fuse one leg with nothing."""
+    adapter = _wire(_PillarStub())
+
+    with pytest.raises(UnsupportedCapabilityError, match="never built"):
+        adapter.execute_hybrid(
+            HybridQuery(table="pillar_docs", text="lazy", vector=DOCS[0].vector, n=3)
+        )
+
+
+def test_quantized_indexes_are_declared_because_the_suites_build_them() -> None:
+    """`pq_subspaces`, `sbq_bits` and `rabitq_bits` are real reloptions, and
+    `vector/sift/pg-scann` builds with `pq_subspaces=64`."""
+    assert TheoDBAdapter().supports("vector_quantized")

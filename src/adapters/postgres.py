@@ -57,6 +57,8 @@ from theodb_bench.adapters.base import (
     BuildOutcome,
     Document,
     DocumentTableSpec,
+    GraphSpec,
+    HybridQuery,
     IndexSpec,
     KnnQuery,
     KnnResult,
@@ -64,6 +66,8 @@ from theodb_bench.adapters.base import (
     LoadOutcome,
     RankedResult,
     SystemAdapter,
+    TraversalQuery,
+    TraversalResult,
     VectorArray,
     VectorTableSpec,
 )
@@ -187,6 +191,8 @@ class PostgresAdapter(SystemAdapter):
         #: Tables whose BM25 index was built in this session. Searching one that
         #: was never built is refused rather than answered with zero rows.
         self._lexical_built: set[str] = set()
+        #: Edge relations whose persisted CSR was folded in this session.
+        self._graphs_built: set[str] = set()
 
     # ------------------------------------------------------------ capabilities
 
@@ -1205,6 +1211,14 @@ class TheoDBAdapter(PgvectorAdapter):
             "parquet": True,
             # `bm25_build` on load, `bm25_search` per query.
             "lexical": True,
+            # `theodb.graph_build` folds the CSR, `graph_expand` walks it, and
+            # `graph_expand_card` reports the work done.
+            "graph": True,
+            # `ai.hybrid_search_rrf` fuses both legs inside the engine.
+            "hybrid": True,
+            # `pq_subspaces`, `sbq_bits` and `rabitq_bits` are real reloptions, and
+            # `vector/sift/pg-scann` builds with `pq_subspaces=64`.
+            "vector_quantized": True,
             # `rerank`, `vectorizer` and `ai_sql` stay out: each reaches an
             # external model, and without an endpoint there is nothing to measure.
             # A stub would put a number where an absence belongs.
@@ -1269,15 +1283,25 @@ class TheoDBAdapter(PgvectorAdapter):
         table = _identifier(spec.table)
         text_column = _identifier(spec.text_column)
         vector_column = _identifier(spec.embedding_column)
+        tsv_column = _identifier(f"{spec.text_column}_tsv")
         started = time.perf_counter()
         self._execute(f"DROP TABLE IF EXISTS {table} CASCADE")
         # Both legs in one table: the lexical index reads the text and a dense or
         # hybrid leg reads the vector. Loading only the text would make the
         # hybrid surface unreachable from the same corpus, and comparing two legs
         # over different corpora compares the corpora.
+        # The tsvector is generated, not chosen. Measured on the shipped image:
+        # `ai.hybrid_search_rrf` defaults to `lexical_engine='ts_rank_cd'`, which
+        # calls `ts_rank_cd(tsvector, tsquery)`; and its `'bm25'` engine refuses
+        # outright — "requires the pg_textsearch extension ... not present on the
+        # shipped image". So the fusable lexical leg is ts_rank_cd, and it needs a
+        # tsvector column to exist at all. A generated column keeps it derived from
+        # the text rather than maintained separately.
         self._execute(
             f"CREATE TABLE {table} (id bigint PRIMARY KEY, {text_column} text NOT NULL, "
-            f"{vector_column} {self.column_type(spec.dimension)} NOT NULL)"
+            f"{vector_column} {self.column_type(spec.dimension)} NOT NULL, "
+            f"{tsv_column} tsvector GENERATED ALWAYS AS "
+            f"(to_tsvector('english', {text_column})) STORED)"
         )
         with (
             self._cursor() as cursor,
@@ -1325,6 +1349,118 @@ class TheoDBAdapter(PgvectorAdapter):
             scores=tuple(float(row[1]) for row in rows),
             latency_seconds=elapsed,
         )
+
+    def execute_hybrid(self, query: HybridQuery) -> RankedResult:
+        """Fuse both legs with the engine's own RRF.
+
+        The benchmark fuses the legs offline as well, so the engine's fusion can be
+        compared to a reference rather than trusted -- which is the point of having
+        `analysis/fusion.py` at all.
+
+        The lexical leg here is **ts_rank_cd, not BM25**, and that is a property of
+        the shipped image rather than a choice. Measured: `lexical_engine='bm25'`
+        refuses with "requires the pg_textsearch extension ... not present on the
+        shipped image". So a hybrid number from this image does not exercise the
+        BM25 index that `load_documents` builds, and a report must not imply it
+        does.
+        """
+        if query.table not in self._lexical_built:
+            raise UnsupportedCapabilityError(
+                f"the lexical leg over {query.table} was never built, and fusing one "
+                f"leg with nothing returns the dense ranking under a hybrid label",
+                context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+            )
+        started = time.perf_counter()
+        rows = self._fetch_all(
+            "SELECT id, score FROM ai.hybrid_search_rrf("
+            "tbl => %s::regclass, id_col => 'id', content_tsv_col => %s, "
+            "vector_col => %s, query_text => %s, query_vector => %s::vector, "
+            "result_limit => %s, content_text_col => %s)",
+            (
+                query.table,
+                # The generated tsvector, which is what ts_rank_cd needs.
+                "content_tsv",
+                "embedding",
+                query.text,
+                self._to_column(query.vector),
+                int(query.n),
+                "content",
+            ),
+        )
+        elapsed = time.perf_counter() - started
+        return RankedResult(
+            ids=tuple(int(row[0]) for row in rows),
+            scores=tuple(float(row[1]) for row in rows),
+            latency_seconds=elapsed,
+        )
+
+    # --------------------------------------------------------------- graph
+
+    def load_graph(
+        self, spec: GraphSpec, edges: Sequence[tuple[int, int]], vertex_count: int
+    ) -> BuildOutcome:
+        """Load the edge list and fold it into the persisted CSR.
+
+        The fold is part of loading rather than of traversing, for the same reason
+        the BM25 index is: `graph_expand` over a relation with no CSR answers with
+        an empty set, and an empty neighbourhood is a legitimate answer for an
+        isolated vertex. The two are indistinguishable after the fact.
+        """
+        table = _identifier(spec.name)
+        started = time.perf_counter()
+        self._execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+        self._execute(f"CREATE TABLE {table} (src bigint NOT NULL, dst bigint NOT NULL)")
+        with (
+            self._cursor() as cursor,
+            cursor.copy(f"COPY {table} (src, dst) FROM STDIN") as copy,
+        ):
+            for source, target in edges:
+                copy.write_row((source, target))
+        self._execute(f"ANALYZE {table}")
+        self._execute(f"SELECT theodb.graph_build({_literal(spec.name)}, 'src', 'dst')")
+        self._graphs_built.add(spec.name)
+
+        # Timed as a build, per the contract: folding a CSR is structure work,
+        # and charging it to a query would make every traversal look expensive.
+        size = self._scalar(f"SELECT pg_relation_size({_literal(spec.name)})")
+        return BuildOutcome(
+            seconds=time.perf_counter() - started,
+            index_size_bytes=int(size) if size is not None else None,
+            parameters_in_force={"edges": len(edges), "vertices": vertex_count},
+        )
+
+    def traverse(self, query: TraversalQuery) -> TraversalResult:
+        if query.graph not in self._graphs_built:
+            raise UnsupportedCapabilityError(
+                f"the CSR for {query.graph} was never built in this session, and "
+                f"expanding a graph that has none returns an empty set -- which is "
+                f"also what an isolated vertex returns",
+                context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+            )
+        started = time.perf_counter()
+        rows = self._fetch_all(
+            "SELECT theodb.graph_expand(%s, %s, %s)",
+            (query.graph, [int(query.source)], int(query.hops)),
+        )
+        elapsed = time.perf_counter() - started
+        # The work done, asked of the engine rather than inferred from the answer:
+        # a traversal returning few vertices after walking many edges is expensive,
+        # and the answer size alone would hide that.
+        card = self._fetch_one(
+            "SELECT theodb.graph_expand_card(%s, %s, %s)",
+            (query.graph, [int(query.source)], int(query.hops)),
+        )
+        return TraversalResult(
+            vertices=tuple(int(row[0]) for row in rows),
+            edges_visited=int(card[0]) if card and card[0] is not None else 0,
+            latency_seconds=elapsed,
+        )
+
+    def graph_stats(self) -> dict[str, Any]:
+        """Structure size, for bytes-per-edge accounting."""
+        return {
+            "graphs_built": sorted(self._graphs_built),
+        }
 
     def _search_guc_mapping(self, parameters: dict[str, Any]) -> dict[str, str]:
         """TheoDB's own GUC namespaces, matching the access methods it registers.
