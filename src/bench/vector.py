@@ -123,6 +123,15 @@ class RepetitionResult:
     build_seconds: float | None = None
     index_size_bytes: int | None = None
 
+    #: Latency in milliseconds per query id, for the queries that answered.
+    #:
+    #: Kept, rather than summarised away, because a paired test between two
+    #: systems needs the same query on both sides (I14) and the summary cannot
+    #: supply that. Keyed by query id and not by position: the loop skips queries
+    #: that errored or timed out, so position *i* is not query *i*, and pairing by
+    #: position would misalign every sample after the first timeout.
+    latency_by_query: dict[int, float] = field(default_factory=dict)
+
     @property
     def throughput(self) -> float | None:
         return self.successes / self.duration_seconds if self.duration_seconds > 0 else None
@@ -253,6 +262,7 @@ class VectorBenchmark:
         """One timed pass over the query set."""
         sample = self._sample_size()
         latencies: list[float] = []
+        latency_by_query: dict[int, float] = {}
         returned: list[list[int]] = []
         errors = 0
         timeouts = 0
@@ -275,7 +285,9 @@ class VectorBenchmark:
             except BenchError:
                 errors += 1
                 continue
-            latencies.append(result.latency_seconds * 1000.0)
+            elapsed_ms = result.latency_seconds * 1000.0
+            latencies.append(elapsed_ms)
+            latency_by_query[index] = elapsed_ms
             returned.append(list(result.ids))
         duration = time.perf_counter() - started
 
@@ -287,6 +299,7 @@ class VectorBenchmark:
             duration_seconds=duration,
             latency=summarise_latency(latencies),
             recall=self._recall(returned, sample),
+            latency_by_query=latency_by_query,
         )
 
     # ------------------------------------------------------------------ recall

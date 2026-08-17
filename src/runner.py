@@ -277,6 +277,33 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
         finally:
             adapter.cleanup()
 
+    # Per-query latencies, kept as a raw artefact so `compare` can pair two runs
+    # by query and run the paired test invariant I14 requires. Summaries cannot
+    # be paired, and this is the only place the per-query values exist.
+    bundle.write_raw_text(
+        "latency-by-query.json",
+        _as_json(
+            {
+                "queries_are_seeded_and_ordered": True,
+                "points": [
+                    {
+                        "label": point.label,
+                        "repetitions": [
+                            {
+                                "repetition": rep.repetition,
+                                "latency_ms_by_query": {
+                                    str(q): v for q, v in sorted(rep.latency_by_query.items())
+                                },
+                            }
+                            for rep in point.repetitions
+                        ],
+                    }
+                    for point in points
+                ],
+            }
+        ),
+    )
+
     telemetry = collectors.as_dict()
     bundle.write_raw_text("telemetry.json", _as_json(telemetry))
 

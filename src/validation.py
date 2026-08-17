@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 from theodb_bench.abort import AbortKind
-from theodb_bench.absent import Absent, Measured, is_present
+from theodb_bench.absent import Absent, Measured, is_present, unavailable
 from theodb_bench.profiles import Profile
 
 VALIDATION_SCHEMA_VERSION: Final[int] = 1
@@ -39,6 +39,22 @@ class RunObservations:
     sut_crashed: bool = False
     run_refused: bool = False
     budget_exceeded: bool = False
+
+    #: Run id of the baseline this run is compared against, or an Absent saying
+    #: why there is none. Read by the regression gate.
+    baseline_run_id: str | Absent = field(
+        default_factory=lambda: unavailable("no baseline supplied for this run")
+    )
+
+    #: Version of the measurement methodology this run was taken under, or an
+    #: Absent. Read by the frozen-methodology gate.
+    methodology_version: str | Absent = field(
+        default_factory=lambda: unavailable("run declared no methodology version")
+    )
+
+    #: Whether the supplied baseline is comparable to this run. False makes the
+    #: regression check fail closed (I22); irrelevant when no baseline exists.
+    baseline_comparable: bool = True
     client_crashed: bool = False
     escaped_processes: tuple[int, ...] = ()
     cpu_limit_respected: Measured[bool] = True
@@ -279,7 +295,92 @@ def build_checks(
         )
 
     checks.append(_clean_tree_check(obs, profile))
+    # Emitted only by the profiles that declare them. A check that does not apply
+    # is absent rather than carrying an outcome that means "not asked" -- the
+    # schema has no such outcome, and inventing one would put a fourth meaning
+    # into a field that has three.
+    if profile.regression_gate:
+        checks.append(_regression_baseline_check(obs, profile))
+    if profile.frozen_methodology:
+        checks.append(_frozen_methodology_check(obs, profile))
     return checks
+
+
+def _regression_baseline_check(obs: RunObservations, profile: Profile) -> _Check:
+    """A profile that promises regression detection must have a baseline to detect against.
+
+    `regression_gate` steered nothing until this existed: `pr`, `nightly` and
+    `release` all declared it while no code compared anything to a baseline. The
+    check fails **closed** — a missing baseline is a failed comparison, not a
+    passed one — because the alternative is a regression suite that reports green
+    on its first run forever (I22).
+    """
+    if isinstance(obs.baseline_run_id, Absent):
+        # No baseline supplied. Not a failure -- the first run of a suite has
+        # nothing to regress against, and demanding one would make a regression
+        # gate impossible to adopt. Recorded as unavailable so the report says the
+        # detection did not happen, rather than implying it passed.
+        return _Check(
+            "regression_baseline",
+            "UNAVAILABLE",
+            required=False,
+            description="Regression was detected against a comparable baseline.",
+            detail=(
+                f"{profile.name} gates on regression and no baseline was supplied: "
+                f"{obs.baseline_run_id}. No regression detection was performed"
+            ),
+        )
+    if not obs.baseline_comparable:
+        # I22: the comparison fails closed. A baseline that is not comparable and
+        # is compared anyway produces a regression verdict about two different
+        # experiments.
+        return _Check(
+            "regression_baseline",
+            "FAIL",
+            required=True,
+            description="Regression was detected against a comparable baseline.",
+            detail=(
+                f"baseline {obs.baseline_run_id} is not comparable to this run, and a "
+                f"regression comparison across a change in what was measured reports a "
+                f"change in the system"
+            ),
+        )
+    return _Check(
+        "regression_baseline",
+        "PASS",
+        required=True,
+        description="Regression was detected against a comparable baseline.",
+        observed=obs.baseline_run_id,
+    )
+
+
+def _frozen_methodology_check(obs: RunObservations, profile: Profile) -> _Check:
+    """A profile that freezes methodology must record which methodology it froze.
+
+    `frozen_methodology` steered nothing until this existed. Freezing means the
+    run declares the methodology version it used, so a later comparison can refuse
+    to compare across a change in how things were measured rather than silently
+    comparing two different experiments.
+    """
+    if isinstance(obs.methodology_version, Absent):
+        return _Check(
+            "methodology_declared",
+            "UNAVAILABLE",
+            required=False,
+            description="The run declared the methodology version it was measured under.",
+            detail=(
+                f"{profile.name} freezes methodology and the run declared none: "
+                f"{obs.methodology_version}. A later comparison cannot tell a changed "
+                f"system from a changed measurement"
+            ),
+        )
+    return _Check(
+        "methodology_declared",
+        "PASS",
+        required=True,
+        description="The run declared the methodology version it was measured under.",
+        observed=obs.methodology_version,
+    )
 
 
 def _clean_tree_check(obs: RunObservations, profile: Profile) -> _Check:

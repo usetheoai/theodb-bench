@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import ast
+import dataclasses
+from pathlib import Path
+
 import pytest
 from theodb_bench.errors import ConfigError
 from theodb_bench.profiles import PROFILES, ProfileName, get_profile
@@ -53,3 +57,67 @@ def test_unknown_profile_is_rejected_by_name() -> None:
 def test_profiles_are_immutable() -> None:
     with pytest.raises(AttributeError):
         get_profile("smoke").publishable = True  # type: ignore[misc]
+
+
+# ------------------------------------------ every rigour flag has a consumer
+#
+# Measured 2026-08-17: of the four flags a profile declares, `publishable` and
+# `dirty_tree_invalidates` were enforced and `regression_gate` and
+# `frozen_methodology` were not. All five references to `regression_gate` were its
+# own definition, and `frozen_methodology` was echoed by `list` and nowhere else.
+#
+# A profile is the contract that separates local validation from a publishable
+# number, and it is what an outside reader consults to know what a number is
+# worth. A decorative flag in that contract is the same defect as an invariant
+# documented and never executed.
+
+
+def _flags_used_as_gates(source: Path) -> set[str]:
+    """Flag names this file uses to *decide* something, not merely to print it.
+
+    Textual presence is not consumption. `regression_gate` and
+    `frozen_methodology` both appeared in `cli.py` -- as values echoed by the
+    `list` command, which decides nothing. A flag is a gate when it steers
+    control flow (an `if`, a boolean operator, a negation) or when it is passed as
+    the `required=` argument that makes a validation check blocking.
+    """
+    tree = ast.parse(source.read_text())
+    used: set[str] = set()
+
+    def names_in(node: ast.AST) -> set[str]:
+        return {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If):
+            used |= names_in(node.test)
+        elif isinstance(node, (ast.BoolOp, ast.Compare)):
+            used |= names_in(node)
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            used |= names_in(node.operand)
+        elif isinstance(node, ast.IfExp):
+            used |= names_in(node.test)
+        elif isinstance(node, ast.keyword) and node.arg == "required":
+            used |= names_in(node.value)
+    return used
+
+
+def test_every_profile_flag_steers_something() -> None:
+    """A profile is the contract that says what a number is worth. A flag in it
+    that no code reads is a promise nobody keeps."""
+    src = Path(__file__).resolve().parent.parent / "src"
+    definition = src / "profiles.py"
+    release = PROFILES["release"]
+    flags = {
+        f.name for f in dataclasses.fields(release) if isinstance(getattr(release, f.name), bool)
+    }
+
+    gated: set[str] = set()
+    for path in src.rglob("*.py"):
+        if path != definition:
+            gated |= _flags_used_as_gates(path)
+
+    unconsumed = sorted(flags - gated)
+    assert not unconsumed, (
+        f"profile flag(s) declared and never used to decide anything: {unconsumed}. "
+        f"Appearing in a printed listing is not consumption."
+    )

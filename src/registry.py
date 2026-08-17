@@ -298,7 +298,14 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
                         # lists ~ sqrt(rows), the same rule the competitor's
                         # num_leaves=316 follows, so the partitioning is comparable.
                         "lists": 316,
-                        "pq_subspaces": 16,
+                        # 64 subspaces over 128 dimensions is 2 dimensions per
+                        # subspace, the width ScaNN and FAISS use. Measured on
+                        # 2026-08-17 at probes=20: 16 subspaces caps recall at
+                        # 0.8172, 32 gives 0.9270 and 64 gives 0.9570, at
+                        # indistinguishable throughput. The first frontier taken
+                        # here used 16 and reported a ceiling that belonged to the
+                        # quantizer rather than to the index.
+                        "pq_subspaces": 64,
                         "pq_bits": 4,
                         "separate_storage": 1,
                         "refine": 1,

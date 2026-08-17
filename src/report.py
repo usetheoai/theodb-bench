@@ -18,6 +18,7 @@ from typing import Any, Final
 
 from theodb_bench.absent import Absent
 from theodb_bench.bundle import RunBundle
+from theodb_bench.compare import render_paired_verdict
 from theodb_bench.errors import ErrorContext, Phase, SchemaValidationError
 from theodb_bench.profiles import get_profile
 from theodb_bench.schemas import validate
@@ -313,4 +314,88 @@ def render_comparison(bundles: list[RunBundle]) -> str:
         "be used.",
         "",
     ]
+    lines += _paired_verdicts(bundles)
     return "\n".join(lines) + "\n"
+
+
+def _paired_verdicts(bundles: list[RunBundle]) -> list[str]:
+    """The part of a comparison that is actually a comparison (I14).
+
+    The table above is two summaries printed near each other, and a reader will
+    infer a winner from it whether or not one exists. This section says whether
+    the difference survives a paired randomisation test on the per-query
+    latencies, in which direction, and by how much -- or says the runs cannot be
+    paired.
+
+    Exactly two runs are required. Three medians in a table invite a ranking; a
+    paired test compares two things, and silently picking two of three to test
+    would answer a question nobody asked.
+    """
+    if len(bundles) != 2:
+        if len(bundles) > 2:
+            return [
+                "## Paired comparison",
+                "",
+                f"Not run: {len(bundles)} runs were given and a paired test compares "
+                "two. Re-run `compare` with exactly two bundles.",
+                "",
+            ]
+        return []
+
+    samples = [_latency_by_query(b) for b in bundles]
+    names = [b.read_artifact("manifest")["system"]["id"] for b in bundles]
+
+    out = ["## Paired comparison", ""]
+    labels = sorted(set(samples[0]) & set(samples[1]))
+    if not labels:
+        out += [
+            "Not run: the two runs share no configuration label, so there is no "
+            "operating point measured on both. Comparing different configurations "
+            "would compare the configurations, not the systems.",
+            "",
+        ]
+        return out
+
+    for label in labels:
+        out.append(
+            "- "
+            + render_paired_verdict(
+                names[0],
+                samples[0][label],
+                names[1],
+                samples[1][label],
+                metric=f"latency_ms @ {label}",
+            )
+        )
+    out += [
+        "",
+        "Lower latency wins. `p` is a paired randomisation test with Monte-Carlo "
+        "correction; the interval is a paired percentile bootstrap. An "
+        "`indistinguishable` verdict is a result, not a missing one.",
+        "",
+    ]
+    return out
+
+
+def _latency_by_query(bundle: RunBundle) -> dict[str, dict[int, float]]:
+    """Per-query latencies from a bundle, per configuration label.
+
+    Repetitions are averaged per query before pairing: the paired unit is the
+    query, and a query measured three times on each side is still one paired
+    observation. Treating each repetition as independent would inflate `n`
+    threefold and make any difference look significant.
+    """
+    try:
+        raw = json.loads((bundle.raw_dir / "latency-by-query.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+    out: dict[str, dict[int, float]] = {}
+    for point in raw.get("points", []):
+        totals: dict[int, list[float]] = {}
+        for rep in point.get("repetitions", []):
+            for qid, value in rep.get("latency_ms_by_query", {}).items():
+                totals.setdefault(int(qid), []).append(float(value))
+        if totals:
+            out[point["label"]] = {q: sum(v) / len(v) for q, v in totals.items()}
+    return out

@@ -9,6 +9,30 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Comparing two systems runs a paired test, or says it cannot** (B-071). Invariant I14 requires a paired
+  test rather than a comparison of means, and `analysis/significance.py` implemented one — paired
+  randomisation, paired bootstrap CI, Cohen's dz, Monte-Carlo correction — with **zero importers** in `src/`,
+  while `compare` put medians in adjacent columns. The missing link was upstream of both: the measurement loop
+  collected a latency per query and kept only the summary, so no bundle carried the paired samples. Bundles now
+  record `latency-by-query.json`, and `compare` reports direction, `p`, a 95% CI and effect size per shared
+  configuration. Samples are keyed by **query id, never by position**: the loop skips queries that errored or
+  timed out, so position *i* is not query *i*, and pairing by position would misalign every sample after the
+  first timeout and produce a confident wrong verdict. Differing query sets are refused rather than
+  intersected — an intersection tests the subset where both systems succeeded, an easier question that favours
+  whichever system dropped its hardest queries. Repetitions are averaged per query before pairing, because a
+  query measured three times on each side is one paired observation, not three.
+- Two profile flags that promised gates now run them (B-072). Measured: of the four rigour flags a profile
+  declares, `publishable` and `dirty_tree_invalidates` steered code and `regression_gate` and
+  `frozen_methodology` steered nothing — both appeared only as values echoed by `theodb-bench list`. They now
+  emit real checks, with the semantics invariant I22 states rather than a stricter invention: a run with no
+  baseline records that no regression detection happened (`UNAVAILABLE`), and a baseline that is **not
+  comparable** fails closed. Demanding a baseline of every run would have made the gate impossible to adopt —
+  the first run of any suite has nothing to regress against — and the first draft of this change did exactly
+  that, invalidating 68 tests' worth of runs before the semantics were corrected.
+- A test that asserts every profile flag steers something (B-072), by AST rather than by grep. Textual presence
+  is not consumption: both decorative flags *did* appear in `src/`, as dict values in a printed listing. The
+  test looks for the flag in a condition, a boolean operator, a negation, or a `required=` argument.
+
 - **An aborted run says why it aborted, instead of blaming the system under test** (B-057). The runner set
   `sut_crashed = True` for any exception, so three different facts reached the report as one sentence — "system
   under test crashed during the run". Measured in a single session on 2026-08-17: the knob gate refusing a run
