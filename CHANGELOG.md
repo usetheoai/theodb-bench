@@ -9,6 +9,29 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`theodb-bench head2head` measures two systems interleaved, query by query** (B-074). A paired test over two
+  sequential runs removes the variance of query difficulty and leaves the variance of the machine: measured, the
+  same configuration re-run on the same host varied by 24% and 46% in median throughput, and the paired test
+  attributes that to the engine with the same confidence a real difference gets. Query *i* now goes to both
+  systems back to back, **with the order alternating** — under a fixed order the first system pays the cold
+  cache on every query and the second answers each one with the page cache just warmed, a bias
+  indistinguishable from the second being faster.
+  It changed a verdict. The sequential paired comparison reported TheoDB beating AlloyDB Omni with dz = -0.94
+  on 448 of 500 queries; interleaved, Omni wins the mid-depth point and TheoDB wins only the deepest, both with
+  small effects. Most of the sequential verdict was drift.
+- Each side of a head-to-head declares **its own benchmark** (B-074). Two engines need different index
+  configurations to reach the same quality and their knobs are not the same knobs — `pq_subspaces` is
+  meaningless to AlloyDB, `num_leaves` is meaningless to us, and the first version of this command died on
+  `unrecognized parameter "pq_bits"`. What must match is the experiment, and corpus, queries, k, metric and seed
+  are checked rather than assumed.
+- A head-to-head reports the **recall of both sides** and refuses a verdict when they differ by more than 0.01
+  (B-074). A latency comparison between two operating points of different quality reports the one doing less
+  work as faster. When a verdict is given and the recalls still differ, the side at lower recall is named, with
+  how much of its advantage is work it did not do.
+- Query counts are reported in the direction the verdict names (B-074). The effect field counts where the first
+  system's value was *larger*, which for latency is where it was slower; printed beside "A beats B" it read as
+  A losing on most queries.
+
 - **Bulk load streams through binary COPY** (B-070), and the change is what makes a scale beyond a few million
   rows thinkable. Measured on one million SIFT-128 vectors, same host: batched `executemany` **122 s** →
   text COPY **75 s** → binary COPY **16.8 s**, a 7.3× improvement end to end. The middle step is why the last

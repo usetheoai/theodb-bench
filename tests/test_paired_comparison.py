@@ -169,3 +169,16 @@ def test_the_tolerance_is_honoured_rather_than_taking_the_nearest_at_any_distanc
 
     assert match_by_recall(a, b, tolerance=0.01) is None
     assert match_by_recall(a, b, tolerance=0.10) is not None
+
+
+def test_the_verdict_counts_queries_in_the_direction_it_just_named() -> None:
+    """`wins` counts where A's value was larger, which for latency is where A was
+    slower. Printing it next to "A beats B" reads as A losing on most queries."""
+    a = {i: 10.0 + (i % 5) * 0.1 for i in range(50)}  # a is faster
+    b = {i: 14.0 + (i % 7) * 0.1 for i in range(50)}
+
+    verdict = render_paired_verdict("a", a, "b", b, metric="latency_ms")
+
+    assert "**a** beats **b**" in verdict
+    assert "faster on 50 of 50 queries" in verdict
+    assert "wins/losses" not in verdict

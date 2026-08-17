@@ -157,14 +157,24 @@ def render_paired_verdict(
             f"95% CI [{result.ci_low:+.3f}, {result.ci_high:+.3f}])"
         )
 
-    faster, slower = (name_a, name_b) if effect.mean_difference < 0 else (name_b, name_a)
-    if not lower_is_better:
-        faster, slower = slower, faster
+    a_is_better = (effect.mean_difference < 0) if lower_is_better else (effect.mean_difference > 0)
+    faster, slower = (name_a, name_b) if a_is_better else (name_b, name_a)
+
+    # `wins` counts the queries where A's value was larger. For a metric where
+    # lower is better that is where A was *slower*, so printing it beside "A
+    # beats B" reads as A losing on most queries. Counted in the direction just
+    # named instead.
+    a_larger, b_larger = effect.wins, effect.losses
+    if lower_is_better:
+        better_count = b_larger if a_is_better else a_larger
+    else:
+        better_count = a_larger if a_is_better else b_larger
+
     dz = f", dz = {effect.cohens_dz:.2f}" if effect.cohens_dz is not None else ""
     return (
         f"**{faster}** beats **{slower}** on {metric} "
         f"(p = {result.p_randomisation:.4f}, n = {n}, "
         f"95% CI [{result.ci_low:+.3f}, {result.ci_high:+.3f}], "
-        f"mean diff = {effect.mean_difference:+.3f}{dz}, "
-        f"{effect.wins}/{effect.losses}/{effect.ties} wins/losses/ties)"
+        f"mean diff = {effect.mean_difference:+.3f}{dz}; "
+        f"{faster} faster on {better_count} of {n} queries, {effect.ties} tied)"
     )
