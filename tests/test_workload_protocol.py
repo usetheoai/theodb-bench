@@ -124,10 +124,10 @@ def test_a_swept_run_emits_its_pareto_frontier() -> None:
         return point
 
     points = [
-        _point("shallow", 600.0, 0.70),   # fast, poor quality -- on the frontier
-        _point("middle", 400.0, 0.95),    # on the frontier
-        _point("dominated", 300.0, 0.90), # slower AND worse than middle
-        _point("deep", 150.0, 0.99),      # on the frontier
+        _point("shallow", 600.0, 0.70),  # fast, poor quality -- on the frontier
+        _point("middle", 400.0, 0.95),  # on the frontier
+        _point("dominated", 300.0, 0.90),  # slower AND worse than middle
+        _point("deep", 150.0, 0.99),  # on the frontier
     ]
 
     payload = pareto_payload(points)
@@ -168,7 +168,7 @@ def test_a_regression_against_an_incomparable_baseline_fails_closed() -> None:
         },
         baseline={
             "run_id": "base",
-            "benchmark_id": "vector/synthetic/smoke",   # a different benchmark
+            "benchmark_id": "vector/synthetic/smoke",  # a different benchmark
             "benchmark_version": 1,
             "profile": "pr",
             "system": "theodb",

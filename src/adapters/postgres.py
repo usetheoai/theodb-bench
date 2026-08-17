@@ -55,10 +55,14 @@ from theodb_bench.adapters.base import (
     AnalyticalResult,
     AnalyticalTable,
     BuildOutcome,
+    Document,
+    DocumentTableSpec,
     IndexSpec,
     KnnQuery,
     KnnResult,
+    LexicalQuery,
     LoadOutcome,
+    RankedResult,
     SystemAdapter,
     VectorArray,
     VectorTableSpec,
@@ -142,6 +146,11 @@ class PostgresConfig:
     #: is a defect worth catching, not a measurement worth keeping.
     statement_timeout_ms: int = 60_000
 
+    #: Where `write_parquet` puts files and `read_parquet` reads them. Written by
+    #: the *server* process, so it must be writable by the database user rather
+    #: than by whoever runs the harness.
+    parquet_directory: str = "/var/lib/postgresql/theodb-bench-parquet"
+
     #: Budget for building an index, which is a different risk with a different
     #: duration. Measured: an hnsw build over one million SIFT-128 vectors was
     #: cancelled at 61 s under the query budget, and the run was then reported as
@@ -175,6 +184,9 @@ class PostgresAdapter(SystemAdapter):
         self._search_parameters: dict[str, Any] = {}
         self._effective_search_parameters: dict[str, str] = {}
         self._built_indexes: set[str] = set()
+        #: Tables whose BM25 index was built in this session. Searching one that
+        #: was never built is refused rather than answered with zero rows.
+        self._lexical_built: set[str] = set()
 
     # ------------------------------------------------------------ capabilities
 
@@ -1138,6 +1150,9 @@ class TheoDBAdapter(PgvectorAdapter):
     ANALYTICAL_PATHS: ClassVar[dict[str, str | None]] = {
         "row": None,
         "columnar": "theodb_columnar",
+        # Parquet is a file. The rows land in a heap table first and are then
+        # written out; the queries read the file back.
+        "parquet": None,
     }
 
     #: `theodb.enable_columnar_agg` ships **off**, and the project's own wiki
@@ -1152,6 +1167,9 @@ class TheoDBAdapter(PgvectorAdapter):
     }
 
     ANALYTICAL_PLAN_MARKERS: ClassVar[dict[str, str]] = {"columnar": "theodb_columnar_agg"}
+
+    def _supports_binary_copy(self) -> bool:
+        return True
 
     #: `over_fetch` is the rescore pool of the AQ+AH scan: `customscan.rs` computes
     #: `rerank_pool = 64 * theodb_hnsw.over_fetch`, and that second stage is what
@@ -1181,10 +1199,132 @@ class TheoDBAdapter(PgvectorAdapter):
             "vector_ivfflat": True,
             "vector_filtered": True,
             # Reached as of the analytical surface: `USING theodb_columnar` plus a
-            # `pg_class.relam` proof. Hybrid, Parquet, graph and the vectorizer are
-            # still not reachable from this adapter and stay undeclared.
+            # `pg_class.relam` proof.
             "columnar": True,
+            # `write_parquet` on load, `read_parquet` in every query.
+            "parquet": True,
+            # `bm25_build` on load, `bm25_search` per query.
+            "lexical": True,
+            # `rerank`, `vectorizer` and `ai_sql` stay out: each reaches an
+            # external model, and without an endpoint there is nothing to measure.
+            # A stub would put a number where an absence belongs.
         }
+
+    def _parquet_path(self, table: AnalyticalTable) -> str:
+        """Where the Parquet file for a table lives.
+
+        Configurable rather than fixed, because the writer is the **server**
+        process: the directory has to be one the database user can write, which is
+        a property of the deployment and not of the harness. Measured the hard way
+        -- a directory created by root inside the container gave
+        `Permission denied (os error 13)` from `write_parquet`.
+        """
+        return f"{self.config.parquet_directory.rstrip('/')}/{table.name}.parquet"
+
+    def _after_analytical_load(self, table: AnalyticalTable) -> None:
+        """Write the Parquet file the queries will read back.
+
+        The rows are loaded into an ordinary table first because `write_parquet`
+        takes a relation. What is measured afterwards is the file: the queries
+        read through `read_parquet`, so the heap table is scaffolding rather than
+        the path under test.
+        """
+        if table.path != "parquet":
+            return
+        self._execute(
+            f"SELECT write_parquet({_literal(table.name)}, {_literal(self._parquet_path(table))})"
+        )
+
+    def _analytical_query_sql(self, table: AnalyticalTable, query: AnalyticalQuery) -> str:
+        if table.path != "parquet":
+            return super()._analytical_query_sql(table, query)
+        # `read_parquet` returns SETOF jsonb, so the columns are projected out of
+        # the document rather than named directly.
+        source = (
+            f"(SELECT (doc->>'id')::int AS id, (doc->>'amount')::double precision AS amount, "
+            f"doc->>'category' AS category, (doc->>'quantity')::int AS quantity "
+            f"FROM read_parquet({_literal(self._parquet_path(table))}) AS doc) AS parquet_rows"
+        )
+        template = type(self).ANALYTICAL_SQL.get(query.id)
+        if template is None:
+            raise AdapterError(
+                f"unknown analytical query {query.id!r}",
+                context=ErrorContext(
+                    phase=Phase.MEASUREMENT, system=self.system_id, details={"query": query.id}
+                ),
+            )
+        return template.replace("{table}", source)
+
+    # ------------------------------------------------------------- lexical
+
+    def load_documents(self, spec: DocumentTableSpec, documents: Sequence[Document]) -> LoadOutcome:
+        """Load documents and build the BM25 index over them.
+
+        The index is built here rather than lazily at search time because
+        `bm25_search` over an index that was never built used to return zero rows,
+        which is indistinguishable from nothing matching. The engine now refuses
+        that outright; loading and building together means the harness never
+        depends on which behaviour it gets.
+        """
+        table = _identifier(spec.table)
+        text_column = _identifier(spec.text_column)
+        vector_column = _identifier(spec.embedding_column)
+        started = time.perf_counter()
+        self._execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+        # Both legs in one table: the lexical index reads the text and a dense or
+        # hybrid leg reads the vector. Loading only the text would make the
+        # hybrid surface unreachable from the same corpus, and comparing two legs
+        # over different corpora compares the corpora.
+        self._execute(
+            f"CREATE TABLE {table} (id bigint PRIMARY KEY, {text_column} text NOT NULL, "
+            f"{vector_column} {self.column_type(spec.dimension)} NOT NULL)"
+        )
+        with (
+            self._cursor() as cursor,
+            cursor.copy(f"COPY {table} (id, {text_column}, {vector_column}) FROM STDIN") as copy,
+        ):
+            for document in documents:
+                copy.write_row((document.id, document.text, self._to_column(document.vector)))
+        self._execute(f"ANALYZE {table}")
+
+        built = self._fetch_one(
+            "SELECT bm25_build(%s, %s, %s, %s)",
+            (self._lexical_index_id(spec), spec.table, "id", spec.text_column),
+        )
+        self._lexical_built.add(spec.table)
+        counted = self._fetch_one(f"SELECT count(*) FROM {table}")
+        loaded = int(counted[0]) if counted else 0
+        _ = built
+        return LoadOutcome(
+            seconds=time.perf_counter() - started,
+            rows_loaded=loaded,
+            rows_expected=len(documents),
+        )
+
+    def _lexical_index_id(self, spec: DocumentTableSpec) -> int:
+        """A stable id per table, since bm25_build is keyed by integer."""
+        return abs(hash(spec.table)) % 1_000_000
+
+    def execute_lexical(self, query: LexicalQuery) -> RankedResult:
+        if query.table not in self._lexical_built:
+            raise UnsupportedCapabilityError(
+                f"the BM25 index over {query.table} was never built in this session, "
+                f"and searching one that does not exist returns zero rows -- "
+                f"indistinguishable from nothing matching",
+                context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+            )
+        spec_id = abs(hash(query.table)) % 1_000_000
+        started = time.perf_counter()
+        rows = self._fetch_all(
+            "SELECT id, score FROM bm25_search(%s, %s, %s)",
+            (spec_id, query.text, int(query.n)),
+        )
+        elapsed = time.perf_counter() - started
+        return RankedResult(
+            ids=tuple(int(row[0]) for row in rows),
+            scores=tuple(float(row[1]) for row in rows),
+            latency_seconds=elapsed,
+        )
 
     def _search_guc_mapping(self, parameters: dict[str, Any]) -> dict[str, str]:
         """TheoDB's own GUC namespaces, matching the access methods it registers.

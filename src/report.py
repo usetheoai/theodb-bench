@@ -498,7 +498,6 @@ def pareto_payload(points: list[PointResult]) -> dict[str, Any] | None:
         for point in measured
     ]
     best = frontier(candidates, objectives)
-    on_frontier = {point.label for point in best}
     return {
         "schema_version": PARETO_SCHEMA_VERSION,
         "objectives": [objective.as_dict() for objective in objectives],

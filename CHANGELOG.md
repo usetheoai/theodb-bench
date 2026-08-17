@@ -9,6 +9,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The lexical and Parquet pillars are reachable** (B-073), taking the TheoDB adapter from four declared
+  capabilities to six. Both were found by reading `pg_proc` on the running server rather than the docs, and
+  neither is where the documentation implied: `bm25_build` / `bm25_search` and `read_parquet` /
+  `write_parquet` live in `public`, not in `theodb`. Verified against a real server — BM25 returns
+  semantically correct ranks (the document containing both query terms scores 1.191, the two containing one
+  each tie at 0.755), and 5 000 rows written with `write_parquet` read back through `read_parquet` with all
+  three aggregations correct.
+- A document load now carries **both legs from one corpus** (B-073): text for the lexical index and a vector
+  for the dense one, in the same table. Loading only the text would make the hybrid surface unreachable from
+  that corpus, and comparing two legs measured over different corpora compares the corpora.
+- Searching a BM25 index that was never built is **refused** (B-073). It used to return zero rows, which is
+  indistinguishable from nothing matching — the defect class this repository tracks as a surface answering
+  where it should refuse.
+- The Parquet directory is configuration, not a constant (B-073). The writer is the **server** process, so the
+  path must be writable by the database user rather than by whoever runs the harness — measured the hard way,
+  with `Permission denied (os error 13)` from a directory root had created inside the container.
+
 - **A swept run emits its Pareto frontier** (B-067). `analysis/pareto.py` computed dominance and had no caller,
   so no run produced one — while the project's own rule says a headline throughput comparison needs a stated
   target quality with its interpolation method **or** the complete frontier, leaving every comparison to fall

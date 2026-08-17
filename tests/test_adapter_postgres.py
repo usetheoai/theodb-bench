@@ -216,7 +216,14 @@ def test_theodb_declares_only_the_surface_it_can_exercise() -> None:
     adapter = TheoDBAdapter()
     assert adapter.supports("vector_hnsw")
     assert adapter.supports("columnar")
-    for capability in ("hybrid", "lexical", "parquet", "graph", "vectorizer"):
+    # Reached as of the pillar work: `write_parquet`/`read_parquet` for one,
+    # `bm25_build`/`bm25_search` for the other.
+    assert adapter.supports("parquet")
+    assert adapter.supports("lexical")
+    # `hybrid` needs both legs measured together and is not wired yet; `rerank`,
+    # `vectorizer` and `ai_sql` each reach an external model, and without an
+    # endpoint there is nothing to measure.
+    for capability in ("hybrid", "graph", "vectorizer", "rerank", "ai_sql"):
         assert not adapter.supports(capability), capability
 
 
