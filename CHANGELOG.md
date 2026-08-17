@@ -9,6 +9,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- A search parameter is now **verified in force before anything is measured** (B-060). The
+  harness already refused to report a number when the planner ignored the index
+  (`assert_index_used`); it did not refuse when the *knob* was ignored — the `SET` was issued
+  and nothing read the value back. Measured on PostgreSQL 18: `SET nao.existe = 999` succeeds,
+  `current_setting` hands back `999`, and `pg_settings` holds no such row. An unregistered
+  namespaced GUC is accepted as a placeholder, so `current_setting` cannot detect it and
+  `pg_settings` can. The gate reads `setting` and `source` from `pg_settings` and refuses when
+  the GUC is absent, when the value diverges from what was sent, or when `source` is still
+  `default`.
+- The bundle records the search parameters **in force** alongside those requested, keyed by GUC
+  name (B-060). The two are not always equal: `probes` is clamped to the list count, so a
+  request of 10000 on a 10k-row table is sent as the clamp — and `points[].parameters` was built
+  from the request, before the knobs were applied. No schema version changed: that field is
+  already declared as an open object of scalars.
+- `SystemAdapter.effective_search_parameters()` is part of the contract, and every registered
+  adapter answers it — including `FakeAdapter`, which is the double the runner's own tests
+  exercise most, so a contract that skipped it would be untested where it runs most (B-060).
+
 - Versioned JSON schemas for every machine-readable artifact: benchmark,
   manifest, environment, dataset, system, validation, result, statistics,
   regression, pareto and summary. Artifacts are validated before being written,

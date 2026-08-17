@@ -284,6 +284,15 @@ class FakeAdapter(SystemAdapter):
     def set_search_parameters(self, parameters: dict[str, Any]) -> None:
         self._search_parameters = dict(parameters)
 
+    def effective_search_parameters(self) -> dict[str, str]:
+        """What this system has in force — which, being in-process, is exactly what was set.
+
+        It participates in the contract rather than inheriting the empty default on purpose:
+        this adapter is the double the runner's own tests exercise, so a contract that skipped
+        it would be untested precisely where it runs most.
+        """
+        return {name: str(value) for name, value in self._search_parameters.items()}
+
     # ----------------------------------------------------------------- queries
 
     def execute(self, query: KnnQuery) -> KnnResult:

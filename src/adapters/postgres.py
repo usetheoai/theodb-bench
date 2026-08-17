@@ -132,6 +132,7 @@ class PostgresAdapter(SystemAdapter):
         self._connection: Any = None
         self._row_count: int = 0
         self._search_parameters: dict[str, Any] = {}
+        self._effective_search_parameters: dict[str, str] = {}
         self._built_indexes: set[str] = set()
 
     # ------------------------------------------------------------ capabilities
@@ -276,8 +277,101 @@ class PostgresAdapter(SystemAdapter):
 
     # ----------------------------------------------------------------- queries
 
+    def _search_guc_mapping(self, parameters: dict[str, Any]) -> dict[str, str]:
+        """Which GUC carries each logical parameter, and the literal that will be SENT.
+
+        Subclass hook. The value is what the adapter *sends*, already transformed — the
+        clamp on ``probes`` means the sent value legitimately differs from what the caller
+        asked for, and the gate must compare against the former. Returning an empty mapping
+        means "this system has no session knobs", which upstream PostgreSQL genuinely does
+        not.
+        """
+        return {}
+
     def set_search_parameters(self, parameters: dict[str, Any]) -> None:
+        """Apply the search knobs, then prove the server actually took them.
+
+        The apply-then-verify shape mirrors :meth:`assert_index_used`, and for the same
+        reason: setting without verifying proves nothing.
+
+        Why ``pg_settings`` and not ``current_setting`` — measured on PostgreSQL 18, not
+        assumed::
+
+            SET nao.existe = 999;                                      -> SET (succeeds)
+            SELECT current_setting('nao.existe', true);                 -> 999
+            SELECT count(*) FROM pg_settings WHERE name='nao.existe';   -> 0
+
+        An unregistered namespaced GUC is accepted as a *placeholder*: the SET succeeds and
+        nothing applies it. ``current_setting`` then hands back the value we wrote, so a gate
+        built on it would be a perfect false negative — it would confirm 200 while the engine
+        searched at its default. ``pg_settings`` lists only *registered* GUCs, which is
+        exactly the distinction that matters.
+
+        A registered GUC is not sufficient either: its ``source`` must have moved off
+        ``default``. And absence of the GUC usually means the extension library never loaded
+        in this session — measured on TheoDB, ``pg_settings`` holds 0 ``theodb*`` entries
+        before ``LOAD 'theodb_rs'`` and 38 after. That is the same condition under which
+        AlloyDB's ``scann.num_leaves_to_search`` silently does nothing without
+        ``LOAD 'alloydb_scann'``.
+        """
         self._search_parameters = dict(parameters)
+        mapping = self._search_guc_mapping(parameters)
+        for guc, literal in mapping.items():
+            self._execute(f"SET {guc} = {literal}")
+        self._effective_search_parameters = self._verified_search_settings(mapping)
+
+    def _verified_search_settings(self, mapping: dict[str, str]) -> dict[str, str]:
+        """Read each GUC back and refuse anything that did not take effect."""
+        effective: dict[str, str] = {}
+        for guc, sent in mapping.items():
+            try:
+                row = self._fetch_one(
+                    "SELECT setting, source FROM pg_settings WHERE name = %s", (guc,)
+                )
+            except AdapterError:
+                raise
+            except Exception as exc:  # re-raised as a typed error below
+                raise AdapterError(
+                    f"could not verify {guc}: {exc}. An unreadable setting is not the same "
+                    f"as a setting that did not apply, and reporting one as the other would "
+                    f"describe a configuration defect where there was an unavailable server.",
+                    context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+                ) from exc
+            if row is None:
+                raise AdapterError(
+                    f"{guc} is not a registered setting on this server, so "
+                    f"requested={sent} effective=<placeholder>. PostgreSQL accepts a SET on "
+                    f"an unregistered namespace without applying it, so the search would run "
+                    f"at the engine default while the run reported {sent}. The usual cause is "
+                    f"an extension library that never loaded in this session.",
+                    context=ErrorContext(
+                        phase=Phase.MEASUREMENT,
+                        system=self.system_id,
+                        details={"setting": guc, "requested": sent},
+                    ),
+                )
+            setting, source = str(row[0]), str(row[1])
+            if setting != sent or source == "default":
+                raise AdapterError(
+                    f"{guc} did not take effect: requested={sent} effective={setting} "
+                    f"(source={source}). A registered setting still sitting at its default "
+                    f"means the SET was accepted and discarded.",
+                    context=ErrorContext(
+                        phase=Phase.MEASUREMENT,
+                        system=self.system_id,
+                        details={"setting": guc, "requested": sent, "effective": setting},
+                    ),
+                )
+            effective[guc] = setting
+        return effective
+
+    def effective_search_parameters(self) -> dict[str, str]:
+        """The search settings verified in force, keyed by GUC name.
+
+        Distinct from the requested values on purpose: a bundle that publishes the request
+        as if it were the measurement is the defect this gate exists to stop.
+        """
+        return dict(self._effective_search_parameters)
 
     def distance_expression(self, spec_metric: str, column: str) -> str:
         """SQL computing the distance between the column and a probe.
@@ -483,14 +577,21 @@ class PgvectorAdapter(PostgresAdapter):
             parameters_in_force=dict(index.parameters),
         )
 
-    def set_search_parameters(self, parameters: dict[str, Any]) -> None:
-        super().set_search_parameters(parameters)
+    def _search_guc_mapping(self, parameters: dict[str, Any]) -> dict[str, str]:
+        """The two knobs this adapter owns, and the literal each one sends.
+
+        ``probes`` is clamped to the list count derived from the real row count, so the sent
+        literal legitimately differs from the request. The gate compares against what is sent
+        — comparing against the request would make the harness's own sizing rule trip it.
+        """
+        mapping: dict[str, str] = {}
         for name, value in parameters.items():
             if name == "ef_search":
-                self._execute(f"SET hnsw.ef_search = {int(value)}")
+                mapping["hnsw.ef_search"] = str(int(value))
             elif name == "probes":
                 lists = ivfflat_lists(self._row_count)
-                self._execute(f"SET ivfflat.probes = {clamp_probes(int(value), lists)}")
+                mapping["ivfflat.probes"] = str(clamp_probes(int(value), lists))
+        return mapping
 
     def _query_sql(self, query: KnnQuery) -> str:
         table = _identifier(query.table)
