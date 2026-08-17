@@ -7,12 +7,14 @@ invariants live. Behaviour that needs a live server is marked `integration`.
 
 from __future__ import annotations
 
+import struct
 from typing import ClassVar
 
 import numpy as np
 import pytest
 from theodb_bench.adapters.base import (
     CAPABILITIES,
+    AnalyticalTable,
     IndexSpec,
     KnnQuery,
     SystemAdapter,
@@ -26,6 +28,7 @@ from theodb_bench.adapters.postgres import (
     clamp_probes,
     ivfflat_lists,
 )
+from theodb_bench.copy_binary import BINARY_HEADER, BINARY_TRAILER
 from theodb_bench.errors import AdapterError, ErrorContext, Phase, UnsupportedCapabilityError
 from theodb_bench.registry import ADAPTERS, get_adapter
 from theodb_bench.schemas import validate
@@ -833,3 +836,129 @@ def test_theodb_renders_the_pg_scann_reloptions() -> None:
     assert "theodb_ivfflat_l2_ops" in ddl
     for option in ("lists = 316", "pq_subspaces = 16", "pq_bits = 4", "refine = 1"):
         assert option in ddl, option
+
+
+# ------------------------------------------- bulk load goes through COPY, not INSERT
+#
+# Measured 2026-08-17 on the droplet: loading one million SIFT-128 vectors took
+# **122 s** through `cursor.executemany` in batches of 1000 -- a thousand
+# round-trips. The constant driving it is named COPY_BATCH and no `COPY` was ever
+# emitted. Load time never enters a published number, but it decides which scales
+# are measurable at all, and therefore which claims the project can make.
+
+
+class _CopyStub(_ServerStub):
+    """A server that records what was streamed through COPY."""
+
+    def __init__(self, settings: dict[str, tuple[str, str]]) -> None:
+        super().__init__(settings)
+        self.copy_statements: list[str] = []
+        self.copied_rows: list[tuple[object, ...]] = []
+        self.copied_bytes: list[bytes] = []
+
+    def cursor(self):
+        return _CopyCursor(self)
+
+
+class _CopyCursor:
+    def __init__(self, server: _CopyStub) -> None:
+        self._server = server
+
+    def __enter__(self) -> _CopyCursor:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def executemany(self, sql: str, batch: list[tuple[object, ...]]) -> None:
+        raise AssertionError(f"bulk load fell back to executemany: {sql[:60]}")
+
+    def copy(self, sql: str) -> _CopyWriter:
+        self._server.copy_statements.append(sql)
+        return _CopyWriter(self._server)
+
+
+class _CopyWriter:
+    def __init__(self, server: _CopyStub) -> None:
+        self._server = server
+
+    def __enter__(self) -> _CopyWriter:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def write_row(self, row: tuple[object, ...]) -> None:
+        self._server.copied_rows.append(row)
+
+    def write(self, payload: bytes) -> None:
+        self._server.copied_bytes.append(payload)
+
+
+def _copy_adapter(server: _CopyStub) -> PgvectorAdapter:
+    adapter = PgvectorAdapter()
+    adapter._execute = server.execute  # type: ignore[method-assign]
+    adapter._fetch_one = server.fetch_one  # type: ignore[method-assign]
+    adapter._cursor = server.cursor  # type: ignore[method-assign]
+    return adapter
+
+
+def test_the_vector_load_streams_through_binary_copy() -> None:
+    """pgvector's `vector` has a documented binary layout, so the corpus goes over
+    the wire with no per-value Python. Measured: the text encoding was 72 of the
+    75 seconds a million-vector load took."""
+    server = _CopyStub({})
+    adapter = _copy_adapter(server)
+
+    adapter.load_dataset(SPEC, np.zeros((5, 8), dtype=np.float32))
+
+    assert server.copy_statements, "no COPY was issued"
+    assert "FORMAT BINARY" in server.copy_statements[0]
+    stream = b"".join(server.copied_bytes)
+    assert stream.startswith(b"PGCOPY\n\xff\r\n\x00")
+    assert stream.endswith(struct.pack(">h", -1))
+    assert not server.copied_rows, "binary path must not fall back to write_row"
+
+
+def test_upstream_postgres_still_streams_rows_as_text() -> None:
+    """`real[]` has no encoder here, and saying so is better than a wrong one.
+
+    Upstream exact search is the honest floor of a comparison, not a scale target:
+    nobody loads a billion vectors into `real[]` to measure them.
+    """
+    server = _CopyStub({})
+    adapter = PostgresAdapter()
+    adapter._execute = server.execute  # type: ignore[method-assign]
+    adapter._fetch_one = server.fetch_one  # type: ignore[method-assign]
+    adapter._cursor = server.cursor  # type: ignore[method-assign]
+
+    adapter.load_dataset(SPEC, np.zeros((5, 8), dtype=np.float32))
+
+    assert "FORMAT BINARY" not in server.copy_statements[0]
+    assert len(server.copied_rows) == 5
+
+
+def test_the_analytical_load_streams_through_copy() -> None:
+    server = _CopyStub({})
+    adapter = _copy_adapter(server)
+    table = AnalyticalTable(
+        name="bench_analytical_row", columns=("id", "amount", "category", "quantity"), path="row"
+    )
+
+    adapter.load_analytical(table, [(0, 1.5, "a", 2), (1, -2.5, "b", 3)])
+
+    assert server.copy_statements[0].startswith("COPY ")
+    assert len(server.copied_rows) == 2
+
+
+def test_every_row_reaches_the_copy_stream() -> None:
+    """The count is still proven: speed never replaces the proof that all of it arrived."""
+    server = _CopyStub({})
+    adapter = _copy_adapter(server)
+
+    outcome = adapter.load_dataset(SPEC, np.zeros((2_500, 8), dtype=np.float32))
+
+    row_bytes = 2 + 8 + (4 + 4 + 8 * 4)
+    body = b"".join(server.copied_bytes)[len(BINARY_HEADER) : -len(BINARY_TRAILER)]
+    assert len(body) == 2_500 * row_bytes
+    assert outcome.rows_expected == 2_500

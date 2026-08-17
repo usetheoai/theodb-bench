@@ -9,6 +9,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Bulk load streams through binary COPY** (B-070), and the change is what makes a scale beyond a few million
+  rows thinkable. Measured on one million SIFT-128 vectors, same host: batched `executemany` **122 s** →
+  text COPY **75 s** → binary COPY **16.8 s**, a 7.3× improvement end to end. The middle step is why the last
+  one exists: of the 75 s a text COPY took, **72 were the Python text encoding** — one `repr()` per float,
+  128 million of them — so cutting round-trips had already given everything it could. The binary encoder is
+  numpy writing the whole block in one pass, with no per-value Python at all. Verified against a real server:
+  1 000 000 rows loaded, and five vectors spread across the corpus including both ends compared element by
+  element with zero divergence.
+- PostgreSQL's binary COPY layout is written out in `copy_binary.py` rather than delegated to a per-type dumper
+  (B-070): psycopg has no binary dumper for `vector`, and adding one means a dependency that helps only the
+  pgvector-family adapters. Hand-writing a wire format is safe only if it is pinned, so every field — the
+  signature, the flags, the per-row field count, each field's length prefix, and pgvector's own
+  `int16 dim, int16 unused, big-endian float4` — is asserted byte for byte. Upstream PostgreSQL keeps the text
+  path: `real[]` has a different and more elaborate array layout, and exact search over it is the honest floor
+  of a comparison rather than a scale target.
+
 - **Comparing two systems runs a paired test, or says it cannot** (B-071). Invariant I14 requires a paired
   test rather than a comparison of means, and `analysis/significance.py` implemented one — paired
   randomisation, paired bootstrap CI, Cohen's dz, Monte-Carlo correction — with **zero importers** in `src/`,

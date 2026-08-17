@@ -68,6 +68,7 @@ class _AnalyticalStub:
         self.rows_by_query: dict[str, tuple[tuple[Any, ...], ...]] = {}
         #: GUC name -> (setting, source), as `pg_settings` answers it.
         self.settings: dict[str, tuple[str, str]] = {}
+        self.copied_rows: list[tuple[Any, ...]] = []
 
     def execute(self, sql: str, parameters: tuple[object, ...] | None = None) -> None:
         self.executed.append(sql)
@@ -119,7 +120,27 @@ class _CursorStub:
         return None
 
     def executemany(self, sql: str, batch: list[tuple[Any, ...]]) -> None:
+        raise AssertionError(f"analytical load fell back to executemany: {sql[:60]}")
+
+    def copy(self, sql: str) -> _CopyWriterStub:
         self._server.executed.append(sql)
+        return _CopyWriterStub(self._server)
+
+
+class _CopyWriterStub:
+    """The COPY stream `load_analytical` writes rows into."""
+
+    def __init__(self, server: _AnalyticalStub) -> None:
+        self._server = server
+
+    def __enter__(self) -> _CopyWriterStub:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def write_row(self, row: tuple[Any, ...]) -> None:
+        self._server.copied_rows.append(row)
 
 
 def _wire(adapter: Any, server: _AnalyticalStub) -> Any:
