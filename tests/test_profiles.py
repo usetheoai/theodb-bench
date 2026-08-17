@@ -106,7 +106,7 @@ def test_every_profile_flag_steers_something() -> None:
     that no code reads is a promise nobody keeps."""
     src = Path(__file__).resolve().parent.parent / "src"
     definition = src / "profiles.py"
-    release = PROFILES["release"]
+    release = get_profile("release")
     flags = {
         f.name for f in dataclasses.fields(release) if isinstance(getattr(release, f.name), bool)
     }

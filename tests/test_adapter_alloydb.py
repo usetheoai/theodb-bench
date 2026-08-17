@@ -50,7 +50,9 @@ class _OmniStub:
             name, _, value = sql[4:].partition("=")
             self._set[name.strip()] = value.strip()
 
-    def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
+    def fetch_one(
+        self, sql: str, parameters: tuple[object, ...] | None = None
+    ) -> tuple[object, ...] | None:
         if "pg_settings" in sql:
             name = str(parameters[0]) if parameters else ""
             if name.startswith("scann.") and not self._loaded:

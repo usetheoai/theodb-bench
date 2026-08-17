@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tracemalloc
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -239,7 +240,12 @@ def test_success_at_k_is_binary() -> None:
 # the implementation is allowed to change.
 
 
-def _reference_ground_truth(corpus, queries, k, metric="l2"):
+def _reference_ground_truth(
+    corpus: npt.NDArray[np.floating[Any]],
+    queries: npt.NDArray[np.floating[Any]],
+    k: int,
+    metric: str = "l2",
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
     """The original implementation, kept here as the equivalence oracle."""
     distances = pairwise_distances(corpus, queries, metric)
     corpus_size = distances.shape[1]

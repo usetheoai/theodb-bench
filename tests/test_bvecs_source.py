@@ -16,14 +16,16 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from theodb_bench.bvecs import BvecsSource
 from theodb_bench.streaming import CorpusSource
 
 
-def _write(path: Path, vectors: np.ndarray) -> Path:
+def _write(path: Path, vectors: npt.NDArray[np.unsignedinteger[Any]]) -> Path:
     with path.open("wb") as handle:
         for vector in vectors:
             handle.write(struct.pack("<i", vector.shape[0]))
@@ -32,18 +34,22 @@ def _write(path: Path, vectors: np.ndarray) -> Path:
 
 
 @pytest.fixture
-def corpus(tmp_path: Path) -> tuple[Path, np.ndarray]:
+def corpus(tmp_path: Path) -> tuple[Path, npt.NDArray[np.unsignedinteger[Any]]]:
     rng = np.random.default_rng(20260817)
     vectors = rng.integers(0, 256, size=(37, 12), dtype=np.uint8)
     return _write(tmp_path / "base.bvecs", vectors), vectors
 
 
-def test_a_bvecs_file_satisfies_the_corpus_protocol(corpus: tuple[Path, np.ndarray]) -> None:
+def test_a_bvecs_file_satisfies_the_corpus_protocol(
+    corpus: tuple[Path, npt.NDArray[np.unsignedinteger[Any]]],
+) -> None:
     path, _ = corpus
     assert isinstance(BvecsSource(path), CorpusSource)
 
 
-def test_the_row_count_comes_from_the_file_size(corpus: tuple[Path, np.ndarray]) -> None:
+def test_the_row_count_comes_from_the_file_size(
+    corpus: tuple[Path, npt.NDArray[np.unsignedinteger[Any]]],
+) -> None:
     path, vectors = corpus
     source = BvecsSource(path)
 
@@ -52,7 +58,7 @@ def test_the_row_count_comes_from_the_file_size(corpus: tuple[Path, np.ndarray])
 
 
 def test_rows_are_returned_as_float32_for_the_vector_column(
-    corpus: tuple[Path, np.ndarray],
+    corpus: tuple[Path, npt.NDArray[np.unsignedinteger[Any]]],
 ) -> None:
     """The column is `vector`, which is float4. Handing the oracle uint8 would
     make it compute in a precision the database never sees."""
@@ -63,7 +69,9 @@ def test_rows_are_returned_as_float32_for_the_vector_column(
     np.testing.assert_array_equal(block, vectors[5:9].astype(np.float32))
 
 
-def test_any_range_reads_the_right_rows(corpus: tuple[Path, np.ndarray]) -> None:
+def test_any_range_reads_the_right_rows(
+    corpus: tuple[Path, npt.NDArray[np.unsignedinteger[Any]]],
+) -> None:
     path, vectors = corpus
     source = BvecsSource(path)
 
@@ -109,14 +117,18 @@ def test_an_empty_file_is_refused_rather_than_read_as_zero_rows(tmp_path: Path) 
         BvecsSource(path)
 
 
-def test_a_range_beyond_the_corpus_is_refused(corpus: tuple[Path, np.ndarray]) -> None:
+def test_a_range_beyond_the_corpus_is_refused(
+    corpus: tuple[Path, npt.NDArray[np.unsignedinteger[Any]]],
+) -> None:
     path, _ = corpus
 
     with pytest.raises(ValueError, match="outside"):
         BvecsSource(path).rows(30, 99)
 
 
-def test_the_reader_holds_no_more_than_the_slice(corpus: tuple[Path, np.ndarray]) -> None:
+def test_the_reader_holds_no_more_than_the_slice(
+    corpus: tuple[Path, npt.NDArray[np.unsignedinteger[Any]]],
+) -> None:
     """A memory-mapped read must not materialise the file. The check that this
     is a view and not a copy is the whole reason the reader exists."""
     path, _ = corpus
@@ -132,7 +144,9 @@ def test_the_reader_holds_no_more_than_the_slice(corpus: tuple[Path, np.ndarray]
 # to cut it would defeat the reason it is a source.
 
 
-def test_a_prefix_reports_the_smaller_row_count(corpus: tuple[Path, np.ndarray]) -> None:
+def test_a_prefix_reports_the_smaller_row_count(
+    corpus: tuple[Path, npt.NDArray[np.unsignedinteger[Any]]],
+) -> None:
     from theodb_bench.streaming import PrefixSource
 
     path, vectors = corpus
@@ -143,7 +157,7 @@ def test_a_prefix_reports_the_smaller_row_count(corpus: tuple[Path, np.ndarray])
 
 
 def test_a_prefix_reads_the_same_rows_as_the_underlying_source(
-    corpus: tuple[Path, np.ndarray],
+    corpus: tuple[Path, npt.NDArray[np.unsignedinteger[Any]]],
 ) -> None:
     from theodb_bench.streaming import PrefixSource
 
@@ -153,7 +167,9 @@ def test_a_prefix_reads_the_same_rows_as_the_underlying_source(
     np.testing.assert_array_equal(prefix.rows(2, 9), vectors[2:9].astype(np.float32))
 
 
-def test_a_prefix_refuses_a_read_past_its_own_limit(corpus: tuple[Path, np.ndarray]) -> None:
+def test_a_prefix_refuses_a_read_past_its_own_limit(
+    corpus: tuple[Path, npt.NDArray[np.unsignedinteger[Any]]],
+) -> None:
     """The rows exist in the file, and that is exactly why the refusal matters:
     a silent read past the declared corpus would measure vectors the run says it
     did not load, and every recall figure would be against the wrong oracle."""
@@ -166,7 +182,9 @@ def test_a_prefix_refuses_a_read_past_its_own_limit(corpus: tuple[Path, np.ndarr
         prefix.rows(8, 12)
 
 
-def test_a_prefix_longer_than_the_source_is_refused(corpus: tuple[Path, np.ndarray]) -> None:
+def test_a_prefix_longer_than_the_source_is_refused(
+    corpus: tuple[Path, npt.NDArray[np.unsignedinteger[Any]]],
+) -> None:
     from theodb_bench.streaming import PrefixSource
 
     path, vectors = corpus
@@ -175,7 +193,9 @@ def test_a_prefix_longer_than_the_source_is_refused(corpus: tuple[Path, np.ndarr
         PrefixSource(BvecsSource(path), vectors.shape[0] + 1)
 
 
-def test_a_prefix_is_a_corpus_source(corpus: tuple[Path, np.ndarray]) -> None:
+def test_a_prefix_is_a_corpus_source(
+    corpus: tuple[Path, npt.NDArray[np.unsignedinteger[Any]]],
+) -> None:
     from theodb_bench.streaming import PrefixSource
 
     path, _ = corpus
@@ -183,7 +203,7 @@ def test_a_prefix_is_a_corpus_source(corpus: tuple[Path, np.ndarray]) -> None:
 
 
 def test_the_oracle_over_a_prefix_matches_the_oracle_over_the_equivalent_array(
-    corpus: tuple[Path, np.ndarray],
+    corpus: tuple[Path, npt.NDArray[np.unsignedinteger[Any]]],
 ) -> None:
     """The property the whole 20M path rests on: reading the first N records of a
     large file must give the same ground truth as holding those N vectors."""

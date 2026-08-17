@@ -17,14 +17,16 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from theodb_bench.formats import read_bvecs_dataset
 from theodb_bench.streaming import CorpusSource
 
 
-def _write(path: Path, vectors: np.ndarray) -> Path:
+def _write(path: Path, vectors: npt.NDArray[np.unsignedinteger[Any]]) -> Path:
     with path.open("wb") as handle:
         for vector in vectors:
             handle.write(struct.pack("<i", vector.shape[0]))
@@ -33,7 +35,9 @@ def _write(path: Path, vectors: np.ndarray) -> Path:
 
 
 @pytest.fixture
-def pair(tmp_path: Path) -> tuple[Path, Path, np.ndarray, np.ndarray]:
+def pair(
+    tmp_path: Path,
+) -> tuple[Path, Path, npt.NDArray[np.unsignedinteger[Any]], npt.NDArray[np.unsignedinteger[Any]]]:
     rng = np.random.default_rng(20260817)
     base = rng.integers(0, 256, size=(64, 10), dtype=np.uint8)
     queries = rng.integers(0, 256, size=(7, 10), dtype=np.uint8)
@@ -46,7 +50,9 @@ def pair(tmp_path: Path) -> tuple[Path, Path, np.ndarray, np.ndarray]:
 
 
 def test_the_corpus_arrives_as_a_source_and_the_queries_as_an_array(
-    pair: tuple[Path, Path, np.ndarray, np.ndarray],
+    pair: tuple[
+        Path, Path, npt.NDArray[np.unsignedinteger[Any]], npt.NDArray[np.unsignedinteger[Any]]
+    ],
 ) -> None:
     """Asymmetric on purpose: ten thousand queries are megabytes and every
     repetition reads all of them, while the corpus is read once per chunk."""
@@ -61,7 +67,9 @@ def test_the_corpus_arrives_as_a_source_and_the_queries_as_an_array(
 
 
 def test_no_published_neighbours_are_carried(
-    pair: tuple[Path, Path, np.ndarray, np.ndarray],
+    pair: tuple[
+        Path, Path, npt.NDArray[np.unsignedinteger[Any]], npt.NDArray[np.unsignedinteger[Any]]
+    ],
 ) -> None:
     """BIGANN's neighbour ids index the full billion. Carrying them against a
     20M prefix would point at rows that do not exist."""
@@ -82,7 +90,9 @@ def test_a_query_file_of_a_different_dimension_is_refused(tmp_path: Path) -> Non
 
 
 def test_subsampling_takes_a_prefix_of_both(
-    pair: tuple[Path, Path, np.ndarray, np.ndarray],
+    pair: tuple[
+        Path, Path, npt.NDArray[np.unsignedinteger[Any]], npt.NDArray[np.unsignedinteger[Any]]
+    ],
 ) -> None:
     base_path, query_path, base, queries = pair
 
@@ -95,7 +105,9 @@ def test_subsampling_takes_a_prefix_of_both(
 
 
 def test_subsampling_beyond_the_file_is_refused(
-    pair: tuple[Path, Path, np.ndarray, np.ndarray],
+    pair: tuple[
+        Path, Path, npt.NDArray[np.unsignedinteger[Any]], npt.NDArray[np.unsignedinteger[Any]]
+    ],
 ) -> None:
     base_path, query_path, base, _ = pair
 
@@ -104,7 +116,9 @@ def test_subsampling_beyond_the_file_is_refused(
 
 
 def test_a_run_over_a_bvecs_dataset_measures_the_streamed_corpus(
-    pair: tuple[Path, Path, np.ndarray, np.ndarray],
+    pair: tuple[
+        Path, Path, npt.NDArray[np.unsignedinteger[Any]], npt.NDArray[np.unsignedinteger[Any]]
+    ],
 ) -> None:
     """End to end at toy scale: the benchmark builds, streams its load, and
     scores recall — the same path a 20M run takes."""
@@ -126,7 +140,9 @@ def test_a_run_over_a_bvecs_dataset_measures_the_streamed_corpus(
 
 
 def test_asking_a_streamed_benchmark_for_its_corpus_array_is_refused(
-    pair: tuple[Path, Path, np.ndarray, np.ndarray],
+    pair: tuple[
+        Path, Path, npt.NDArray[np.unsignedinteger[Any]], npt.NDArray[np.unsignedinteger[Any]]
+    ],
 ) -> None:
     """The attribute exists for resident runs. Materialising 20M x 128 float32 to
     satisfy an attribute access is 10.2 GB — the exact allocation being avoided."""
@@ -148,20 +164,25 @@ def test_asking_a_streamed_benchmark_for_its_corpus_array_is_refused(
 def test_the_reference_scale_is_registered_and_declares_twenty_million() -> None:
     """The scale chosen from measured size: 1.27 GB per million on the measured
     host puts 20M at 25.4 GB, which is 9% of that disk."""
+    from theodb_bench.bench.vector import VectorWorkload
     from theodb_bench.registry import BENCHMARKS
 
     for name in ("vector/bigann20m/hnsw", "vector/bigann20m/load"):
-        assert BENCHMARKS[name].workload.corpus_size == 20_000_000
-        assert BENCHMARKS[name].workload.dimension == 128
+        workload = BENCHMARKS[name].workload
+        assert isinstance(workload, VectorWorkload)
+        assert workload.corpus_size == 20_000_000
+        assert workload.dimension == 128
 
 
 def test_the_load_only_suite_builds_no_index() -> None:
     """`--index none` is not a knob, so isolating the load from the build needs
     its own entry: minutes of work against hours."""
+    from theodb_bench.bench.vector import VectorWorkload
     from theodb_bench.registry import BENCHMARKS
 
-    kinds = [i.kind for i in BENCHMARKS["vector/bigann20m/load"].workload.indexes]
-    assert kinds == ["none"]
+    workload = BENCHMARKS["vector/bigann20m/load"].workload
+    assert isinstance(workload, VectorWorkload)
+    assert [index.kind for index in workload.indexes] == ["none"]
 
 
 def test_the_twenty_million_dataset_manifest_matches_the_suite() -> None:
@@ -169,6 +190,7 @@ def test_the_twenty_million_dataset_manifest_matches_the_suite() -> None:
     prefix while every artifact named the whole."""
     from pathlib import Path
 
+    from theodb_bench.bench.vector import VectorWorkload
     from theodb_bench.datasets import DatasetManifest
     from theodb_bench.registry import BENCHMARKS
 
@@ -176,12 +198,15 @@ def test_the_twenty_million_dataset_manifest_matches_the_suite() -> None:
         Path(__file__).resolve().parents[1] / "datasets/manifests/bigann-20m-euclidean.json"
     )
     workload = BENCHMARKS["vector/bigann20m/hnsw"].workload
+    assert isinstance(workload, VectorWorkload)
+    properties = manifest.properties
+    assert properties is not None
 
-    assert manifest.properties["corpus_size"] == workload.corpus_size
-    assert manifest.properties["dimension"] == workload.dimension
-    assert manifest.properties["metric"] == workload.metric
+    assert properties["corpus_size"] == workload.corpus_size
+    assert properties["dimension"] == workload.dimension
+    assert properties["metric"] == workload.metric
     # No published neighbours: they index the full billion.
-    assert manifest.properties["neighbours_per_query"] == 0
+    assert properties["neighbours_per_query"] == 0
 
 
 def test_the_manifest_declares_both_a_corpus_and_a_query_file() -> None:

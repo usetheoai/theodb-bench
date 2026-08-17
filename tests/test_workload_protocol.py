@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import pytest
 from theodb_bench.adapters.base import IndexSpec
+from theodb_bench.analysis.statistics import summarise_latency
 from theodb_bench.bench.analytical import AnalyticalWorkload
 from theodb_bench.bench.protocol import Benchmark, Workload
-from theodb_bench.bench.vector import VectorWorkload, summarise_latency
+from theodb_bench.bench.vector import VectorWorkload
 
 
 @pytest.mark.parametrize(
@@ -131,6 +132,7 @@ def test_a_swept_run_emits_its_pareto_frontier() -> None:
     ]
 
     payload = pareto_payload(points)
+    assert payload is not None
 
     assert set(payload["frontier"]) == {"shallow", "middle", "deep"}
     dominated = [p for p in payload["points"] if p["label"] == "dominated"]

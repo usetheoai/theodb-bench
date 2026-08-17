@@ -76,7 +76,9 @@ class _AnalyticalStub:
     def cursor(self) -> Any:
         return _CursorStub(self)
 
-    def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
+    def fetch_one(
+        self, sql: str, parameters: tuple[object, ...] | None = None
+    ) -> tuple[object, ...] | None:
         # The gate binds the setting name and the relation name as parameters, so
         # a stub that only inspected the SQL would answer the wrong question.
         first = str(parameters[0]) if parameters else ""
@@ -98,7 +100,9 @@ class _AnalyticalStub:
             return (len(ROWS),)
         return None
 
-    def fetch_all(self, sql: str, parameters: tuple[object, ...] | None = None):
+    def fetch_all(
+        self, sql: str, parameters: tuple[object, ...] | None = None
+    ) -> list[tuple[object, ...]]:
         if "EXPLAIN" in sql:
             return [(self.plan,)]
         for query_id, rows in self.rows_by_query.items():
@@ -394,7 +398,9 @@ def test_the_plan_proof_is_per_query_not_per_table() -> None:
     """
 
     class _PerQueryStub(_AnalyticalStub):
-        def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
+        def fetch_one(
+            self, sql: str, parameters: tuple[object, ...] | None = None
+        ) -> tuple[object, ...] | None:
             if "EXPLAIN" in sql and "GROUP BY" in sql:
                 return ("GroupAggregate -> Sort -> Seq Scan on t",)
             if "EXPLAIN" in sql:

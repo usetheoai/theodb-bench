@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 from theodb_bench.bench.corpus import (
     CorpusBinding,
@@ -28,7 +29,7 @@ from theodb_bench.streaming import CorpusSource
 
 
 class _Source:
-    def __init__(self, array: np.ndarray) -> None:
+    def __init__(self, array: npt.NDArray[np.floating[Any]]) -> None:
         self._array = array
         self.reads: list[tuple[int, int]] = []
 
@@ -40,7 +41,7 @@ class _Source:
     def dimension(self) -> int:
         return int(self._array.shape[1])
 
-    def rows(self, start: int, stop: int) -> np.ndarray:
+    def rows(self, start: int, stop: int) -> npt.NDArray[np.floating[Any]]:
         self.reads.append((start, stop))
         return self._array[start:stop]
 

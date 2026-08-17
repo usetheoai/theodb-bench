@@ -350,7 +350,9 @@ class _ServerStub:
     def execute(self, sql: str, parameters: tuple[object, ...] | None = None) -> None:
         self.executed.append(sql)
 
-    def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
+    def fetch_one(
+        self, sql: str, parameters: tuple[object, ...] | None = None
+    ) -> tuple[object, ...] | None:
         name = parameters[0] if parameters else None
         entry = self._settings.get(str(name))
         return None if entry is None else entry
@@ -420,7 +422,9 @@ def test_gate_distinguishes_could_not_verify_from_verified_and_divergent() -> No
     `cycle-acceptance` protects with NOT_VALIDATED."""
 
     class _Unreadable(_ServerStub):
-        def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
+        def fetch_one(
+            self, sql: str, parameters: tuple[object, ...] | None = None
+        ) -> tuple[object, ...] | None:
             raise RuntimeError("connection reset")
 
     adapter = _adapter_with(_Unreadable({}))
@@ -726,7 +730,9 @@ def test_theodb_records_the_postgresql_version_too() -> None:
     """
 
     class _VersionStub(_ServerStub):
-        def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
+        def fetch_one(
+            self, sql: str, parameters: tuple[object, ...] | None = None
+        ) -> tuple[object, ...] | None:
             if "version()" in sql:
                 return ("PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64",)
             if "pg_extension" in sql:
@@ -869,7 +875,7 @@ class _CopyStub(_ServerStub):
         self.copied_rows: list[tuple[object, ...]] = []
         self.copied_bytes: list[bytes] = []
 
-    def cursor(self):
+    def cursor(self) -> _CopyCursor:
         return _CopyCursor(self)
 
 

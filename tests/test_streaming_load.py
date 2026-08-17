@@ -22,7 +22,10 @@ than one whose limits are stated.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
+import numpy.typing as npt
 import pytest
 from theodb_bench.streaming import (
     CorpusSource,
@@ -34,7 +37,7 @@ from theodb_bench.streaming import (
 class _ArraySource:
     """A source backed by an in-memory array, standing in for a file reader."""
 
-    def __init__(self, array: np.ndarray) -> None:
+    def __init__(self, array: npt.NDArray[np.floating[Any]]) -> None:
         self._array = array
 
     @property
@@ -45,7 +48,7 @@ class _ArraySource:
     def dimension(self) -> int:
         return int(self._array.shape[1])
 
-    def rows(self, start: int, stop: int) -> np.ndarray:
+    def rows(self, start: int, stop: int) -> npt.NDArray[np.floating[Any]]:
         return self._array[start:stop]
 
 
@@ -147,23 +150,23 @@ def test_the_adapter_loads_from_a_source_without_holding_the_corpus() -> None:
         def execute(self, sql: str, parameters: object = None) -> None:
             self.statements.append(sql)
 
-        def fetch_one(self, sql: str, parameters: object = None):
+        def fetch_one(self, sql: str, parameters: object = None) -> tuple[int, ...] | None:
             return (12,) if "count(*)" in sql else None
 
-        def cursor(self):
+        def cursor(self) -> _Cursor:
             return _Cursor(self)
 
     class _Cursor:
         def __init__(self, server: _Server) -> None:
             self._server = server
 
-        def __enter__(self):
+        def __enter__(self) -> _Cursor:
             return self
 
         def __exit__(self, *_: object) -> None:
             return None
 
-        def copy(self, sql: str):
+        def copy(self, sql: str) -> _Writer:
             self._server.statements.append(sql)
             return _Writer(self._server)
 
@@ -171,7 +174,7 @@ def test_the_adapter_loads_from_a_source_without_holding_the_corpus() -> None:
         def __init__(self, server: _Server) -> None:
             self._server = server
 
-        def __enter__(self):
+        def __enter__(self) -> _Writer:
             return self
 
         def __exit__(self, *_: object) -> None:
@@ -181,11 +184,13 @@ def test_the_adapter_loads_from_a_source_without_holding_the_corpus() -> None:
             self._server.written.append(payload)
 
     class _CountingSource(_ArraySource):
-        def __init__(self, array: np.ndarray, log: list[tuple[int, int]]) -> None:
+        def __init__(
+            self, array: npt.NDArray[np.floating[Any]], log: list[tuple[int, int]]
+        ) -> None:
             super().__init__(array)
             self._log = log
 
-        def rows(self, start: int, stop: int) -> np.ndarray:
+        def rows(self, start: int, stop: int) -> npt.NDArray[np.floating[Any]]:
             self._log.append((start, stop))
             return super().rows(start, stop)
 
@@ -270,7 +275,7 @@ def test_the_corpus_is_read_in_bounded_slices() -> None:
     reads: list[tuple[int, int]] = []
 
     class _Counting(_ArraySource):
-        def rows(self, start: int, stop: int) -> np.ndarray:
+        def rows(self, start: int, stop: int) -> npt.NDArray[np.floating[Any]]:
             reads.append((start, stop))
             return super().rows(start, stop)
 
@@ -300,10 +305,10 @@ class _BudgetServer:
     def execute(self, sql: str, parameters: object = None) -> None:
         self.statements.append(sql)
 
-    def fetch_one(self, sql: str, parameters: object = None):
+    def fetch_one(self, sql: str, parameters: object = None) -> tuple[int, ...] | None:
         return (12,) if "count(*)" in sql else None
 
-    def cursor(self):
+    def cursor(self) -> _BudgetCursor:
         return _BudgetCursor(self)
 
 
@@ -311,13 +316,13 @@ class _BudgetCursor:
     def __init__(self, server: _BudgetServer) -> None:
         self._server = server
 
-    def __enter__(self):
+    def __enter__(self) -> _BudgetCursor:
         return self
 
     def __exit__(self, *_: object) -> None:
         return None
 
-    def copy(self, sql: str):
+    def copy(self, sql: str) -> _BudgetWriter:
         self._server.statements.append(sql)
         return _BudgetWriter(self._server)
 
@@ -329,7 +334,7 @@ class _BudgetWriter:
     def __init__(self, server: _BudgetServer) -> None:
         self._server = server
 
-    def __enter__(self):
+    def __enter__(self) -> _BudgetWriter:
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -342,7 +347,7 @@ class _BudgetWriter:
         return None
 
 
-def _budget_adapter() -> tuple[object, _BudgetServer]:
+def _budget_adapter() -> tuple[Any, _BudgetServer]:
     from theodb_bench.adapters.postgres import PgvectorAdapter
 
     server = _BudgetServer()
@@ -364,7 +369,7 @@ def test_a_streamed_load_runs_under_the_bulk_budget_not_the_query_budget() -> No
 
     adapter, server = _budget_adapter()
 
-    adapter.load_dataset_streaming(  # type: ignore[attr-defined]
+    adapter.load_dataset_streaming(
         VectorTableSpec(table="big", dimension=4, metric="l2"),
         _ArraySource(np.zeros((12, 4), dtype=np.float32)),
         chunk_rows=5,
@@ -372,7 +377,7 @@ def test_a_streamed_load_runs_under_the_bulk_budget_not_the_query_budget() -> No
 
     applied = _timeouts(server.statements)
     assert applied, "the load never set a statement budget"
-    assert applied[0] == adapter.config.build_timeout_ms  # type: ignore[attr-defined]
+    assert applied[0] == adapter.config.build_timeout_ms
 
 
 def test_the_query_budget_is_put_back_after_a_load() -> None:
@@ -382,13 +387,13 @@ def test_the_query_budget_is_put_back_after_a_load() -> None:
 
     adapter, server = _budget_adapter()
 
-    adapter.load_dataset_streaming(  # type: ignore[attr-defined]
+    adapter.load_dataset_streaming(
         VectorTableSpec(table="big", dimension=4, metric="l2"),
         _ArraySource(np.zeros((12, 4), dtype=np.float32)),
         chunk_rows=5,
     )
 
-    assert _timeouts(server.statements)[-1] == adapter.config.statement_timeout_ms  # type: ignore[attr-defined]
+    assert _timeouts(server.statements)[-1] == adapter.config.statement_timeout_ms
 
 
 def test_the_query_budget_is_put_back_even_when_the_load_fails() -> None:
@@ -399,17 +404,17 @@ def test_the_query_budget_is_put_back_even_when_the_load_fails() -> None:
     adapter, server = _budget_adapter()
 
     class _Exploding(_ArraySource):
-        def rows(self, start: int, stop: int) -> np.ndarray:
+        def rows(self, start: int, stop: int) -> npt.NDArray[np.floating[Any]]:
             raise RuntimeError("disk went away")
 
     with pytest.raises(RuntimeError, match="disk went away"):
-        adapter.load_dataset_streaming(  # type: ignore[attr-defined]
+        adapter.load_dataset_streaming(
             VectorTableSpec(table="big", dimension=4, metric="l2"),
             _Exploding(np.zeros((12, 4), dtype=np.float32)),
             chunk_rows=5,
         )
 
-    assert _timeouts(server.statements)[-1] == adapter.config.statement_timeout_ms  # type: ignore[attr-defined]
+    assert _timeouts(server.statements)[-1] == adapter.config.statement_timeout_ms
 
 
 def test_the_resident_load_gets_the_same_budget() -> None:
@@ -419,11 +424,11 @@ def test_the_resident_load_gets_the_same_budget() -> None:
 
     adapter, server = _budget_adapter()
 
-    adapter.load_dataset(  # type: ignore[attr-defined]
+    adapter.load_dataset(
         VectorTableSpec(table="big", dimension=4, metric="l2"),
         np.zeros((12, 4), dtype=np.float32),
     )
 
     applied = _timeouts(server.statements)
-    assert applied[0] == adapter.config.build_timeout_ms  # type: ignore[attr-defined]
-    assert applied[-1] == adapter.config.statement_timeout_ms  # type: ignore[attr-defined]
+    assert applied[0] == adapter.config.build_timeout_ms
+    assert applied[-1] == adapter.config.statement_timeout_ms

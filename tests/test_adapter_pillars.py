@@ -68,7 +68,9 @@ class _PillarStub:
     def execute(self, sql: str, parameters: tuple[object, ...] | None = None) -> None:
         self.executed.append(sql)
 
-    def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
+    def fetch_one(
+        self, sql: str, parameters: tuple[object, ...] | None = None
+    ) -> tuple[object, ...] | None:
         # Recorded too: a statement sent through fetch_one is still a statement,
         # and a stub that only watched `execute` would miss half the surface.
         self.executed.append(sql)
@@ -84,7 +86,9 @@ class _PillarStub:
             return (4096,)
         return None
 
-    def fetch_all(self, sql: str, parameters: tuple[object, ...] | None = None):
+    def fetch_all(
+        self, sql: str, parameters: tuple[object, ...] | None = None
+    ) -> list[tuple[object, ...]]:
         self.executed.append(sql)
         return list(self.rows)
 
