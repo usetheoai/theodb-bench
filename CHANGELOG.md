@@ -8,6 +8,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `run --build-timeout SECONDS` raises the budget for bulk phases (index build, dataset
+  load), which is what the harness already tells the operator to do when one aborts (#B-075)
 - Reference scale at 20 000 000 real SIFT descriptors: `vector/bigann20m/hnsw` and
   `vector/bigann20m/load`, with the `bigann-20m-euclidean` dataset manifest (#B-073)
 - BIGANN `bvecs` corpora can be measured without being held in memory: a corpus is read
