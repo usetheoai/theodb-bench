@@ -8,6 +8,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `theodb-bench capabilities` generates the capability x adapter matrix from the registry,
+  and the README's table is now that output rather than a hand-typed one (#B-073)
 - `run --build-timeout SECONDS` raises the budget for bulk phases (index build, dataset
   load), which is what the harness already tells the operator to do when one aborts (#B-075)
 - Reference scale at 20 000 000 real SIFT descriptors: `vector/bigann20m/hnsw` and

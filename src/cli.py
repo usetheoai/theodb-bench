@@ -289,6 +289,14 @@ def _load_ann_dataset(
     return dataset, digest
 
 
+def cmd_capabilities(args: argparse.Namespace) -> int:
+    """Print the capability matrix, derived from the registry the runs use."""
+    from theodb_bench.capabilities import render_capability_matrix
+
+    print(render_capability_matrix())
+    return 0
+
+
 def adapter_overrides(build_timeout: int | None) -> dict[str, Any]:
     """Adapter settings the run command may override from the command line.
 
@@ -736,6 +744,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--manifest-dir", type=Path, default=None)
     run.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
     run.set_defaults(func=cmd_run)
+
+    capabilities = subparsers.add_parser(
+        "capabilities",
+        help="which capabilities a real adapter can exercise, derived from the registry",
+    )
+    capabilities.set_defaults(func=cmd_capabilities)
 
     report = subparsers.add_parser("report", help="render the report for an existing run")
     report.add_argument("run_dir", type=Path)
