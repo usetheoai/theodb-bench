@@ -7,12 +7,14 @@ invariants live. Behaviour that needs a live server is marked `integration`.
 
 from __future__ import annotations
 
+import struct
 from typing import ClassVar
 
 import numpy as np
 import pytest
 from theodb_bench.adapters.base import (
     CAPABILITIES,
+    AnalyticalTable,
     IndexSpec,
     KnnQuery,
     SystemAdapter,
@@ -21,11 +23,13 @@ from theodb_bench.adapters.base import (
 from theodb_bench.adapters.postgres import (
     PgvectorAdapter,
     PostgresAdapter,
+    PostgresConfig,
     TheoDBAdapter,
     clamp_probes,
     ivfflat_lists,
 )
-from theodb_bench.errors import AdapterError, UnsupportedCapabilityError
+from theodb_bench.copy_binary import BINARY_HEADER, BINARY_TRAILER
+from theodb_bench.errors import AdapterError, ErrorContext, Phase, UnsupportedCapabilityError
 from theodb_bench.registry import ADAPTERS, get_adapter
 from theodb_bench.schemas import validate
 
@@ -212,7 +216,20 @@ def test_theodb_declares_only_the_surface_it_can_exercise() -> None:
     adapter = TheoDBAdapter()
     assert adapter.supports("vector_hnsw")
     assert adapter.supports("columnar")
-    for capability in ("hybrid", "lexical", "parquet", "graph", "vectorizer"):
+    # Reached as of the pillar work: `write_parquet`/`read_parquet` for one,
+    # `bm25_build`/`bm25_search` for the other.
+    assert adapter.supports("parquet")
+    assert adapter.supports("lexical")
+    # `hybrid` needs both legs measured together and is not wired yet; `rerank`,
+    # `vectorizer` and `ai_sql` each reach an external model, and without an
+    # endpoint there is nothing to measure.
+    #  folds the CSR,  walks it.
+    assert adapter.supports("graph")
+    #  fuses both legs; the quantizer reloptions are real
+    # and the pg-scann suite builds with pq_subspaces=64.
+    assert adapter.supports("hybrid")
+    assert adapter.supports("vector_quantized")
+    for capability in ("vectorizer", "rerank", "ai_sql"):
         assert not adapter.supports(capability), capability
 
 
@@ -333,7 +350,9 @@ class _ServerStub:
     def execute(self, sql: str, parameters: tuple[object, ...] | None = None) -> None:
         self.executed.append(sql)
 
-    def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
+    def fetch_one(
+        self, sql: str, parameters: tuple[object, ...] | None = None
+    ) -> tuple[object, ...] | None:
         name = parameters[0] if parameters else None
         entry = self._settings.get(str(name))
         return None if entry is None else entry
@@ -403,7 +422,9 @@ def test_gate_distinguishes_could_not_verify_from_verified_and_divergent() -> No
     `cycle-acceptance` protects with NOT_VALIDATED."""
 
     class _Unreadable(_ServerStub):
-        def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
+        def fetch_one(
+            self, sql: str, parameters: tuple[object, ...] | None = None
+        ) -> tuple[object, ...] | None:
             raise RuntimeError("connection reset")
 
     adapter = _adapter_with(_Unreadable({}))
@@ -709,7 +730,9 @@ def test_theodb_records_the_postgresql_version_too() -> None:
     """
 
     class _VersionStub(_ServerStub):
-        def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
+        def fetch_one(
+            self, sql: str, parameters: tuple[object, ...] | None = None
+        ) -> tuple[object, ...] | None:
             if "version()" in sql:
                 return ("PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64",)
             if "pg_extension" in sql:
@@ -725,3 +748,236 @@ def test_theodb_records_the_postgresql_version_too() -> None:
 
     assert "18.6" in version
     assert "theodb_rs 1.5.0" in version
+
+
+# ------------------------------- build gets its own time budget, and says so
+#
+# Measured on 2026-08-17: building an hnsw index over one million SIFT-128
+# vectors was cancelled after 61 s by the harness's own
+# `statement_timeout = 60_000`, and the run was reported as
+# "system under test crashed during the run". The competitor's scann build fitted
+# inside the same 60 s, so a single budget silently decided which engines could be
+# measured at which scale -- while the report blamed the engine.
+#
+# A query taking 60 s at k=10 is still a defect worth catching, so the query
+# budget stays tight. Building an index is a different risk with a different
+# duration, and it gets its own.
+
+
+def test_the_build_budget_is_larger_than_the_query_budget() -> None:
+    config = PostgresConfig()
+
+    assert config.build_timeout_ms > config.statement_timeout_ms
+
+
+def test_building_an_index_raises_the_budget_and_restores_it() -> None:
+    server = _ServerStub({"hnsw.ef_search": ("64", "session")})
+    adapter = _adapter_with(server)
+
+    adapter.build_index(SPEC, IndexSpec(kind="hnsw", parameters={"m": 16}))
+
+    statements = [s for s in server.executed if "statement_timeout" in s]
+    assert statements, "the build never touched the statement timeout"
+    assert f"SET statement_timeout = {PostgresConfig().build_timeout_ms}" in statements[0]
+    # Restored afterwards, or every later query would inherit the build's budget
+    # and a runaway search would stop being caught.
+    assert f"SET statement_timeout = {PostgresConfig().statement_timeout_ms}" in statements[-1]
+
+
+def test_the_budget_is_restored_even_when_the_build_fails() -> None:
+    class _Failing(_ServerStub):
+        def execute(self, sql: str, parameters: tuple[object, ...] | None = None) -> None:
+            super().execute(sql, parameters)
+            if sql.startswith("CREATE INDEX"):
+                raise AdapterError("build blew up", context=ErrorContext(phase=Phase.INDEX_BUILD))
+
+    server = _Failing({})
+    adapter = _adapter_with(server)
+
+    with pytest.raises(AdapterError):
+        adapter.build_index(SPEC, IndexSpec(kind="hnsw", parameters={"m": 16}))
+
+    statements = [s for s in server.executed if "statement_timeout" in s]
+    assert f"SET statement_timeout = {PostgresConfig().statement_timeout_ms}" in statements[-1]
+
+
+# ---------------------- TheoDB's own ScaNN-class path, reachable from the harness
+#
+# TheoDB has the ScaNN recipe, as reloptions on theodb_ivfflat rather than as an
+# access method named scann. Verified on the built image:
+#
+#   CREATE INDEX ... USING theodb_ivfflat (emb theodb_ivfflat_l2_ops)
+#     WITH (lists=20, pq_subspaces=16, pq_bits=4, separate_storage=1, refine=1)
+#   -> CREATE INDEX; the planner uses it.
+#
+# `pq_subspaces` is the anisotropic quantizer (AqQuantizer), `pq_bits=4` is the
+# LUT16 pshufb width, `refine=1` plus `separate_storage=1` gives the exact-distance
+# second stage, and `aq_threshold` is ScaNN's anisotropic T. The internal name for
+# the arc is pg_scann (M75 built the algorithm, M77 the persisted access method).
+#
+# The rescore pool is `64 * theodb_hnsw.over_fetch` (customscan.rs), so comparing
+# our second stage against the competitor's `pre_reordering_num_neighbors` needs
+# that knob declared -- otherwise the harness can only sweep probe depth and the
+# two rescore pools stay whatever each engine defaults to.
+
+
+def test_theodb_can_sweep_its_rescore_pool() -> None:
+    server = _ServerStub({"theodb_hnsw.over_fetch": ("2", "session")})
+    adapter = TheoDBAdapter()
+    adapter._row_count = 100_000
+    adapter._execute = server.execute  # type: ignore[method-assign]
+    adapter._fetch_one = server.fetch_one  # type: ignore[method-assign]
+
+    adapter.set_search_parameters({"over_fetch": 2})
+
+    assert adapter.effective_search_parameters() == {"theodb_hnsw.over_fetch": "2"}
+
+
+def test_theodb_renders_the_pg_scann_reloptions() -> None:
+    adapter = TheoDBAdapter()
+    adapter._row_count = 100_000
+
+    _, ddl = adapter.index_ddl(
+        SPEC,
+        IndexSpec(
+            kind="ivfflat",
+            parameters={
+                "lists": 316,
+                "pq_subspaces": 16,
+                "pq_bits": 4,
+                "separate_storage": 1,
+                "refine": 1,
+            },
+        ),
+    )
+
+    assert "USING theodb_ivfflat " in ddl
+    assert "theodb_ivfflat_l2_ops" in ddl
+    for option in ("lists = 316", "pq_subspaces = 16", "pq_bits = 4", "refine = 1"):
+        assert option in ddl, option
+
+
+# ------------------------------------------- bulk load goes through COPY, not INSERT
+#
+# Measured 2026-08-17 on the droplet: loading one million SIFT-128 vectors took
+# **122 s** through `cursor.executemany` in batches of 1000 -- a thousand
+# round-trips. The constant driving it is named COPY_BATCH and no `COPY` was ever
+# emitted. Load time never enters a published number, but it decides which scales
+# are measurable at all, and therefore which claims the project can make.
+
+
+class _CopyStub(_ServerStub):
+    """A server that records what was streamed through COPY."""
+
+    def __init__(self, settings: dict[str, tuple[str, str]]) -> None:
+        super().__init__(settings)
+        self.copy_statements: list[str] = []
+        self.copied_rows: list[tuple[object, ...]] = []
+        self.copied_bytes: list[bytes] = []
+
+    def cursor(self) -> _CopyCursor:
+        return _CopyCursor(self)
+
+
+class _CopyCursor:
+    def __init__(self, server: _CopyStub) -> None:
+        self._server = server
+
+    def __enter__(self) -> _CopyCursor:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def executemany(self, sql: str, batch: list[tuple[object, ...]]) -> None:
+        raise AssertionError(f"bulk load fell back to executemany: {sql[:60]}")
+
+    def copy(self, sql: str) -> _CopyWriter:
+        self._server.copy_statements.append(sql)
+        return _CopyWriter(self._server)
+
+
+class _CopyWriter:
+    def __init__(self, server: _CopyStub) -> None:
+        self._server = server
+
+    def __enter__(self) -> _CopyWriter:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def write_row(self, row: tuple[object, ...]) -> None:
+        self._server.copied_rows.append(row)
+
+    def write(self, payload: bytes) -> None:
+        self._server.copied_bytes.append(payload)
+
+
+def _copy_adapter(server: _CopyStub) -> PgvectorAdapter:
+    adapter = PgvectorAdapter()
+    adapter._execute = server.execute  # type: ignore[method-assign]
+    adapter._fetch_one = server.fetch_one  # type: ignore[method-assign]
+    adapter._cursor = server.cursor  # type: ignore[method-assign]
+    return adapter
+
+
+def test_the_vector_load_streams_through_binary_copy() -> None:
+    """pgvector's `vector` has a documented binary layout, so the corpus goes over
+    the wire with no per-value Python. Measured: the text encoding was 72 of the
+    75 seconds a million-vector load took."""
+    server = _CopyStub({})
+    adapter = _copy_adapter(server)
+
+    adapter.load_dataset(SPEC, np.zeros((5, 8), dtype=np.float32))
+
+    assert server.copy_statements, "no COPY was issued"
+    assert "FORMAT BINARY" in server.copy_statements[0]
+    stream = b"".join(server.copied_bytes)
+    assert stream.startswith(b"PGCOPY\n\xff\r\n\x00")
+    assert stream.endswith(struct.pack(">h", -1))
+    assert not server.copied_rows, "binary path must not fall back to write_row"
+
+
+def test_upstream_postgres_still_streams_rows_as_text() -> None:
+    """`real[]` has no encoder here, and saying so is better than a wrong one.
+
+    Upstream exact search is the honest floor of a comparison, not a scale target:
+    nobody loads a billion vectors into `real[]` to measure them.
+    """
+    server = _CopyStub({})
+    adapter = PostgresAdapter()
+    adapter._execute = server.execute  # type: ignore[method-assign]
+    adapter._fetch_one = server.fetch_one  # type: ignore[method-assign]
+    adapter._cursor = server.cursor  # type: ignore[method-assign]
+
+    adapter.load_dataset(SPEC, np.zeros((5, 8), dtype=np.float32))
+
+    assert "FORMAT BINARY" not in server.copy_statements[0]
+    assert len(server.copied_rows) == 5
+
+
+def test_the_analytical_load_streams_through_copy() -> None:
+    server = _CopyStub({})
+    adapter = _copy_adapter(server)
+    table = AnalyticalTable(
+        name="bench_analytical_row", columns=("id", "amount", "category", "quantity"), path="row"
+    )
+
+    adapter.load_analytical(table, [(0, 1.5, "a", 2), (1, -2.5, "b", 3)])
+
+    assert server.copy_statements[0].startswith("COPY ")
+    assert len(server.copied_rows) == 2
+
+
+def test_every_row_reaches_the_copy_stream() -> None:
+    """The count is still proven: speed never replaces the proof that all of it arrived."""
+    server = _CopyStub({})
+    adapter = _copy_adapter(server)
+
+    outcome = adapter.load_dataset(SPEC, np.zeros((2_500, 8), dtype=np.float32))
+
+    row_bytes = 2 + 8 + (4 + 4 + 8 * 4)
+    body = b"".join(server.copied_bytes)[len(BINARY_HEADER) : -len(BINARY_TRAILER)]
+    assert len(body) == 2_500 * row_bytes
+    assert outcome.rows_expected == 2_500

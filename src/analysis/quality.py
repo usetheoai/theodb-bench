@@ -81,6 +81,12 @@ def pairwise_distances(
     )
 
 
+#: Target size of one chunk of the distance matrix, in bytes. Small enough that a
+#: million-vector corpus stays measurable on a 16 GB host, large enough that the
+#: per-row Python loop is not the cost.
+_GROUND_TRUTH_CHUNK_BYTES: Final[int] = 32 * 1024 * 1024
+
+
 def brute_force_ground_truth(
     corpus: FloatArray, queries: FloatArray, k: int, metric: str = "l2"
 ) -> tuple[IntArray, npt.NDArray[np.float64]]:
@@ -89,19 +95,54 @@ def brute_force_ground_truth(
         raise ConfigError(
             f"k must be at least 1, got {k}", context=ErrorContext(phase=Phase.OFFLINE)
         )
-    distances = pairwise_distances(corpus, queries, metric)
-    corpus_size = distances.shape[1]
+    corpus_size = int(np.asarray(corpus).shape[0])
     if k > corpus_size:
         raise ConfigError(
             f"k={k} exceeds the corpus size {corpus_size}",
             context=ErrorContext(phase=Phase.OFFLINE),
         )
-    # Tie-break by id so the oracle is reproducible, exactly as the system is
-    # required to be.
-    ids = np.lexsort((np.tile(np.arange(corpus_size), (distances.shape[0], 1)), distances), axis=1)
-    ids = ids[:, :k]
-    ordered = np.take_along_axis(distances, ids, axis=1)
-    return ids.astype(np.int64), np.asarray(ordered, dtype=np.float64)
+
+    queries_array = np.asarray(queries)
+    query_count = int(queries_array.shape[0])
+    ids = np.empty((query_count, k), dtype=np.int64)
+    ordered = np.empty((query_count, k), dtype=np.float64)
+
+    # Chunked over queries, and reduced to k per row before the next chunk.
+    #
+    # The straightforward version -- one distance matrix plus a lexsort over the
+    # whole thing -- was measured being killed by the OOM killer at 10.5 GB for a
+    # 512 MB corpus, because it materialised a (queries x corpus) float64 matrix
+    # AND an identically shaped int64 tile of `arange(corpus_size)` whose only
+    # purpose was breaking ties. At a million vectors and 500 queries that is two
+    # 4 GB allocations, which is the difference between measurable and not.
+    #
+    # Chunk width is chosen from the corpus size so the working matrix stays in
+    # the tens of megabytes regardless of how large the corpus is.
+    chunk = max(1, min(query_count, _GROUND_TRUTH_CHUNK_BYTES // max(1, corpus_size * 8)))
+    for start in range(0, query_count, chunk):
+        stop = min(start + chunk, query_count)
+        block = pairwise_distances(corpus, queries_array[start:stop], metric)
+        for offset in range(stop - start):
+            row = np.asarray(block[offset])
+            # Cheapest correct selection: partition to the k smallest by value,
+            # then re-admit everything tied with the k-th so the tie-break by id
+            # sees every candidate it is entitled to. Ties at the top-k boundary
+            # are the case a naive partition gets wrong, and the oracle has to be
+            # reproducible or recall stops meaning anything.
+            candidates: npt.NDArray[np.int64]
+            if k >= row.shape[0]:
+                candidates = np.arange(row.shape[0], dtype=np.int64)
+            else:
+                partitioned = np.argpartition(row, k - 1)[:k]
+                threshold = row[partitioned].max()
+                candidates = np.flatnonzero(row <= threshold).astype(np.int64)
+            # `candidates` is ascending, so it is the id tie-break key; the
+            # distance is the primary key because lexsort reads keys last-major.
+            chosen = candidates[np.lexsort((candidates, row[candidates]))][:k]
+            ids[start + offset] = chosen
+            ordered[start + offset] = row[chosen]
+
+    return ids, ordered
 
 
 def neighbors_ground_truth(
@@ -144,19 +185,37 @@ def neighbors_ground_truth(
             context=ErrorContext(phase=Phase.OFFLINE),
         )
 
-    left = _as_oracle_input(corpus)
+    return distances_to_gathered(_as_oracle_input(corpus)[selected], queries, metric)
+
+
+def distances_to_gathered(
+    gathered: FloatArray, queries: FloatArray, metric: str = "l2"
+) -> npt.NDArray[np.float64]:
+    """Distances from queries to their own already-gathered neighbours.
+
+    Split out from `neighbors_ground_truth` because a corpus too large to hold
+    gathers the same vectors a different way — reading only the distinct rows the
+    ids name (`streaming.neighbour_vectors`) instead of fancy-indexing an array.
+    Only the gather differs; the metric arithmetic is one implementation, and
+    duplicating it per corpus shape would let the two drift apart on whichever
+    metric nobody thought to compare.
+
+    `gathered` is `(queries, k, dimension)` and is assumed already at oracle
+    precision when it comes from an array; anything else is rounded here, so both
+    paths compute over the float32 the column actually stores (I1).
+    """
+    left = np.ascontiguousarray(gathered, dtype=np.float32).astype(np.float64)
     right = _as_oracle_input(queries)
-    gathered = left[selected]
     if metric == "l2":
-        deltas = gathered - right[:, None, :]
+        deltas = left - right[:, None, :]
         return np.asarray(np.einsum("qkd,qkd->qk", deltas, deltas), dtype=np.float64)
     if metric == "ip":
-        return np.asarray(-np.einsum("qkd,qd->qk", gathered, right), dtype=np.float64)
+        return np.asarray(-np.einsum("qkd,qd->qk", left, right), dtype=np.float64)
     if metric == "cosine":
         query_norm = np.linalg.norm(right, axis=1)[:, None]
-        neighbour_norm = np.linalg.norm(gathered, axis=2)
+        neighbour_norm = np.linalg.norm(left, axis=2)
         with np.errstate(divide="ignore", invalid="ignore"):
-            similarity = np.einsum("qkd,qd->qk", gathered, right) / (query_norm * neighbour_norm)
+            similarity = np.einsum("qkd,qd->qk", left, right) / (query_norm * neighbour_norm)
         return np.asarray(
             np.nan_to_num(1.0 - similarity, nan=1.0, posinf=1.0, neginf=1.0), dtype=np.float64
         )

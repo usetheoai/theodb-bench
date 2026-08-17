@@ -41,9 +41,10 @@ turn a missing capability into a failed run (I13).
 
 from __future__ import annotations
 
+import contextlib
 import math
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Final
 
@@ -54,14 +55,23 @@ from theodb_bench.adapters.base import (
     AnalyticalResult,
     AnalyticalTable,
     BuildOutcome,
+    Document,
+    DocumentTableSpec,
+    GraphSpec,
+    HybridQuery,
     IndexSpec,
     KnnQuery,
     KnnResult,
+    LexicalQuery,
     LoadOutcome,
+    RankedResult,
     SystemAdapter,
+    TraversalQuery,
+    TraversalResult,
     VectorArray,
     VectorTableSpec,
 )
+from theodb_bench.copy_binary import BINARY_HEADER, BINARY_TRAILER, encode_vector_rows
 from theodb_bench.errors import (
     AdapterError,
     ErrorContext,
@@ -69,13 +79,13 @@ from theodb_bench.errors import (
     SystemUnavailableError,
     UnsupportedCapabilityError,
 )
+from theodb_bench.streaming import CorpusSource, chunk_source
 
 # S608 is annotated per site below. Table and column names cannot be bound as
 # parameters, so they are composed into the SQL -- but only after passing
 # _identifier(), which accepts nothing but alphanumerics and underscores.
 # Every value is bound.
 DEFAULT_DSN: Final[str] = "postgresql:///postgres"
-COPY_BATCH: Final[int] = 1000
 
 # Operator classes per access method and metric, in pgvector's convention. A
 # metric absent from an access method's map is unsupported for that method --
@@ -136,7 +146,24 @@ class PostgresConfig:
     """Connection and session settings for a PostgreSQL-family system."""
 
     dsn: str = DEFAULT_DSN
+
+    #: Budget for a *query*. Deliberately tight: a k=10 search that takes a minute
+    #: is a defect worth catching, not a measurement worth keeping.
     statement_timeout_ms: int = 60_000
+
+    #: Where `write_parquet` puts files and `read_parquet` reads them. Written by
+    #: the *server* process, so it must be writable by the database user rather
+    #: than by whoever runs the harness.
+    parquet_directory: str = "/var/lib/postgresql/theodb-bench-parquet"
+
+    #: Budget for building an index, which is a different risk with a different
+    #: duration. Measured: an hnsw build over one million SIFT-128 vectors was
+    #: cancelled at 61 s under the query budget, and the run was then reported as
+    #: the system under test crashing. The competitor's scann build fitted inside
+    #: 60 s, so one shared budget silently decided which engines were measurable at
+    #: which scale while the report blamed the engine. An hour is generous enough
+    #: for a billion-scale build and still catches a genuinely hung one.
+    build_timeout_ms: int = 3_600_000
     session_settings: dict[str, str] = field(default_factory=dict)
     application_name: str = "theodb-bench"
 
@@ -162,6 +189,11 @@ class PostgresAdapter(SystemAdapter):
         self._search_parameters: dict[str, Any] = {}
         self._effective_search_parameters: dict[str, str] = {}
         self._built_indexes: set[str] = set()
+        #: Tables whose BM25 index was built in this session. Searching one that
+        #: was never built is refused rather than answered with zero rows.
+        self._lexical_built: set[str] = set()
+        #: Edge relations whose persisted CSR was folded in this session.
+        self._graphs_built: set[str] = set()
 
     # ------------------------------------------------------------ capabilities
 
@@ -257,6 +289,132 @@ class PostgresAdapter(SystemAdapter):
     def _to_column(self, vector: VectorArray) -> Any:
         return [float(value) for value in vector]
 
+    #: Rows per binary COPY chunk. Chosen so one chunk of a 1536-dimension corpus
+    #: stays near 12 MB: large enough that the per-chunk overhead disappears,
+    #: small enough that a corpus larger than memory streams rather than
+    #: materialising.
+    COPY_CHUNK_ROWS: ClassVar[int] = 50_000
+
+    def _supports_binary_copy(self) -> bool:
+        """Whether this adapter's vector column has a binary encoder.
+
+        Upstream PostgreSQL stores `real[]`, whose binary array representation is
+        a different and more elaborate layout than pgvector's. It is not encoded
+        here because upstream exact search is the honest floor of a comparison
+        rather than a scale target -- nobody loads a billion vectors into
+        `real[]` to measure them.
+        """
+        return False
+
+    def _copy_vectors(self, table: str, column: str, vectors: VectorArray) -> None:
+        """Stream the corpus into the table, binary when the adapter can.
+
+        Measured on a million SIFT-128 vectors: batched INSERTs 122 s, text COPY
+        75 s of which 72 s was the Python text encoding, binary COPY streams the
+        same data with no per-value Python at all.
+        """
+        if not self._supports_binary_copy():
+            with (
+                self._cursor() as cursor,
+                cursor.copy(f"COPY {table} (id, {column}) FROM STDIN") as copy,
+            ):
+                for index, vector in enumerate(vectors):
+                    copy.write_row((index, self._to_column(vector)))
+            return
+
+        chunk = type(self).COPY_CHUNK_ROWS
+        with (
+            self._cursor() as cursor,
+            cursor.copy(f"COPY {table} (id, {column}) FROM STDIN WITH (FORMAT BINARY)") as copy,
+        ):
+            copy.write(BINARY_HEADER)
+            for start in range(0, int(vectors.shape[0]), chunk):
+                copy.write(encode_vector_rows(vectors[start : start + chunk], start_id=start))
+            copy.write(BINARY_TRAILER)
+
+    def load_dataset_streaming(
+        self, spec: VectorTableSpec, source: CorpusSource, *, chunk_rows: int = 50_000
+    ) -> LoadOutcome:
+        """Load a corpus that never has to be resident.
+
+        The array form takes 512 GB of RAM for a billion 128-dimension vectors.
+        This one holds one chunk at a time, so the ceiling becomes the disk rather
+        than the memory. The row ids come from the chunk rather than a counter, so a
+        resumed load does not renumber the rows the dataset's neighbour lists point
+        at.
+
+        Binary COPY only: the text path would put the per-value Python cost back,
+        and at this scale that cost is the whole load.
+        """
+        if not self._supports_binary_copy():
+            raise UnsupportedCapabilityError(
+                f"{self.system_id} has no binary encoder for its vector column, and "
+                f"streaming a corpus through the text path would reinstate the "
+                f"per-value encoding that makes this scale unreachable",
+                context=ErrorContext(phase=Phase.DATASET_LOAD, system=self.system_id),
+            )
+
+        table = _identifier(spec.table)
+        column = _identifier(spec.embedding_column)
+        started = time.perf_counter()
+        self._execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+        self._execute(
+            f"CREATE TABLE {table} (id integer PRIMARY KEY, "
+            f"{column} {self.column_type(spec.dimension)} NOT NULL)"
+        )
+        with (
+            self._under_bulk_budget(),
+            self._cursor() as cursor,
+            cursor.copy(f"COPY {table} (id, {column}) FROM STDIN WITH (FORMAT BINARY)") as copy,
+        ):
+            copy.write(BINARY_HEADER)
+            for start, block in chunk_source(source, chunk_rows):
+                copy.write(encode_vector_rows(block, start_id=start))
+            copy.write(BINARY_TRAILER)
+
+        self._execute(f"ANALYZE {table}")
+        counted = self._fetch_one(f"SELECT count(*) FROM {table}")
+        loaded = int(counted[0]) if counted else 0
+        self._row_count = loaded
+        return LoadOutcome(
+            seconds=time.perf_counter() - started,
+            rows_loaded=loaded,
+            rows_expected=source.row_count,
+        )
+
+    @contextlib.contextmanager
+    def _under_bulk_budget(self) -> Iterator[None]:
+        """Run bulk work under the wide budget, and put the query budget back.
+
+        Bulk work here is an index build or a dataset load. They look different
+        and are the same kind of thing: unmeasured work whose duration is a
+        property of the scale rather than a symptom, and which the tight query
+        budget was never meant to bound. That budget exists so a runaway *search*
+        cannot stall a run, and applying it to data movement is how a 20 000 000
+        vector load aborted at `COPY bench_vectors, line 4569000` — correctly
+        classified as `budget_exceeded` rather than a crash, because the system
+        under test had not failed.
+
+        The restore runs even when the body raises. Leaving the wide budget in
+        place would mean the next measured query is effectively unbounded, which
+        is the safety property being borrowed from, not discarded.
+        """
+        self._execute(f"SET statement_timeout = {int(self.config.build_timeout_ms)}")
+        try:
+            yield
+        finally:
+            self._restore_query_budget()
+
+    def _restore_query_budget(self) -> None:
+        """Put the query budget back, without masking why the build failed.
+
+        A dead connection makes this fail too, and the original exception is the
+        one worth propagating -- so the restore is allowed to fail silently here
+        and only here. Every later statement on a dead connection raises anyway.
+        """
+        with contextlib.suppress(Exception):  # see the docstring
+            self._execute(f"SET statement_timeout = {int(self.config.statement_timeout_ms)}")
+
     def load_dataset(self, spec: VectorTableSpec, vectors: VectorArray) -> LoadOutcome:
         table = _identifier(spec.table)
         column = _identifier(spec.embedding_column)
@@ -266,15 +424,20 @@ class PostgresAdapter(SystemAdapter):
             f"CREATE TABLE {table} (id integer PRIMARY KEY, "
             f"{column} {self.column_type(spec.dimension)} NOT NULL)"
         )
-        with self._cursor() as cursor:
-            batch: list[tuple[int, Any]] = []
-            for index, vector in enumerate(vectors):
-                batch.append((index, self._to_column(vector)))
-                if len(batch) >= COPY_BATCH:
-                    cursor.executemany(f"INSERT INTO {table} (id, {column}) VALUES (%s, %s)", batch)
-                    batch.clear()
-            if batch:
-                cursor.executemany(f"INSERT INTO {table} (id, {column}) VALUES (%s, %s)", batch)
+        # Streamed through COPY rather than batched INSERTs. Measured before the
+        # change: one million SIFT-128 vectors took 122 s as a thousand
+        # `executemany` round-trips of a thousand rows. Load time never enters a
+        # published number, but it decides which scales are measurable at all --
+        # and a benchmark that cannot load a billion vectors cannot measure one.
+        #
+        # Text format, not binary, and the reason is the vector type: a binary COPY
+        # needs a registered binary dumper per type, and psycopg has none for
+        # `vector` without an extra dependency that would help only the
+        # pgvector-family adapters. Text COPY is one statement for the whole load
+        # on every adapter, and `_to_column` already produces the text each engine
+        # expects.
+        with self._under_bulk_budget():
+            self._copy_vectors(table, column, vectors)
 
         self._execute(f"ANALYZE {table}")
         row = self._fetch_one(f"SELECT count(*) FROM {table}")
@@ -288,10 +451,30 @@ class PostgresAdapter(SystemAdapter):
 
     # ------------------------------------------------------------------ index
 
+    def _build_session_settings(self, index: IndexSpec) -> dict[str, str]:
+        """Session settings an index needs in force *while it is being built*.
+
+        Distinct from the search knobs: those are applied per operating point,
+        after the index exists. A build-time switch applied afterwards changes
+        nothing about the index that was already written, so an adapter that
+        treated one as the other would build one structure and label it another.
+        """
+        return {}
+
+    def _apply_build_session(self, index: IndexSpec) -> None:
+        mapping = self._build_session_settings(index)
+        if not mapping:
+            return
+        for guc, literal in mapping.items():
+            self._execute(f"SET {guc} = {literal}")
+        # Verified in force, exactly as the search knobs are.
+        self._verified_search_settings(mapping)
+
     def build_index(self, spec: VectorTableSpec, index: IndexSpec) -> BuildOutcome:
         self.require(index.capability, f"index kind {index.kind!r}")
         if index.kind == "none":
             return BuildOutcome(seconds=0.0, index_size_bytes=None, parameters_in_force={})
+        self._apply_build_session(index)
         raise UnsupportedCapabilityError(
             f"{self.system_id} cannot build a {index.kind} index",
             context=ErrorContext(phase=Phase.INDEX_BUILD, system=self.system_id),
@@ -558,7 +741,12 @@ class PostgresAdapter(SystemAdapter):
         "group_by_category": (
             "SELECT category, sum(amount) FROM {table} GROUP BY category ORDER BY category"
         ),
-        "filtered_sum": ("SELECT sum(amount) FROM {table} WHERE quantity < 24 AND amount > 0"),
+        # The predicate is the oracle's, read from `expected_answer` rather than
+        # invented: it filters `category = 'a' AND amount > 0`. An earlier version
+        # of this line used `quantity < 24`, copied from a published TPC-H-shaped
+        # query, and the benchmark's own correctness check caught it -- the run
+        # came back INVALID rather than reporting a fast wrong number.
+        "filtered_sum": ("SELECT sum(amount) FROM {table} WHERE category = 'a' AND amount > 0"),
     }
 
     def _analytical_column_types(self) -> str:
@@ -593,18 +781,13 @@ class PostgresAdapter(SystemAdapter):
         started = time.perf_counter()
         self._execute(f"DROP TABLE IF EXISTS {name} CASCADE")
         self._execute(f"CREATE TABLE {name} ({self._analytical_column_types()}){using}")
-        with self._cursor() as cursor:
-            batch: list[tuple[Any, ...]] = []
-            placeholders = ", ".join(["%s"] * len(table.columns))
-            columns = ", ".join(_identifier(column) for column in table.columns)
-            insert = f"INSERT INTO {name} ({columns}) VALUES ({placeholders})"
+        columns = ", ".join(_identifier(column) for column in table.columns)
+        with (
+            self._cursor() as cursor,
+            cursor.copy(f"COPY {name} ({columns}) FROM STDIN") as copy,
+        ):
             for row in rows:
-                batch.append(row)
-                if len(batch) >= COPY_BATCH:
-                    cursor.executemany(insert, batch)
-                    batch.clear()
-            if batch:
-                cursor.executemany(insert, batch)
+                copy.write_row(row)
         self._execute(f"ANALYZE {name}")
         self._apply_analytical_session(table)
         self._after_analytical_load(table)
@@ -825,6 +1008,11 @@ class PgvectorAdapter(PostgresAdapter):
             payload.pop("version", None)
         return payload
 
+    def _supports_binary_copy(self) -> bool:
+        """pgvector's `vector` has a fixed, documented binary layout: int16 dim,
+        int16 unused, then big-endian float4. `copy_binary` writes it."""
+        return True
+
     def column_type(self, dimension: int) -> str:
         return f"vector({int(dimension)})"
 
@@ -910,15 +1098,36 @@ class PgvectorAdapter(PostgresAdapter):
         )
         return name, ddl
 
+    def _build_session_settings(self, index: IndexSpec) -> dict[str, str]:
+        """Session settings an index needs in force *while it is being built*.
+
+        Distinct from the search knobs: those are applied per operating point,
+        after the index exists. A build-time switch applied afterwards changes
+        nothing about the index that was already written, so an adapter that
+        treated one as the other would build one structure and label it another.
+        """
+        return {}
+
+    def _apply_build_session(self, index: IndexSpec) -> None:
+        mapping = self._build_session_settings(index)
+        if not mapping:
+            return
+        for guc, literal in mapping.items():
+            self._execute(f"SET {guc} = {literal}")
+        # Verified in force, exactly as the search knobs are.
+        self._verified_search_settings(mapping)
+
     def build_index(self, spec: VectorTableSpec, index: IndexSpec) -> BuildOutcome:
         self.require(index.capability, f"index kind {index.kind!r}")
         if index.kind == "none":
             return BuildOutcome(seconds=0.0, index_size_bytes=None, parameters_in_force={})
+        self._apply_build_session(index)
 
         name, ddl = self.index_ddl(spec, index)
         started = time.perf_counter()
-        self._execute(ddl)
-        elapsed = time.perf_counter() - started
+        with self._under_bulk_budget():
+            self._execute(ddl)
+            elapsed = time.perf_counter() - started
         self._built_indexes.add(name)
         size = self._scalar(f"SELECT pg_relation_size({_literal(name)})")
         return BuildOutcome(
@@ -1015,6 +1224,9 @@ class TheoDBAdapter(PgvectorAdapter):
     ANALYTICAL_PATHS: ClassVar[dict[str, str | None]] = {
         "row": None,
         "columnar": "theodb_columnar",
+        # Parquet is a file. The rows land in a heap table first and are then
+        # written out; the queries read the file back.
+        "parquet": None,
     }
 
     #: `theodb.enable_columnar_agg` ships **off**, and the project's own wiki
@@ -1029,6 +1241,18 @@ class TheoDBAdapter(PgvectorAdapter):
     }
 
     ANALYTICAL_PLAN_MARKERS: ClassVar[dict[str, str]] = {"columnar": "theodb_columnar_agg"}
+
+    def _supports_binary_copy(self) -> bool:
+        return True
+
+    #: `over_fetch` is the rescore pool of the AQ+AH scan: `customscan.rs` computes
+    #: `rerank_pool = 64 * theodb_hnsw.over_fetch`, and that second stage is what
+    #: makes this path comparable to AlloyDB's `pre_reordering_num_neighbors`.
+    #: Without it declared, the harness can only sweep probe depth and the two
+    #: rescore pools stay at whatever each engine defaults to -- which is how a
+    #: quantized index gets measured at its quantizer's fidelity instead of at its
+    #: real operating point.
+    SEARCH_PARAMETERS: ClassVar[frozenset[str]] = frozenset({"ef_search", "probes", "over_fetch"})
 
     def capabilities(self) -> dict[str, bool]:
         """What this adapter can actually exercise, not what TheoDB can do.
@@ -1049,9 +1273,261 @@ class TheoDBAdapter(PgvectorAdapter):
             "vector_ivfflat": True,
             "vector_filtered": True,
             # Reached as of the analytical surface: `USING theodb_columnar` plus a
-            # `pg_class.relam` proof. Hybrid, Parquet, graph and the vectorizer are
-            # still not reachable from this adapter and stay undeclared.
+            # `pg_class.relam` proof.
             "columnar": True,
+            # `write_parquet` on load, `read_parquet` in every query.
+            "parquet": True,
+            # `bm25_build` on load, `bm25_search` per query.
+            "lexical": True,
+            # `theodb.graph_build` folds the CSR, `graph_expand` walks it, and
+            # `graph_expand_card` reports the work done.
+            "graph": True,
+            # `ai.hybrid_search_rrf` fuses both legs inside the engine.
+            "hybrid": True,
+            # `pq_subspaces`, `sbq_bits` and `rabitq_bits` are real reloptions, and
+            # `vector/sift/pg-scann` builds with `pq_subspaces=64`.
+            "vector_quantized": True,
+            # `rerank`, `vectorizer` and `ai_sql` stay out: each reaches an
+            # external model, and without an endpoint there is nothing to measure.
+            # A stub would put a number where an absence belongs.
+        }
+
+    def _parquet_path(self, table: AnalyticalTable) -> str:
+        """Where the Parquet file for a table lives.
+
+        Configurable rather than fixed, because the writer is the **server**
+        process: the directory has to be one the database user can write, which is
+        a property of the deployment and not of the harness. Measured the hard way
+        -- a directory created by root inside the container gave
+        `Permission denied (os error 13)` from `write_parquet`.
+        """
+        return f"{self.config.parquet_directory.rstrip('/')}/{table.name}.parquet"
+
+    def _after_analytical_load(self, table: AnalyticalTable) -> None:
+        """Write the Parquet file the queries will read back.
+
+        The rows are loaded into an ordinary table first because `write_parquet`
+        takes a relation. What is measured afterwards is the file: the queries
+        read through `read_parquet`, so the heap table is scaffolding rather than
+        the path under test.
+        """
+        if table.path != "parquet":
+            return
+        self._execute(
+            f"SELECT write_parquet({_literal(table.name)}, {_literal(self._parquet_path(table))})"
+        )
+
+    def _analytical_query_sql(self, table: AnalyticalTable, query: AnalyticalQuery) -> str:
+        if table.path != "parquet":
+            return super()._analytical_query_sql(table, query)
+        # `read_parquet` returns SETOF jsonb, so the columns are projected out of
+        # the document rather than named directly.
+        source = (
+            f"(SELECT (doc->>'id')::int AS id, (doc->>'amount')::double precision AS amount, "
+            f"doc->>'category' AS category, (doc->>'quantity')::int AS quantity "
+            f"FROM read_parquet({_literal(self._parquet_path(table))}) AS doc) AS parquet_rows"
+        )
+        template = type(self).ANALYTICAL_SQL.get(query.id)
+        if template is None:
+            raise AdapterError(
+                f"unknown analytical query {query.id!r}",
+                context=ErrorContext(
+                    phase=Phase.MEASUREMENT, system=self.system_id, details={"query": query.id}
+                ),
+            )
+        return template.replace("{table}", source)
+
+    # ------------------------------------------------------------- lexical
+
+    def load_documents(self, spec: DocumentTableSpec, documents: Sequence[Document]) -> LoadOutcome:
+        """Load documents and build the BM25 index over them.
+
+        The index is built here rather than lazily at search time because
+        `bm25_search` over an index that was never built used to return zero rows,
+        which is indistinguishable from nothing matching. The engine now refuses
+        that outright; loading and building together means the harness never
+        depends on which behaviour it gets.
+        """
+        table = _identifier(spec.table)
+        text_column = _identifier(spec.text_column)
+        vector_column = _identifier(spec.embedding_column)
+        tsv_column = _identifier(f"{spec.text_column}_tsv")
+        started = time.perf_counter()
+        self._execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+        # Both legs in one table: the lexical index reads the text and a dense or
+        # hybrid leg reads the vector. Loading only the text would make the
+        # hybrid surface unreachable from the same corpus, and comparing two legs
+        # over different corpora compares the corpora.
+        # The tsvector is generated, not chosen. Measured on the shipped image:
+        # `ai.hybrid_search_rrf` defaults to `lexical_engine='ts_rank_cd'`, which
+        # calls `ts_rank_cd(tsvector, tsquery)`; and its `'bm25'` engine refuses
+        # outright — "requires the pg_textsearch extension ... not present on the
+        # shipped image". So the fusable lexical leg is ts_rank_cd, and it needs a
+        # tsvector column to exist at all. A generated column keeps it derived from
+        # the text rather than maintained separately.
+        self._execute(
+            f"CREATE TABLE {table} (id bigint PRIMARY KEY, {text_column} text NOT NULL, "
+            f"{vector_column} {self.column_type(spec.dimension)} NOT NULL, "
+            f"{tsv_column} tsvector GENERATED ALWAYS AS "
+            f"(to_tsvector('english', {text_column})) STORED)"
+        )
+        with (
+            self._cursor() as cursor,
+            cursor.copy(f"COPY {table} (id, {text_column}, {vector_column}) FROM STDIN") as copy,
+        ):
+            for document in documents:
+                copy.write_row((document.id, document.text, self._to_column(document.vector)))
+        self._execute(f"ANALYZE {table}")
+
+        built = self._fetch_one(
+            "SELECT bm25_build(%s, %s, %s, %s)",
+            (self._lexical_index_id(spec), spec.table, "id", spec.text_column),
+        )
+        self._lexical_built.add(spec.table)
+        counted = self._fetch_one(f"SELECT count(*) FROM {table}")
+        loaded = int(counted[0]) if counted else 0
+        _ = built
+        return LoadOutcome(
+            seconds=time.perf_counter() - started,
+            rows_loaded=loaded,
+            rows_expected=len(documents),
+        )
+
+    def _lexical_index_id(self, spec: DocumentTableSpec) -> int:
+        """A stable id per table, since bm25_build is keyed by integer."""
+        return abs(hash(spec.table)) % 1_000_000
+
+    def execute_lexical(self, query: LexicalQuery) -> RankedResult:
+        if query.table not in self._lexical_built:
+            raise UnsupportedCapabilityError(
+                f"the BM25 index over {query.table} was never built in this session, "
+                f"and searching one that does not exist returns zero rows -- "
+                f"indistinguishable from nothing matching",
+                context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+            )
+        spec_id = abs(hash(query.table)) % 1_000_000
+        started = time.perf_counter()
+        rows = self._fetch_all(
+            "SELECT id, score FROM bm25_search(%s, %s, %s)",
+            (spec_id, query.text, int(query.n)),
+        )
+        elapsed = time.perf_counter() - started
+        return RankedResult(
+            ids=tuple(int(row[0]) for row in rows),
+            scores=tuple(float(row[1]) for row in rows),
+            latency_seconds=elapsed,
+        )
+
+    def execute_hybrid(self, query: HybridQuery) -> RankedResult:
+        """Fuse both legs with the engine's own RRF.
+
+        The benchmark fuses the legs offline as well, so the engine's fusion can be
+        compared to a reference rather than trusted -- which is the point of having
+        `analysis/fusion.py` at all.
+
+        The lexical leg here is **ts_rank_cd, not BM25**, and that is a property of
+        the shipped image rather than a choice. Measured: `lexical_engine='bm25'`
+        refuses with "requires the pg_textsearch extension ... not present on the
+        shipped image". So a hybrid number from this image does not exercise the
+        BM25 index that `load_documents` builds, and a report must not imply it
+        does.
+        """
+        if query.table not in self._lexical_built:
+            raise UnsupportedCapabilityError(
+                f"the lexical leg over {query.table} was never built, and fusing one "
+                f"leg with nothing returns the dense ranking under a hybrid label",
+                context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+            )
+        started = time.perf_counter()
+        rows = self._fetch_all(
+            "SELECT id, score FROM ai.hybrid_search_rrf("
+            "tbl => %s::regclass, id_col => 'id', content_tsv_col => %s, "
+            "vector_col => %s, query_text => %s, query_vector => %s::vector, "
+            "result_limit => %s, content_text_col => %s)",
+            (
+                query.table,
+                # The generated tsvector, which is what ts_rank_cd needs.
+                "content_tsv",
+                "embedding",
+                query.text,
+                self._to_column(query.vector),
+                int(query.n),
+                "content",
+            ),
+        )
+        elapsed = time.perf_counter() - started
+        return RankedResult(
+            ids=tuple(int(row[0]) for row in rows),
+            scores=tuple(float(row[1]) for row in rows),
+            latency_seconds=elapsed,
+        )
+
+    # --------------------------------------------------------------- graph
+
+    def load_graph(
+        self, spec: GraphSpec, edges: Sequence[tuple[int, int]], vertex_count: int
+    ) -> BuildOutcome:
+        """Load the edge list and fold it into the persisted CSR.
+
+        The fold is part of loading rather than of traversing, for the same reason
+        the BM25 index is: `graph_expand` over a relation with no CSR answers with
+        an empty set, and an empty neighbourhood is a legitimate answer for an
+        isolated vertex. The two are indistinguishable after the fact.
+        """
+        table = _identifier(spec.name)
+        started = time.perf_counter()
+        self._execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+        self._execute(f"CREATE TABLE {table} (src bigint NOT NULL, dst bigint NOT NULL)")
+        with (
+            self._cursor() as cursor,
+            cursor.copy(f"COPY {table} (src, dst) FROM STDIN") as copy,
+        ):
+            for source, target in edges:
+                copy.write_row((source, target))
+        self._execute(f"ANALYZE {table}")
+        self._execute(f"SELECT theodb.graph_build({_literal(spec.name)}, 'src', 'dst')")
+        self._graphs_built.add(spec.name)
+
+        # Timed as a build, per the contract: folding a CSR is structure work,
+        # and charging it to a query would make every traversal look expensive.
+        size = self._scalar(f"SELECT pg_relation_size({_literal(spec.name)})")
+        return BuildOutcome(
+            seconds=time.perf_counter() - started,
+            index_size_bytes=int(size) if size is not None else None,
+            parameters_in_force={"edges": len(edges), "vertices": vertex_count},
+        )
+
+    def traverse(self, query: TraversalQuery) -> TraversalResult:
+        if query.graph not in self._graphs_built:
+            raise UnsupportedCapabilityError(
+                f"the CSR for {query.graph} was never built in this session, and "
+                f"expanding a graph that has none returns an empty set -- which is "
+                f"also what an isolated vertex returns",
+                context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+            )
+        started = time.perf_counter()
+        rows = self._fetch_all(
+            "SELECT theodb.graph_expand(%s, %s, %s)",
+            (query.graph, [int(query.source)], int(query.hops)),
+        )
+        elapsed = time.perf_counter() - started
+        # The work done, asked of the engine rather than inferred from the answer:
+        # a traversal returning few vertices after walking many edges is expensive,
+        # and the answer size alone would hide that.
+        card = self._fetch_one(
+            "SELECT theodb.graph_expand_card(%s, %s, %s)",
+            (query.graph, [int(query.source)], int(query.hops)),
+        )
+        return TraversalResult(
+            vertices=tuple(int(row[0]) for row in rows),
+            edges_visited=int(card[0]) if card and card[0] is not None else 0,
+            latency_seconds=elapsed,
+        )
+
+    def graph_stats(self) -> dict[str, Any]:
+        """Structure size, for bytes-per-edge accounting."""
+        return {
+            "graphs_built": sorted(self._graphs_built),
         }
 
     def _search_guc_mapping(self, parameters: dict[str, Any]) -> dict[str, str]:
@@ -1070,6 +1546,8 @@ class TheoDBAdapter(PgvectorAdapter):
             elif name == "probes":
                 lists = ivfflat_lists(self._row_count)
                 mapping["theodb_ivfflat.probes"] = str(clamp_probes(int(value), lists))
+            elif name == "over_fetch":
+                mapping["theodb_hnsw.over_fetch"] = str(int(value))
         return mapping
 
 

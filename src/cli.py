@@ -9,15 +9,25 @@ distorts the measurement).
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 from theodb_bench import __version__
+from theodb_bench.adapters.base import IndexSpec
+from theodb_bench.bench.vector import (
+    FloatArray,
+    VectorBenchmark,
+    VectorCorpus,
+    VectorWorkload,
+    generate_corpus,
+)
 from theodb_bench.bundle import RunBundle
+from theodb_bench.compare import render_paired_verdict
 from theodb_bench.datasets import (
     DatasetManifest,
     DatasetRegistry,
@@ -29,7 +39,13 @@ from theodb_bench.datasets import (
 from theodb_bench.doctor import render_report, run_doctor
 from theodb_bench.environment import capture_environment
 from theodb_bench.errors import BenchError, ConfigError, ErrorContext, Phase
-from theodb_bench.formats import AnnDataset, read_ann_hdf5
+from theodb_bench.formats import (
+    AnnDataset,
+    StreamedAnnDataset,
+    read_ann_hdf5,
+    read_bvecs_dataset,
+)
+from theodb_bench.interleaved import interleave
 from theodb_bench.profiles import PROFILES, ProfileName, get_profile
 from theodb_bench.registry import ADAPTERS, BENCHMARKS, get_adapter, get_benchmark
 from theodb_bench.report import render_comparison, write_report
@@ -160,16 +176,15 @@ def cmd_list(args: argparse.Namespace) -> int:
 def cmd_describe(args: argparse.Namespace) -> int:
     entry = get_benchmark(args.benchmark)
     workload = entry.workload
+    # The workload describes itself. Enumerating its fields here would put one
+    # family's vocabulary -- `k`, `dimension`, `search_sweep` -- in front of every
+    # family, and `describe` would start lying about an analytical suite.
     workload_payload: dict[str, object] = {
-        "corpus_size": workload.corpus_size,
-        "dimension": workload.dimension,
-        "query_count": workload.query_count,
-        "k": workload.k,
-        "metric": workload.metric,
-        "seed": workload.seed,
-        "warmup_queries": workload.warmup_queries,
-        "indexes": [index.label() for index in workload.indexes],
-        "search_sweep": {name: list(v) for name, v in workload.search_sweep.items()},
+        **workload.benchmark_payload(),
+        "declared": {
+            key: _describable(value)
+            for key, value in dataclasses.asdict(workload).items()  # type: ignore[call-overload]
+        },
     }
     payload: dict[str, object] = {
         "id": entry.id,
@@ -229,7 +244,7 @@ def cmd_dataset_fetch(args: argparse.Namespace) -> int:
 
 def _load_ann_dataset(
     manifest: DatasetManifest, root: Path, workload: object
-) -> tuple[AnnDataset, str]:
+) -> tuple[AnnDataset | StreamedAnnDataset, str]:
     """Verify a dataset, then read the vectors the run will actually measure.
 
     Verification happens first and unconditionally. Reading unverified bytes
@@ -244,13 +259,31 @@ def _load_ann_dataset(
             context=ErrorContext(phase=Phase.DATASET_LOAD),
         )
     path = manifest.resolve(root, entry)
-    if path.suffix.lower() not in {".hdf5", ".h5"}:
+    suffix = path.suffix.lower()
+    dataset: AnnDataset | StreamedAnnDataset
+    if suffix in {".hdf5", ".h5"}:
+        dataset = read_ann_hdf5(path)
+    elif suffix == ".bvecs":
+        # A corpus this format is used for does not fit in memory, so it is read
+        # in ranges. The query set is a second file, and its absence is an error
+        # rather than a fallback to slicing queries out of the corpus: a query
+        # drawn from the corpus is its own nearest neighbour, which inflates
+        # recall for every system by exactly one hit per query.
+        query_entry = manifest.file_by_role("queries") or manifest.file_by_role("test")
+        if query_entry is None:
+            raise ConfigError(
+                f"dataset {manifest.id} supplies a {path.name} corpus but declares no file "
+                f"with role `queries`. Slicing queries out of the corpus would make each "
+                f"query its own nearest neighbour and raise recall for every system alike.",
+                context=ErrorContext(phase=Phase.DATASET_LOAD),
+            )
+        dataset = read_bvecs_dataset(path, manifest.resolve(root, query_entry))
+    else:
         raise ConfigError(
-            f"dataset {manifest.id}: only ANN-Benchmarks HDF5 files can be loaded today; "
-            f"{path.name} is not one",
+            f"dataset {manifest.id}: only ANN-Benchmarks HDF5 and BIGANN bvecs files can be "
+            f"loaded today; {path.name} is neither",
             context=ErrorContext(phase=Phase.DATASET_LOAD),
         )
-    dataset = read_ann_hdf5(path)
     digest = next((f.expected_sha256 for f in verification.files if f.path == entry.path), "")
     return dataset, digest
 
@@ -262,10 +295,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     repetitions = args.repetitions if args.repetitions is not None else entry.default_repetitions
 
     workload = entry.workload
-    corpus = queries = None
+    corpus: VectorCorpus | None = None
+    queries: FloatArray | None = None
     dataset_id = dataset_version = dataset_sha256 = None
 
     if args.dataset:
+        if not isinstance(workload, VectorWorkload):
+            raise ConfigError(
+                f"`{entry.id}` generates its own data from its seed, and "
+                f"`--dataset {args.dataset}` supplies an ANN corpus. Accepting it "
+                f"would record a dataset identity the run never measured.",
+                context=ErrorContext(phase=Phase.PREFLIGHT),
+            )
         manifest = _dataset_registry(args).load(args.dataset)
         loaded, dataset_sha256 = _load_ann_dataset(manifest, args.dataset_root, workload)
         reduced = loaded.subsample(
@@ -294,6 +335,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             benchmark_id=entry.id,
             workload=workload,
             adapter_factory=adapter.build,
+            baseline_dir=args.baseline,
             profile=profile,
             repetitions=repetitions,
             results_root=args.output,
@@ -336,6 +378,215 @@ def cmd_compare(args: argparse.Namespace) -> int:
     bundles = [RunBundle.open(path) for path in args.run_dirs]
     print(render_comparison(bundles))
     return EXIT_OK
+
+
+def _describable(value: object) -> object:
+    """Coerce a declared workload field into something JSON can carry."""
+    if isinstance(value, tuple):
+        return [_describable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _describable(v) for k, v in value.items()}
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def cmd_head2head(args: argparse.Namespace) -> int:
+    """Two systems, same queries, back to back, with the order alternating.
+
+    Sequential runs leave machine drift in the comparison: measured on
+    2026-08-17, the same configuration re-run on the same host varied by 24% and
+    46% in median throughput, and a paired test attributes that to the engine with
+    the same confidence a real difference would get. Interleaving sends query *i*
+    to both systems before moving on, so anything moving on the scale of minutes
+    moves both sides together.
+
+    Each system gets its own benchmark, because two engines need different index
+    configurations to reach the same quality and their knobs are not the same
+    knobs -- `pq_subspaces` is meaningless to AlloyDB and `num_leaves` is
+    meaningless to us. What must match is the experiment: corpus, queries, k and
+    metric. That is checked rather than assumed.
+    """
+    entry_a = get_benchmark(args.benchmark_a)
+    entry_b = get_benchmark(args.benchmark_b)
+    for entry in (entry_a, entry_b):
+        if not isinstance(entry.workload, VectorWorkload):
+            raise ConfigError(
+                f"head2head interleaves k-NN probes and `{entry.id}` is not a vector "
+                f"benchmark. Interleaving an analytical suite would need a different "
+                f"unit of work on both sides, and pretending otherwise would compare "
+                f"two things that are not the same measurement.",
+                context=ErrorContext(phase=Phase.PREFLIGHT),
+            )
+    _require_comparable(entry_a.workload, entry_b.workload)
+
+    workload = entry_a.workload
+    if not isinstance(workload, VectorWorkload):  # refused above; narrows the type
+        raise ConfigError(
+            f"`{entry_a.id}` is not a vector benchmark",
+            context=ErrorContext(phase=Phase.PREFLIGHT),
+        )
+    corpus: VectorCorpus
+    corpus, queries = generate_corpus(workload)
+    if args.dataset:
+        manifest = _dataset_registry(args).load(args.dataset)
+        loaded, _ = _load_ann_dataset(manifest, args.dataset_root, workload)
+        reduced = loaded.subsample(
+            min(workload.corpus_size, loaded.corpus_size),
+            min(workload.query_count, loaded.query_count),
+        )
+        workload = replace(workload, dimension=reduced.dimension, corpus_size=reduced.corpus_size)
+        corpus, queries = reduced.train, reduced.test
+
+    benchmark = VectorBenchmark(workload, corpus, queries)
+    spec = workload.table_spec()
+
+    sides: list[tuple[str, Any, list[tuple[IndexSpec, dict[str, Any]]]]] = []
+    for name, dsn, entry in (
+        (args.system_a, args.dsn_a, entry_a),
+        (args.system_b, args.dsn_b, entry_b),
+    ):
+        adapter = get_adapter(name).build(dsn=dsn)
+        adapter.prepare()
+        adapter.start()
+        adapter.wait_ready()
+        # Through the binding, not `load_dataset` directly: a corpus too large to
+        # hold arrives as a source, and the binding is what knows to stream it.
+        benchmark.binding.load(adapter, spec)
+        side_workload = entry.workload
+        if not isinstance(side_workload, VectorWorkload):  # already refused above
+            raise ConfigError(
+                f"`{entry.id}` is not a vector benchmark",
+                context=ErrorContext(phase=Phase.PREFLIGHT),
+            )
+        configurations = VectorBenchmark(side_workload, corpus, queries).configurations()
+        sides.append((name, adapter, configurations))
+
+    print(f"# Head to head: {args.system_a} vs {args.system_b}")
+    print()
+    print(
+        f"`{args.benchmark_a}` against `{args.benchmark_b}`, interleaved query by "
+        f"query with the order alternating."
+    )
+    print()
+
+    probes = [benchmark._query(i) for i in range(len(queries))]
+    try:
+        for (index_a, search_a), (index_b, search_b) in zip(sides[0][2], sides[1][2], strict=False):
+            labels: list[str] = []
+            for (name, adapter, _), index, search in (
+                (sides[0], index_a, search_a),
+                (sides[1], index_b, search_b),
+            ):
+                try:
+                    adapter.drop_indexes(spec)
+                    adapter.build_index(spec, index)
+                    adapter.set_search_parameters(search)
+                except Exception as exc:  # a refusal or a rejected knob, either way no pair
+                    labels.append(f"{name} refused: {exc}")
+            if labels:
+                print(f"- skipped — {'; '.join(labels)}")
+                continue
+
+            result = interleave(
+                (sides[0][0], sides[0][1]), (sides[1][0], sides[1][1]), queries=probes
+            )
+
+            # Quality first. A latency verdict between two operating points of
+            # different quality compares the operating points, not the systems --
+            # and the faster one is simply the one doing less work.
+            order = sorted(result.latency_a)
+            recall_a = benchmark._recall([list(result.returned_a[q]) for q in order], len(order))
+            recall_b = benchmark._recall([list(result.returned_b[q]) for q in order], len(order))
+            label_a = f"{index_a.label()} {_render_search(search_a)}"
+            label_b = f"{index_b.label()} {_render_search(search_b)}"
+            print(
+                print(
+                    f"- `{label_a}` (recall {recall_a:.4f}) vs `{label_b}` (recall {recall_b:.4f})"
+                    if recall_a is not None and recall_b is not None
+                    else f"- `{label_a}` vs `{label_b}` (recall unavailable on one side)"
+                )
+            )
+
+            if recall_a is None or recall_b is None or abs(recall_a - recall_b) > RECALL_TOLERANCE:
+                print(
+                    f"  no verdict — the two points differ in quality by more than "
+                    f"{RECALL_TOLERANCE:.2f} recall. Comparing them would report the "
+                    f"one doing less work as faster."
+                )
+                continue
+
+            verdict = render_paired_verdict(
+                result.name_a,
+                result.latency_a,
+                result.name_b,
+                result.latency_b,
+                metric="latency_ms",
+            )
+            dropped = (
+                f" ({len(result.dropped)} query pair(s) dropped: one side did not answer)"
+                if result.dropped
+                else ""
+            )
+            print(f"  {verdict}{dropped}")
+
+            # Within tolerance is not identical, and the side at lower recall is
+            # doing less work. Saying which one it is costs a line and stops a
+            # reader crediting the difference entirely to the engine.
+            gap = recall_a - recall_b
+            if abs(gap) > 1e-9:
+                lower = sides[0][0] if gap < 0 else sides[1][0]
+                print(
+                    f"  caveat: {lower} operated at {abs(gap):.4f} lower recall, so part "
+                    f"of its latency advantage is work it did not do."
+                )
+    finally:
+        for _, adapter, _ in sides:
+            adapter.stop()
+            adapter.cleanup()
+
+    print()
+    print(
+        "Interleaved: query *i* went to both systems back to back with the order "
+        "alternating, so drift in the machine affects both sides equally and "
+        "neither always pays the cold cache. This is the confounder a comparison "
+        "of two sequential runs leaves in."
+    )
+    return EXIT_OK
+
+
+#: How far two operating points' recall may differ and still be compared. Beyond
+#: it a latency verdict describes the quality gap rather than the systems.
+RECALL_TOLERANCE: Final[float] = 0.01
+
+
+def _render_search(search: dict[str, Any]) -> str:
+    return " ".join(f"{k}={v}" for k, v in sorted(search.items())) or "(no sweep)"
+
+
+def _require_comparable(a: Any, b: Any) -> None:
+    """Refuse two workloads that measure different experiments.
+
+    Index configuration may and must differ between engines. The corpus, the
+    query set, k and the metric may not: comparing across them would compare the
+    experiments rather than the systems, and would do it while looking like a
+    head-to-head.
+    """
+    mismatched = [
+        field
+        for field in ("corpus_size", "dimension", "query_count", "k", "metric", "seed")
+        if getattr(a, field) != getattr(b, field)
+    ]
+    if mismatched:
+        detail = ", ".join(
+            f"{field}: {getattr(a, field)} vs {getattr(b, field)}" for field in mismatched
+        )
+        raise ConfigError(
+            f"the two benchmarks do not measure the same experiment ({detail}). "
+            f"Index configuration may differ between engines -- their knobs are not "
+            f"the same knobs -- but the corpus, queries, k and metric may not.",
+            context=ErrorContext(phase=Phase.PREFLIGHT),
+        )
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -438,6 +689,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="measure a verified dataset instead of the seeded synthetic corpus",
     )
+    run.add_argument(
+        "--baseline",
+        type=Path,
+        default=None,
+        help="an accepted run bundle to detect regression against. Profiles that "
+        "declare regression_gate record that no detection happened without one.",
+    )
     run.add_argument("--manifest-dir", type=Path, default=None)
     run.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
     run.set_defaults(func=cmd_run)
@@ -449,6 +707,28 @@ def build_parser() -> argparse.ArgumentParser:
     compare = subparsers.add_parser("compare", help="compare existing runs")
     compare.add_argument("run_dirs", type=Path, nargs="+")
     compare.set_defaults(func=cmd_compare)
+
+    head2head = subparsers.add_parser(
+        "head2head",
+        help="measure two systems interleaved, query by query, and test the difference",
+    )
+    head2head.add_argument("--system-a", required=True, choices=sorted(ADAPTERS))
+    head2head.add_argument("--dsn-a", required=True)
+    head2head.add_argument("--benchmark-a", required=True, choices=sorted(BENCHMARKS))
+    head2head.add_argument("--system-b", required=True, choices=sorted(ADAPTERS))
+    head2head.add_argument("--dsn-b", required=True)
+    head2head.add_argument(
+        "--benchmark-b",
+        required=True,
+        choices=sorted(BENCHMARKS),
+        help="may differ from --benchmark-a: two engines need different index "
+        "configurations to reach the same quality, and their knobs are not the "
+        "same knobs. The corpus, queries, k and metric must match.",
+    )
+    head2head.add_argument("--dataset", default=None)
+    head2head.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
+    head2head.add_argument("--manifest-dir", type=Path, default=None)
+    head2head.set_defaults(func=cmd_head2head)
 
     validate_cmd = subparsers.add_parser("validate", help="re-validate an existing run bundle")
     validate_cmd.add_argument("run_dir", type=Path)

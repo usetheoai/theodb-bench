@@ -13,11 +13,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import statistics
 from pathlib import Path
 from typing import Any, Final
 
 from theodb_bench.absent import Absent
+from theodb_bench.analysis.pareto import (
+    MAXIMIZE,
+    PARETO_SCHEMA_VERSION,
+    Objective,
+    Point,
+    dominates,
+    frontier,
+)
+from theodb_bench.bench.vector import PointResult
 from theodb_bench.bundle import RunBundle
+from theodb_bench.compare import match_by_recall, render_paired_verdict
 from theodb_bench.errors import ErrorContext, Phase, SchemaValidationError
 from theodb_bench.profiles import get_profile
 from theodb_bench.schemas import validate
@@ -313,4 +324,204 @@ def render_comparison(bundles: list[RunBundle]) -> str:
         "be used.",
         "",
     ]
+    lines += _paired_verdicts(bundles)
     return "\n".join(lines) + "\n"
+
+
+def _paired_verdicts(bundles: list[RunBundle]) -> list[str]:
+    """The part of a comparison that is actually a comparison (I14).
+
+    The table above is two summaries printed near each other, and a reader will
+    infer a winner from it whether or not one exists. This section says whether
+    the difference survives a paired randomisation test on the per-query
+    latencies, in which direction, and by how much -- or says the runs cannot be
+    paired.
+
+    Exactly two runs are required. Three medians in a table invite a ranking; a
+    paired test compares two things, and silently picking two of three to test
+    would answer a question nobody asked.
+    """
+    if len(bundles) != 2:
+        if len(bundles) > 2:
+            return [
+                "## Paired comparison",
+                "",
+                f"Not run: {len(bundles)} runs were given and a paired test compares "
+                "two. Re-run `compare` with exactly two bundles.",
+                "",
+            ]
+        return []
+
+    samples = [_latency_by_query(b) for b in bundles]
+    names = [b.read_artifact("manifest")["system"]["id"] for b in bundles]
+
+    out = ["## Paired comparison", ""]
+
+    shared = sorted(set(samples[0]) & set(samples[1]))
+    if shared:
+        # Same labels on both sides: a regression, one system measured twice.
+        for label in shared:
+            out.append(
+                "- "
+                + render_paired_verdict(
+                    names[0],
+                    samples[0][label],
+                    names[1],
+                    samples[1][label],
+                    metric=f"latency_ms @ {label}",
+                )
+            )
+        out += ["", _PAIRED_FOOTNOTE, ""]
+        return out
+
+    # Different engines. Their labels carry engine-specific knobs and can never
+    # coincide -- `probes=20` on one side, `num_leaves_to_search=20` on the other --
+    # so the frontiers are read on the quality axis both share.
+    recalls = [_recall_by_label(b) for b in bundles]
+    match = match_by_recall(recalls[0], recalls[1])
+    if match is None:
+        out += [
+            "Not run: the two frontiers have no operating point at comparable "
+            "recall (within 0.01). Pairing the nearest points regardless would "
+            "compare a fast low-quality configuration against a slow high-quality "
+            "one and report the first as a winner.",
+            "",
+        ]
+        return out
+
+    out += [
+        f"Matched at recall {match.recall_a:.4f} ({names[0]}, `{match.label_a}`) "
+        f"against {match.recall_b:.4f} ({names[1]}, `{match.label_b}`) — a gap of "
+        f"{match.gap:.4f}.",
+        "",
+        "- "
+        + render_paired_verdict(
+            names[0],
+            samples[0][match.label_a],
+            names[1],
+            samples[1][match.label_b],
+            metric="latency_ms at matched recall",
+        ),
+        "",
+        _PAIRED_FOOTNOTE,
+        "",
+    ]
+    return out
+
+
+_PAIRED_FOOTNOTE = (
+    "Lower latency wins. `p` is a paired randomisation test with Monte-Carlo "
+    "correction; the interval is a paired percentile bootstrap. An "
+    "`indistinguishable` verdict is a result, not a missing one.\n\n"
+    "**What the pairing does not control.** Pairing removes the variance of query "
+    "difficulty: both systems answered the same query. It does not remove drift in "
+    "the machine, because the two runs happened at different times. Measured on "
+    "2026-08-17, the same configuration re-run on the same host varied by 24% and "
+    "46% in median throughput, so a busier machine during one side of the pair is "
+    "attributed to the engine with the same confidence a real difference would be. "
+    "The interval does not protect against this: it measures dispersion across "
+    "queries, not across runs. Interleaving the two systems query by query would "
+    "control it, and this harness does not yet do that."
+)
+
+
+def _recall_by_label(bundle: RunBundle) -> dict[str, float]:
+    """Median recall per configuration, for reading a frontier at matched quality."""
+    try:
+        statistics = bundle.read_artifact("statistics")
+    except (SchemaValidationError, KeyError):
+        return {}
+    out: dict[str, float] = {}
+    for point in statistics.get("points", []):
+        recall = point.get("metrics", {}).get("recall", {}).get("median")
+        if recall is not None:
+            out[point["label"]] = float(recall)
+    return out
+
+
+def _latency_by_query(bundle: RunBundle) -> dict[str, dict[int, float]]:
+    """Per-query latencies from a bundle, per configuration label.
+
+    Repetitions are averaged per query before pairing: the paired unit is the
+    query, and a query measured three times on each side is still one paired
+    observation. Treating each repetition as independent would inflate `n`
+    threefold and make any difference look significant.
+    """
+    try:
+        raw = json.loads((bundle.raw_dir / "latency-by-query.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+    out: dict[str, dict[int, float]] = {}
+    for point in raw.get("points", []):
+        totals: dict[int, list[float]] = {}
+        for rep in point.get("repetitions", []):
+            for qid, value in rep.get("latency_ms_by_query", {}).items():
+                totals.setdefault(int(qid), []).append(float(value))
+        if totals:
+            out[point["label"]] = {q: sum(v) / len(v) for q, v in totals.items()}
+    return out
+
+
+def pareto_payload(points: list[PointResult]) -> dict[str, Any] | None:
+    """The quality/throughput frontier of a swept run, or None when there is none.
+
+    The project's own rule is that a headline throughput comparison needs a stated
+    target quality with its interpolation method, *or* the complete frontier.
+    `analysis/pareto.py` computed frontiers and had no caller, so no run emitted
+    one and every comparison fell to the first branch by default.
+
+    Returns None below two measured configurations. A frontier of one point is a
+    point, and publishing it as a curve would dress a single measurement as a
+    trade-off.
+    """
+    measured = [
+        point
+        for point in points
+        if point.status == "measured" and point.repetitions and _median_recall(point) is not None
+    ]
+    if len(measured) < 2:
+        return None
+
+    objectives = [
+        Objective(metric="throughput_per_second", direction=MAXIMIZE),
+        Objective(metric="recall", direction=MAXIMIZE),
+    ]
+    candidates = [
+        Point(
+            label=point.label,
+            values={
+                "throughput_per_second": _median_throughput(point) or 0.0,
+                "recall": _median_recall(point) or 0.0,
+            },
+        )
+        for point in measured
+    ]
+    best = frontier(candidates, objectives)
+    return {
+        "schema_version": PARETO_SCHEMA_VERSION,
+        "objectives": [objective.as_dict() for objective in objectives],
+        "points": [
+            {
+                "label": point.label,
+                "values": point.values,
+                # Who beat it, not merely that something did: an operator fixing a
+                # dominated configuration needs to know which one to compare with.
+                "dominated_by": [
+                    other.label for other in candidates if dominates(other, point, objectives)
+                ],
+            }
+            for point in candidates
+        ],
+        "frontier": [point.label for point in sorted(best, key=lambda p: p.values["recall"])],
+    }
+
+
+def _median_recall(point: PointResult) -> float | None:
+    values = [r.recall for r in point.repetitions if r.recall is not None]
+    return statistics.median(values) if values else None
+
+
+def _median_throughput(point: PointResult) -> float | None:
+    values = [r.throughput for r in point.repetitions if r.throughput is not None]
+    return statistics.median(values) if values else None

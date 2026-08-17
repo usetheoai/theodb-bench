@@ -14,20 +14,23 @@ measurement completed.
 from __future__ import annotations
 
 import os
+import statistics
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final
 
-from theodb_bench.absent import Absent
+from theodb_bench.abort import AbortKind, classify_abort
+from theodb_bench.absent import Absent, unavailable
 from theodb_bench.adapters.base import SystemAdapter
 from theodb_bench.analysis.statistics import (
     PointStatistics,
     statistics_payload,
     summarise_points,
 )
-from theodb_bench.bench.vector import PointResult, VectorBenchmark, VectorWorkload
+from theodb_bench.bench.protocol import Workload
+from theodb_bench.bench.vector import PointResult
 from theodb_bench.bundle import RunBundle
 from theodb_bench.doctor import run_doctor
 from theodb_bench.environment import capture_environment
@@ -45,6 +48,8 @@ from theodb_bench.isolation import (
     online_cpus,
 )
 from theodb_bench.profiles import Profile, get_profile
+from theodb_bench.regression_wiring import regression_for
+from theodb_bench.report import pareto_payload
 from theodb_bench.telemetry import CollectorSet, PerfStatCollector, ProcessCollector
 from theodb_bench.validation import RunObservations, validate_run
 
@@ -59,7 +64,7 @@ class RunRequest:
     """Everything a run needs, decided before anything is measured."""
 
     benchmark_id: str
-    workload: VectorWorkload
+    workload: Workload
     adapter_factory: AdapterFactory
     profile: Profile = field(default_factory=lambda: get_profile("smoke"))
     benchmark_version: int = 1
@@ -68,6 +73,10 @@ class RunRequest:
     isolation: IsolationPlan = field(default_factory=IsolationPlan)
     collect_process_telemetry: bool = True
     collect_perf_telemetry: bool = False
+    baseline_dir: Path | None = None
+    """An accepted run to detect regression against. Absent means no detection
+    happened, which the profile gate records rather than treating as a pass."""
+
     dataset_id: str | None = None
     dataset_version: str | None = None
     dataset_sha256: str | None = None
@@ -99,23 +108,17 @@ class RunOutcome:
 
 def _benchmark_payload(request: RunRequest) -> dict[str, Any]:
     workload = request.workload
+    warmup = workload.warmup_operations
     return {
         "schema_version": BENCHMARK_SCHEMA_VERSION,
         "id": request.benchmark_id,
         "version": request.benchmark_version,
-        "workload": {
-            "type": "ann",
-            "loop": "closed",
-            "k": [workload.k],
-            "operation_count": workload.query_count,
-        },
+        **workload.benchmark_payload(),
         "warmup": {
-            "policy": "fixed_operations" if workload.warmup_queries else "none",
-            "operations": workload.warmup_queries,
+            "policy": "fixed_operations" if warmup else "none",
+            "operations": warmup,
         },
-        "quality": {"metric": "recall", "ground_truth": "computed"},
         "repetitions": request.repetitions,
-        "parameters": {name: list(values) for name, values in workload.search_sweep.items()},
     }
 
 
@@ -235,10 +238,12 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
     bundle.write_artifact("environment", environment)
     bundle.write_artifact("benchmark", _benchmark_payload(request))
 
-    benchmark = VectorBenchmark(request.workload, request.corpus, request.queries)
+    # The workload builds its own benchmark. The orchestrator names no concrete
+    # family, so a second one is a module rather than an edit here.
+    benchmark = request.workload.build(request.corpus, request.queries)
     collectors = _build_collectors(request)
 
-    sut_crashed = False
+    abort_kind: AbortKind | None = None
     oom = False
     points: list[PointResult] = []
     try:
@@ -254,21 +259,74 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
         collectors.start()
         # Phases 5 to 8 -- build, warm-up, measurement and repetition, per
         # configuration. Warm-up happens inside run_point and is untimed.
-        for index, search in benchmark.configurations():
-            points.append(benchmark.run_point(adapter, index, search, request.repetitions))
+        points.extend(benchmark.points(adapter, request.repetitions))
         collectors.stop()
 
         bundle.write_artifact("system", adapter.system_payload())
         bundle.write_raw_text("system-stats.json", _as_json(adapter.collect_stats()))
     except Exception as exc:
-        sut_crashed = True
+        # Classified rather than blamed on the system under test. A gate refusing
+        # to measure, a statement the harness itself cancelled, and a backend that
+        # died are three different facts, and this report is published.
+        abort_kind = classify_abort(exc)
         oom = bool(getattr(exc, "context", None) and exc.context.details.get("oom"))  # type: ignore[attr-defined]
-        bundle.write_raw_text("system.log", f"run aborted: {type(exc).__name__}: {exc}\n")
+        bundle.write_raw_text(
+            "system.log",
+            f"run aborted ({abort_kind.value}): {type(exc).__name__}: {exc}\n{abort_kind.detail}\n",
+        )
     finally:
         try:
             adapter.stop()
         finally:
             adapter.cleanup()
+
+    # Per-query latencies, kept as a raw artefact so `compare` can pair two runs
+    # by query and run the paired test invariant I14 requires. Summaries cannot
+    # be paired, and this is the only place the per-query values exist.
+    bundle.write_raw_text(
+        "latency-by-query.json",
+        _as_json(
+            {
+                "queries_are_seeded_and_ordered": True,
+                "points": [
+                    {
+                        "label": point.label,
+                        "repetitions": [
+                            {
+                                "repetition": rep.repetition,
+                                "latency_ms_by_query": {
+                                    str(q): v for q, v in sorted(rep.latency_by_query.items())
+                                },
+                            }
+                            for rep in point.repetitions
+                        ],
+                    }
+                    for point in points
+                ],
+            }
+        ),
+    )
+
+    # The frontier, when the run swept enough to have one. Without it a headline
+    # throughput comparison has only the other branch of the rule available --
+    # a stated target quality with its interpolation method -- and nothing was
+    # emitting either.
+    pareto = pareto_payload(points)
+    if pareto is not None:
+        bundle.write_derived("pareto", pareto)
+
+    baseline_run_id: str | Absent = unavailable("no baseline supplied for this run")
+    baseline_comparable = True
+    if request.baseline_dir is not None:
+        regression, baseline_comparable = _regression_artifact(
+            request, bundle, points, system_id=adapter.system_id
+        )
+        bundle.write_derived("regression", regression)
+        baseline_run_id = (
+            str(regression["baseline"]["run_id"])
+            if regression["baseline"]
+            else (unavailable("baseline bundle carried no run id"))
+        )
 
     telemetry = collectors.as_dict()
     bundle.write_raw_text("telemetry.json", _as_json(telemetry))
@@ -287,14 +345,16 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
         ),
         timeouts=sum(r.timeouts for p in points for r in p.repetitions),
         errors=sum(r.errors for p in points for r in p.repetitions),
-        sut_crashed=sut_crashed,
+        sut_crashed=abort_kind is AbortKind.CRASHED,
+        run_refused=abort_kind is AbortKind.REFUSED,
+        budget_exceeded=abort_kind is AbortKind.BUDGET_EXCEEDED,
         oom_observed=oom,
         escaped_processes=escapes,
         cpu_limit_respected=_cpu_limit_respected(applied, escapes),
         memory_limit_respected=applied.memory_limit_applied,
-        quality_reported=any(
-            repetition.recall is not None for point in points for repetition in point.repetitions
-        ),
+        quality_reported=request.workload.quality_was_reported(points),
+        baseline_run_id=baseline_run_id,
+        baseline_comparable=baseline_comparable,
         quality_required=True,
         telemetry_complete=_telemetry_complete(telemetry),
         dirty_source_tree=_dirty_tree(environment),
@@ -341,12 +401,84 @@ def _build_collectors(request: RunRequest) -> CollectorSet:
     return collectors
 
 
+def _run_metrics(points: list[PointResult]) -> dict[str, float]:
+    """The headline metrics a regression gate judges, median across repetitions."""
+    throughputs = [
+        r.throughput for point in points for r in point.repetitions if r.throughput is not None
+    ]
+    p95: list[float] = []
+    for point in points:
+        for repetition in point.repetitions:
+            value = repetition.latency.p95 if repetition.latency is not None else None
+            if isinstance(value, float):
+                p95.append(value)
+    metrics: dict[str, float] = {}
+    if throughputs:
+        metrics["throughput_per_second"] = statistics.median(throughputs)
+    if p95:
+        metrics["latency_p95_ms"] = statistics.median(p95)
+    return metrics
+
+
+def _regression_artifact(
+    request: RunRequest,
+    bundle: RunBundle,
+    points: list[PointResult],
+    *,
+    system_id: str,
+) -> tuple[dict[str, Any], bool]:
+    """Compare this run to the supplied baseline bundle."""
+    if request.baseline_dir is None:
+        raise ConfigError(
+            "regression artefact requested without a baseline",
+            context=ErrorContext(phase=Phase.OFFLINE),
+        )
+    baseline_bundle = RunBundle.open(request.baseline_dir)
+    baseline_manifest = baseline_bundle.read_artifact("manifest")
+    baseline_result = baseline_bundle.read_artifact("result")
+    baseline_points = _points_from_artifact(baseline_result)
+
+    common = {
+        "benchmark_id": request.benchmark_id,
+        "benchmark_version": request.benchmark_version,
+        "profile": request.profile.name.value,
+        # Taken from the adapter rather than from this run's manifest: the
+        # manifest is written at finalization, which has not happened yet.
+        "system": system_id,
+        "hardware_class": "unclassified",
+    }
+    baseline_common = {
+        "benchmark_id": baseline_manifest["benchmark"]["id"],
+        "benchmark_version": baseline_manifest["benchmark"].get("version", 1),
+        "profile": baseline_manifest.get("profile", "unknown"),
+        "system": baseline_manifest["system"]["id"],
+        "hardware_class": "unclassified",
+    }
+    return regression_for(
+        candidate={**common, "run_id": bundle.run_id, "metrics": _run_metrics(points)},
+        baseline={
+            **baseline_common,
+            "run_id": baseline_manifest["run_id"],
+            "metrics": baseline_points,
+        },
+    )
+
+
+def _points_from_artifact(result: dict[str, Any]) -> dict[str, float]:
+    """Headline metrics from an already-written result artefact."""
+    throughputs = [
+        point["throughput_per_second"]
+        for point in result.get("points", [])
+        if point.get("throughput_per_second") is not None
+    ]
+    return {"throughput_per_second": statistics.median(throughputs)} if throughputs else {}
+
+
 def _expected_operations(request: RunRequest, points: list[PointResult]) -> int | None:
     measured = [point for point in points if point.status == "measured"]
     if not measured:
         return None
-    sample = request.workload.query_cap or request.workload.query_count
-    return len(measured) * request.repetitions * sample
+    return request.workload.expected_operations(len(measured), request.repetitions)
 
 
 def _escaped_pids(plan: IsolationPlan) -> tuple[int, ...]:
@@ -407,7 +539,7 @@ def _manifest_payload(
         },
         "system": {"id": adapter.system_id},
         "execution": {
-            "warmup_operations": request.workload.warmup_queries,
+            "warmup_operations": request.workload.warmup_operations,
             "repetitions": request.repetitions,
             "loop": "closed",
         },

@@ -32,6 +32,7 @@ from theodb_bench.adapters.base import (
     SystemAdapter,
 )
 from theodb_bench.analysis.statistics import LatencySummary, summarise_latency
+from theodb_bench.bench.vector import PointResult, RepetitionResult
 from theodb_bench.errors import ConfigError, ErrorContext, Phase
 
 ROW: Final[str] = "row"
@@ -88,6 +89,52 @@ class AnalyticalWorkload:
 
     def table_for(self, path: str) -> AnalyticalTable:
         return AnalyticalTable(name=f"{self.table}_{path}", columns=COLUMNS, path=path)
+
+    # ----------------------------------------------------- Workload protocol
+
+    def build(self, corpus: Any = None, queries: Any = None) -> AnalyticalBenchmark:
+        """Rows come from this workload's own seed, so the arguments are ignored.
+
+        A verified vector dataset has nothing to say about an analytical table,
+        and taking one here would let a run declare a dataset identity it never
+        measured.
+        """
+        return AnalyticalBenchmark(self)
+
+    def benchmark_payload(self) -> dict[str, Any]:
+        return {
+            "workload": {
+                "type": "analytical",
+                "loop": "closed",
+                # `k` is omitted rather than sent empty: the schema makes it
+                # optional and requires it non-empty when present, which is the
+                # right reading -- an aggregation has no k, and sending [] or [1]
+                # would put a k-NN concept into a workload that has none.
+                "operation_count": len(self.queries) * len(self.paths),
+            },
+            # An analytical answer is right or wrong against this benchmark's own
+            # oracle. `exact_match` is the vocabulary's own term for that; a recall
+            # figure would put a number where a verdict belongs.
+            "quality": {"metric": "exact_match", "ground_truth": "computed"},
+            "parameters": {"paths": list(self.paths)},
+        }
+
+    def expected_operations(self, measured_points: int, repetitions: int) -> int:
+        return measured_points * repetitions
+
+    @property
+    def warmup_operations(self) -> int:
+        return self.warmup_queries
+
+    def quality_was_reported(self, points: list[Any]) -> bool:
+        """Here the quality axis is the status, not a number.
+
+        Every measured point had its answer compared to this benchmark's own
+        oracle before it was called measured -- a point that disagreed carries
+        `invalid` instead. Requiring a recall figure would invalidate a run for
+        not producing a number that does not apply to it.
+        """
+        return any(point.status in {"measured", "invalid"} for point in points)
 
 
 def generate_rows(workload: AnalyticalWorkload) -> list[tuple[Any, ...]]:
@@ -206,7 +253,7 @@ class AnalyticalBenchmark:
         self.rows = generate_rows(workload)
         self.oracle = {query.id: expected_answer(self.rows, query.id) for query in workload.queries}
 
-    def load(self, adapter: SystemAdapter, path: str) -> float | None:
+    def _load_path(self, adapter: SystemAdapter, path: str) -> float | None:
         """Load the identical rows into one path. Returns None when unsupported."""
         capability = _CAPABILITY[path]
         if capability is not None and not adapter.supports(capability):
@@ -267,7 +314,7 @@ class AnalyticalBenchmark:
         """Every declared query on every declared path."""
         measurements: list[QueryMeasurement] = []
         for path in self.workload.paths:
-            if self.load(adapter, path) is None:
+            if self._load_path(adapter, path) is None:
                 measurements.extend(
                     QueryMeasurement(
                         query_id=query.id,
@@ -282,6 +329,69 @@ class AnalyticalBenchmark:
                 self.run_query(adapter, path, query) for query in self.workload.queries
             )
         return measurements
+
+    # --------------------------------------------------- Benchmark protocol
+
+    def load(self, adapter: SystemAdapter, path: str | None = None) -> float | None:
+        """Load one path, or every declared path when called by the orchestrator.
+
+        The orchestrator loads once before measuring and does not know this
+        family has three storage paths, so the no-argument form loads all of
+        them. A path that the adapter does not support contributes None rather
+        than zero: an absent path is not a path that loaded instantly.
+        """
+        if path is not None:
+            return self._load_path(adapter, path)
+        total = 0.0
+        loaded_any = False
+        for declared in self.workload.paths:
+            seconds = self._load_path(adapter, declared)
+            if seconds is not None:
+                total += seconds
+                loaded_any = True
+        return total if loaded_any else None
+
+    def points(self, adapter: SystemAdapter, repetitions: int) -> list[PointResult]:
+        """Every query on every path, as one point each.
+
+        The point is (query, path) rather than (query) because the paths are
+        exactly what this workload compares: the same answer computed three ways
+        is three operating points, and folding them into one would average away
+        the comparison.
+        """
+        by_label: dict[str, PointResult] = {}
+        for repetition in range(1, max(1, repetitions) + 1):
+            for measurement in self.run(adapter):
+                label = f"{measurement.query_id} via {measurement.path}"
+                point = by_label.setdefault(
+                    label,
+                    PointResult(
+                        label=label,
+                        parameters={
+                            "query": measurement.query_id,
+                            "path": measurement.path,
+                        },
+                    ),
+                )
+                if measurement.status != "measured" or measurement.latency is None:
+                    point.status = measurement.status
+                    point.status_detail = measurement.status_detail
+                    continue
+                point.repetitions.append(
+                    RepetitionResult(
+                        repetition=repetition,
+                        successes=1,
+                        errors=0,
+                        timeouts=0,
+                        duration_seconds=measurement.wall_seconds or 0.0,
+                        latency=measurement.latency,
+                        # Correctness here is a right-or-wrong verdict, already
+                        # carried by `status`. A recall figure would be a number
+                        # standing in for a verdict.
+                        recall=None,
+                    )
+                )
+        return list(by_label.values())
 
     def compare_paths(self, measurements: Sequence[QueryMeasurement]) -> dict[str, Any]:
         """Line the paths up per query, so a difference is attributable.

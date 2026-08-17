@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import tracemalloc
+from typing import Any
+
 import numpy as np
 import numpy.typing as npt
 import pytest
@@ -220,3 +223,105 @@ def test_mrr_uses_the_first_relevant_position() -> None:
 def test_success_at_k_is_binary() -> None:
     assert success_at_k([5, 6], {6}, k=2) == 1.0
     assert success_at_k([5, 6], {7}, k=2) == 0.0
+
+
+# ------------------------------- the oracle must fit in memory to be usable
+#
+# Measured on a 16 GB host: `brute_force_ground_truth` on 1M x 128 with 500
+# queries was killed by the OOM killer at 10.5 GB anon RSS, for a dataset of
+# 512 MB. The cause was line-level, not algorithmic scale:
+#
+#   np.tile(np.arange(1_000_000), (500, 1))   -> 4 GB of int64, purely to break ties
+#   pairwise_distances(corpus, queries)       -> 500 x 1M float64 = 4 GB
+#   np.lexsort(..., axis=1)                   -> a full sort of 1M per query for k=10
+#
+# Changing an oracle is the most dangerous edit possible in a benchmark harness,
+# so these tests pin the exact behaviour -- including the tie-break by id -- before
+# the implementation is allowed to change.
+
+
+def _reference_ground_truth(
+    corpus: npt.NDArray[np.floating[Any]],
+    queries: npt.NDArray[np.floating[Any]],
+    k: int,
+    metric: str = "l2",
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
+    """The original implementation, kept here as the equivalence oracle."""
+    distances = pairwise_distances(corpus, queries, metric)
+    corpus_size = distances.shape[1]
+    ids = np.lexsort((np.tile(np.arange(corpus_size), (distances.shape[0], 1)), distances), axis=1)
+    ids = ids[:, :k]
+    ordered = np.take_along_axis(distances, ids, axis=1)
+    return ids.astype(np.int64), np.asarray(ordered, dtype=np.float64)
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine", "ip"])
+def test_ground_truth_matches_the_reference_implementation(metric: str) -> None:
+    rng = np.random.default_rng(20260817)
+    corpus = rng.random((400, 16), dtype=np.float32)
+    queries = rng.random((7, 16), dtype=np.float32)
+
+    ids, dists = brute_force_ground_truth(corpus, queries, 10, metric)
+    ref_ids, ref_dists = _reference_ground_truth(corpus, queries, 10, metric)
+
+    np.testing.assert_array_equal(ids, ref_ids)
+    np.testing.assert_allclose(dists, ref_dists, rtol=1e-12, atol=0.0)
+
+
+def test_ties_still_break_by_id() -> None:
+    """Duplicate vectors make every distance identical, so only the id ordering
+    can decide -- and it must stay ascending, or recall stops being reproducible."""
+    corpus = np.ones((50, 4), dtype=np.float32)
+    queries = np.zeros((3, 4), dtype=np.float32)
+
+    ids, _ = brute_force_ground_truth(corpus, queries, 5, "l2")
+
+    for row in ids:
+        np.testing.assert_array_equal(row, np.arange(5))
+
+
+def test_ties_spanning_the_top_k_boundary_are_resolved_by_id() -> None:
+    """The case a partition-based shortcut gets wrong if written carelessly.
+
+    Ten vectors sit at distance 1 and ten at distance 2; k=15 therefore cuts
+    through the second group, and which five of those ten are returned must be
+    the five smallest ids rather than whichever the partition happened to place.
+    """
+    corpus = np.zeros((20, 1), dtype=np.float32)
+    corpus[:10, 0] = 1.0
+    corpus[10:, 0] = 2.0
+    queries = np.zeros((1, 1), dtype=np.float32)
+
+    ids, _ = brute_force_ground_truth(corpus, queries, 15, "l2")
+
+    np.testing.assert_array_equal(ids[0], np.arange(15))
+
+
+def test_k_equal_to_the_corpus_size_is_allowed() -> None:
+    rng = np.random.default_rng(1)
+    corpus = rng.random((12, 3), dtype=np.float32)
+    queries = rng.random((2, 3), dtype=np.float32)
+
+    ids, _ = brute_force_ground_truth(corpus, queries, 12, "l2")
+
+    assert ids.shape == (2, 12)
+
+
+def test_the_oracle_does_not_allocate_the_full_distance_matrix() -> None:
+    """A 16 GB host must be able to build ground truth for a million vectors.
+
+    Asserted on the peak allocation rather than on wall time: the previous
+    implementation's cost was two 4 GB arrays, and a corpus this size makes the
+    difference between 'measurable' and 'OOM'.
+    """
+    rng = np.random.default_rng(2)
+    corpus = rng.random((200_000, 8), dtype=np.float32)
+    queries = rng.random((256, 8), dtype=np.float32)
+
+    tracemalloc.start()
+    brute_force_ground_truth(corpus, queries, 10, "l2")
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    # The full matrix would be 256 * 200_000 * 8 = 410 MB, plus an equal tile.
+    assert peak < 200_000_000, f"peak was {peak / 1e6:.0f} MB"

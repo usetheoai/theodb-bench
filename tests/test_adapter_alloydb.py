@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import pytest
 from theodb_bench.adapters.alloydb import AlloyDBOmniAdapter
+from theodb_bench.adapters.base import IndexSpec, VectorTableSpec
 from theodb_bench.errors import AdapterError
 
 
@@ -49,7 +50,9 @@ class _OmniStub:
             name, _, value = sql[4:].partition("=")
             self._set[name.strip()] = value.strip()
 
-    def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
+    def fetch_one(
+        self, sql: str, parameters: tuple[object, ...] | None = None
+    ) -> tuple[object, ...] | None:
         if "pg_settings" in sql:
             name = str(parameters[0]) if parameters else ""
             if name.startswith("scann.") and not self._loaded:
@@ -170,3 +173,93 @@ def test_a_server_that_will_not_say_its_version_does_not_get_one_invented() -> N
     payload = adapter.export_config()
 
     assert "17" not in str(payload.get("version", ""))
+
+
+# ------------------------------- the AH quantizer is a build-time requirement
+#
+# Measured on the running server:
+#
+#   CREATE INDEX ... WITH (quantizer='AH')
+#     -> ERROR: AH quantization is not enabled for the index
+#   SET scann.enable_ah_quantizer = on;  CREATE INDEX ... WITH (quantizer='AH')
+#     -> CREATE INDEX, reloptions = {num_leaves=20, quantizer=AH}
+#
+# Valid quantizer values are SQ8, Flat and AH. AH is the anisotropic quantizer
+# ADR-0035 credits for the ~25x QPS gap it measured against the ScaNN library, and
+# it needs the GUC on *at build time* -- so mapping the flag as a search parameter,
+# applied after the index exists, silently measures SQ8 instead.
+
+
+def test_an_ah_index_turns_the_quantizer_on_before_building() -> None:
+    server = _OmniStub()
+    adapter = _adapter_with(server)
+    adapter.wait_ready()
+
+    settings = adapter._build_session_settings(
+        IndexSpec(kind="scann", parameters={"num_leaves": 100, "quantizer": "AH"})
+    )
+
+    assert settings == {"scann.enable_ah_quantizer": "on"}
+
+
+def test_a_non_ah_index_does_not_turn_it_on() -> None:
+    """SQ8 and Flat need nothing, and enabling AH for them would change what ran."""
+    adapter = AlloyDBOmniAdapter()
+
+    for quantizer in ("SQ8", "Flat"):
+        settings = adapter._build_session_settings(
+            IndexSpec(kind="scann", parameters={"quantizer": quantizer})
+        )
+        assert settings == {}, quantizer
+
+
+def test_the_build_setting_is_verified_in_force_not_just_sent() -> None:
+    """A GUC accepted and not registered would build SQ8 under the AH label.
+
+    The placeholder case, on the build axis this time: the SET succeeds and
+    `pg_settings` never lists the GUC, so the index is written with the default
+    quantizer while the bundle says AH.
+    """
+
+    class _SwallowsTheSet(_OmniStub):
+        def execute(self, sql: str, parameters: tuple[object, ...] | None = None) -> None:
+            # Accepts everything, registers nothing -- what an unloaded library does.
+            self.executed.append(sql)
+            if sql.startswith("LOAD "):
+                self._loaded = True
+
+    server = _SwallowsTheSet()
+    adapter = _adapter_with(server)
+    adapter.wait_ready()
+
+    with pytest.raises(AdapterError, match=r"not a registered setting|placeholder"):
+        adapter.build_index(
+            VectorTableSpec(table="t", dimension=8, metric="l2"),
+            IndexSpec(kind="scann", parameters={"quantizer": "AH"}),
+        )
+
+
+def test_the_rerank_depth_is_a_declared_search_knob() -> None:
+    """Without it, an AH frontier is a quantization-error frontier.
+
+    Measured at 100k SIFT-128 with quantizer=AH and num_leaves_to_search=80:
+
+        pre_reordering_num_neighbors = -1 (default)  ->  recall@10 = 0.6568
+        pre_reordering_num_neighbors = 100           ->  recall@10 = 0.9964
+        pre_reordering_num_neighbors = 500           ->  recall@10 = 0.9998
+
+    The 0.66 ceiling was entirely the missing exact-distance rescore, which is how
+    ScaNN is designed to work. A frontier measured at the default would have
+    reported the competitor topping out at two thirds recall — a false claim, and
+    one that happened to flatter us.
+    """
+    server = _OmniStub()
+    adapter = _adapter_with(server)
+    adapter.wait_ready()
+
+    adapter.set_search_parameters({"num_leaves_to_search": 80, "pre_reordering_num_neighbors": 100})
+
+    assert adapter.effective_search_parameters() == {
+        "scann.num_leaves_to_search": "80",
+        "scann.pre_reordering_num_neighbors": "100",
+    }

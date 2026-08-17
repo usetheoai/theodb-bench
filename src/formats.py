@@ -23,7 +23,9 @@ from typing import Any, Final
 
 import numpy as np
 import numpy.typing as npt
+from theodb_bench.bvecs import BvecsSource
 from theodb_bench.errors import DatasetError, ErrorContext, Phase
+from theodb_bench.streaming import CorpusSource, PrefixSource
 
 FloatArray = npt.NDArray[np.float32]
 IntArray = npt.NDArray[np.int64]
@@ -253,3 +255,73 @@ def _check_shapes(
             f"{path}: neighbour ids fall outside the corpus of {train.shape[0]} vectors",
             context=ErrorContext(phase=Phase.DATASET_LOAD),
         )
+
+
+@dataclass
+class StreamedAnnDataset:
+    """An ANN corpus read in ranges, with its query set held whole.
+
+    The asymmetry is deliberate. Ten thousand 128-dimensional queries are five
+    megabytes and every repetition reads all of them, so holding them costs
+    nothing and streaming them would add a file read per query. The corpus is the
+    side that grows: BIGANN's first 20 000 000 SIFT descriptors are 2.64 GB on
+    disk and 10.2 GB as the float32 the oracle computes over.
+
+    ``neighbors`` is always ``None``. Large datasets publish neighbour ids, and
+    they index the *full* corpus — against a prefix they name rows that do not
+    exist. The oracle is therefore computed here (``streaming_ground_truth``),
+    which is also the only version this project can defend (TRD D6).
+    """
+
+    train: CorpusSource
+    test: FloatArray
+    source: Path
+    metric: str | None = None
+    neighbors: IntArray | None = None
+
+    @property
+    def dimension(self) -> int:
+        return self.train.dimension
+
+    @property
+    def corpus_size(self) -> int:
+        return self.train.row_count
+
+    @property
+    def query_count(self) -> int:
+        return int(self.test.shape[0])
+
+    def subsample(self, corpus_size: int, query_count: int) -> StreamedAnnDataset:
+        """Take a prefix of the corpus and query set, without materialising either."""
+        if corpus_size > self.corpus_size or query_count > self.query_count:
+            raise DatasetError(
+                f"cannot take {corpus_size}x{query_count} from a "
+                f"{self.corpus_size}x{self.query_count} dataset",
+                context=ErrorContext(phase=Phase.DATASET_LOAD),
+            )
+        return StreamedAnnDataset(
+            train=PrefixSource(self.train, corpus_size),
+            test=self.test[:query_count],
+            source=self.source,
+            metric=self.metric,
+            neighbors=None,
+        )
+
+
+def read_bvecs_dataset(base: Path, queries: Path, metric: str | None = "l2") -> StreamedAnnDataset:
+    """Read a BIGANN-style `bvecs` pair: a streamed corpus and a resident query set."""
+    corpus = BvecsSource(base)
+    query_source = BvecsSource(queries)
+    if query_source.dimension != corpus.dimension:
+        raise DatasetError(
+            f"{queries.name} holds {query_source.dimension}-dimensional queries against a "
+            f"{corpus.dimension}-dimensional corpus in {base.name}. Distances between them "
+            f"would either broadcast into a wrong answer or fail deep inside the oracle.",
+            context=ErrorContext(phase=Phase.DATASET_LOAD),
+        )
+    return StreamedAnnDataset(
+        train=corpus,
+        test=query_source.rows(0, query_source.row_count),
+        source=base,
+        metric=metric,
+    )
