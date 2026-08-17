@@ -8,6 +8,21 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Reference scale at 20 000 000 real SIFT descriptors: `vector/bigann20m/hnsw` and
+  `vector/bigann20m/load`, with the `bigann-20m-euclidean` dataset manifest (#B-073)
+- BIGANN `bvecs` corpora can be measured without being held in memory: a corpus is read
+  in row ranges, and `--dataset` accepts one (#B-073)
+- Ground truth over a corpus that does not fit in memory, pinned equivalent to the
+  resident oracle including its tie-break by ascending id (#B-073)
+
+### Changed
+- A vector benchmark takes its corpus through one abstraction with two implementations
+  (resident array, streamed source) instead of assuming an array at both call sites;
+  `head2head` now loads through it too, so it works at streamed scale (#B-073)
+- The metric arithmetic behind ground-truth distances is one implementation shared by
+  both corpus shapes, rather than one per shape (#B-073)
+
+### Added
 
 - **A corpus can be loaded without ever being resident** (billion-scale). `load_dataset` takes an array, so
   the whole corpus had to fit in memory: 1e9 x 128 float32 is 512 GB of RAM. `load_dataset_streaming` reads a

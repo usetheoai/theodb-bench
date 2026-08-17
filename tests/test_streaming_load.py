@@ -207,3 +207,76 @@ def test_the_adapter_loads_from_a_source_without_holding_the_corpus() -> None:
         "FORMAT BINARY" in s for s in server.statements
     )
     assert outcome.rows_expected == 12
+
+
+# --------------------------------- ground truth over a corpus that is not resident
+#
+# `brute_force_ground_truth` chunks over queries and holds the corpus. At 20 000 000
+# x 128 float32 that is 10.2 GB, on a host that also runs three PostgreSQL
+# containers. The corpus has to be the thing that streams.
+
+
+def test_streaming_ground_truth_matches_the_resident_version() -> None:
+    """The equivalence that makes the streaming oracle usable at all."""
+    from theodb_bench.analysis.quality import brute_force_ground_truth
+    from theodb_bench.streaming import streaming_ground_truth
+
+    rng = np.random.default_rng(20260817)
+    corpus = rng.random((500, 12), dtype=np.float32)
+    queries = rng.random((7, 12), dtype=np.float32)
+
+    ids, dists = streaming_ground_truth(_ArraySource(corpus), queries, k=10, chunk_rows=64)
+    ref_ids, ref_dists = brute_force_ground_truth(corpus, queries, 10)
+
+    np.testing.assert_array_equal(ids, ref_ids)
+    np.testing.assert_allclose(dists, ref_dists, rtol=1e-6, atol=0.0)
+
+
+def test_the_chunk_size_does_not_change_the_answer() -> None:
+    """A top-k maintained across chunks must not depend on where the chunks fell."""
+    from theodb_bench.streaming import streaming_ground_truth
+
+    rng = np.random.default_rng(7)
+    corpus = rng.random((300, 8), dtype=np.float32)
+    queries = rng.random((5, 8), dtype=np.float32)
+    source = _ArraySource(corpus)
+
+    first, _ = streaming_ground_truth(source, queries, k=5, chunk_rows=7)
+    second, _ = streaming_ground_truth(source, queries, k=5, chunk_rows=256)
+
+    np.testing.assert_array_equal(first, second)
+
+
+def test_ties_across_a_chunk_boundary_still_resolve_by_id() -> None:
+    """The case a running top-k gets wrong: equal distances split by a boundary.
+
+    Every vector here is identical, so only ascending id can decide, and the
+    boundary falls in the middle of the tie.
+    """
+    from theodb_bench.streaming import streaming_ground_truth
+
+    corpus = np.ones((40, 3), dtype=np.float32)
+    queries = np.zeros((2, 3), dtype=np.float32)
+
+    ids, _ = streaming_ground_truth(_ArraySource(corpus), queries, k=6, chunk_rows=5)
+
+    for row in ids:
+        np.testing.assert_array_equal(row, np.arange(6))
+
+
+def test_the_corpus_is_read_in_bounded_slices() -> None:
+    from theodb_bench.streaming import streaming_ground_truth
+
+    reads: list[tuple[int, int]] = []
+
+    class _Counting(_ArraySource):
+        def rows(self, start: int, stop: int) -> np.ndarray:
+            reads.append((start, stop))
+            return super().rows(start, stop)
+
+    rng = np.random.default_rng(1)
+    source = _Counting(rng.random((100, 4), dtype=np.float32))
+
+    streaming_ground_truth(source, rng.random((3, 4), dtype=np.float32), k=5, chunk_rows=25)
+
+    assert reads == [(0, 25), (25, 50), (50, 75), (75, 100)]

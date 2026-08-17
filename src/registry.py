@@ -271,6 +271,62 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
         ),
         default_repetitions=3,
     ),
+    # The reference scale. 20 000 000 real SIFT descriptors is one order of
+    # magnitude past everything else registered here, and it is chosen from
+    # measured size rather than ambition: 1.27 GB per million (heap plus HNSW,
+    # measured on the host) puts 20M at 25.4 GB, which is 9% of that disk. 100M
+    # fits too and turns the build into hours of work; ~200M is the physical
+    # ceiling and leaves no room for maintenance_work_mem or sort spill.
+    #
+    # The corpus streams. It is 2.64 GB on disk as uint8 and 10.2 GB as the
+    # float32 the oracle computes over, on a host that also runs the database
+    # under test, so it arrives as a `CorpusSource` and the oracle carries a
+    # running top-k across chunks (`bench/corpus.py`, `streaming.py`).
+    #
+    # Ground truth is computed, not read. BIGANN publishes neighbour ids for the
+    # full billion; against a 20M prefix they name rows that do not exist.
+    #
+    # Two searches, not a sweep: at this scale each point is a full pass over
+    # 10 000 queries, and a sweep would be measured before it was known that one
+    # point completes. Widen it once there is a build time on record.
+    "vector/bigann20m/hnsw": BenchmarkEntry(
+        id="vector/bigann20m/hnsw",
+        description=(
+            "20 000 000 real SIFT descriptors from BIGANN against theodb_hnsw. The "
+            "reference scale: one order of magnitude past SIFT1M, with the corpus "
+            "streamed and ground truth computed over it."
+        ),
+        workload=VectorWorkload(
+            corpus_size=20_000_000,
+            dimension=128,
+            query_count=1_000,
+            k=10,
+            warmup_queries=50,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (64, 256)},
+        ),
+        default_repetitions=3,
+    ),
+    # The load-only companion. `--index none` is not a knob, so measuring the
+    # streamed load of 20M without paying for a graph build needs its own entry:
+    # the load is what the streaming work changed, and it is measurable in minutes
+    # where the build is measurable in hours.
+    "vector/bigann20m/load": BenchmarkEntry(
+        id="vector/bigann20m/load",
+        description=(
+            "The streamed load of 20 000 000 real SIFT descriptors, with no index "
+            "built. Isolates the load path from the build."
+        ),
+        workload=VectorWorkload(
+            corpus_size=20_000_000,
+            dimension=128,
+            query_count=100,
+            k=10,
+            query_cap=100,
+            indexes=(IndexSpec(kind="none"),),
+        ),
+        default_repetitions=1,
+    ),
     # The pair that answers B-057, and it exists because the first attempt at that
     # answer compared the wrong index on our side. TheoDB's ScaNN-class path is
     # `theodb_ivfflat` with the anisotropic quantizer (`pq_subspaces`), the LUT16

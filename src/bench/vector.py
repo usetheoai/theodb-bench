@@ -35,8 +35,9 @@ from theodb_bench.adapters.base import (
     SystemAdapter,
     VectorTableSpec,
 )
-from theodb_bench.analysis.quality import brute_force_ground_truth, recall_at_k
+from theodb_bench.analysis.quality import recall_at_k
 from theodb_bench.analysis.statistics import LatencySummary, summarise_latency
+from theodb_bench.bench.corpus import CorpusBinding, ResidentCorpus, binding_for
 from theodb_bench.errors import (
     BenchError,
     ConfigError,
@@ -46,10 +47,15 @@ from theodb_bench.errors import (
     SystemUnavailableError,
     UnsupportedCapabilityError,
 )
+from theodb_bench.streaming import CorpusSource
 
 DEFAULT_TABLE: Final[str] = "bench_vectors"
 
 FloatArray = npt.NDArray[np.float32]
+
+#: What a vector benchmark accepts as its corpus: an array when it fits, a source
+#: read in ranges when it does not (`bench/corpus.py`).
+VectorCorpus = FloatArray | CorpusSource
 
 
 @dataclass(frozen=True)
@@ -97,7 +103,7 @@ class VectorWorkload:
 
     # ----------------------------------------------------- Workload protocol
 
-    def build(self, corpus: Any, queries: Any) -> VectorBenchmark:
+    def build(self, corpus: VectorCorpus | None, queries: FloatArray | None) -> VectorBenchmark:
         if corpus is None or queries is None:
             corpus, queries = generate_corpus(self)
         return VectorBenchmark(self, corpus, queries)
@@ -213,22 +219,27 @@ def build_label(index: IndexSpec, search: dict[str, Any], query_cap: int | None)
     return " ".join(parts)
 
 
-def _check_supplied(workload: VectorWorkload, corpus: FloatArray, queries: FloatArray) -> None:
-    """Refuse a supplied corpus that does not match what the workload declared."""
-    if corpus.ndim != 2 or queries.ndim != 2:
+def _check_supplied(workload: VectorWorkload, binding: CorpusBinding, queries: FloatArray) -> None:
+    """Refuse a supplied corpus that does not match what the workload declared.
+
+    Checked through the binding rather than an array shape: a streamed corpus has
+    a row count and a dimension without ever being materialised, and these are
+    the only two properties this validation ever needed.
+    """
+    if queries.ndim != 2:
         raise ConfigError(
-            f"corpus and queries must be 2-D; got {corpus.shape} and {queries.shape}",
+            f"queries must be 2-D; got {queries.shape}",
             context=ErrorContext(phase=Phase.DATASET_LOAD),
         )
-    if corpus.shape[1] != workload.dimension or queries.shape[1] != workload.dimension:
+    if binding.dimension != workload.dimension or queries.shape[1] != workload.dimension:
         raise ConfigError(
             f"workload declares dimension {workload.dimension}; corpus has "
-            f"{corpus.shape[1]} and queries have {queries.shape[1]}",
+            f"{binding.dimension} and queries have {queries.shape[1]}",
             context=ErrorContext(phase=Phase.DATASET_LOAD),
         )
-    if workload.k > corpus.shape[0]:
+    if workload.k > binding.row_count:
         raise ConfigError(
-            f"k={workload.k} exceeds the supplied corpus of {corpus.shape[0]} vectors",
+            f"k={workload.k} exceeds the supplied corpus of {binding.row_count} vectors",
             context=ErrorContext(phase=Phase.DATASET_LOAD),
         )
 
@@ -239,7 +250,7 @@ class VectorBenchmark:
     def __init__(
         self,
         workload: VectorWorkload,
-        corpus: FloatArray | None = None,
+        corpus: VectorCorpus | None = None,
         queries: FloatArray | None = None,
     ) -> None:
         """Measure a workload, over a supplied corpus or a seeded synthetic one.
@@ -256,22 +267,42 @@ class VectorBenchmark:
                 context=ErrorContext(phase=Phase.DATASET_LOAD),
             )
         if corpus is None or queries is None:
-            self.corpus, self.queries = generate_corpus(workload)
+            vectors, self.queries = generate_corpus(workload)
+            self.binding: CorpusBinding = ResidentCorpus(vectors)
             self.synthetic = True
         else:
-            _check_supplied(workload, corpus, queries)
-            self.corpus, self.queries = corpus, queries
+            self.binding = binding_for(corpus)
+            self.queries = queries
+            _check_supplied(workload, self.binding, queries)
             self.synthetic = False
         # The oracle is computed once, by us, from the same bytes the system
-        # was given -- never taken from the system's own answer (TRD D6).
-        self._ground_truth_ids, self._ground_truth = brute_force_ground_truth(
-            self.corpus, self.queries, workload.k, workload.metric
+        # was given -- never taken from the system's own answer (TRD D6). Which
+        # oracle runs follows the corpus shape, and the two are pinned equivalent
+        # in `tests/test_corpus_binding.py`.
+        self._ground_truth_ids, self._ground_truth = self.binding.ground_truth(
+            self.queries, workload.k, workload.metric
+        )
+
+    @property
+    def corpus(self) -> FloatArray:
+        """The corpus as an array, for callers that can hold it.
+
+        A streamed corpus refuses rather than assembling itself: materialising
+        20 000 000 x 128 float32 to satisfy an attribute access is 10.2 GB, and
+        it is exactly the allocation the streaming path exists to avoid.
+        """
+        if isinstance(self.binding, ResidentCorpus):
+            return self.binding.vectors
+        raise ConfigError(
+            f"this benchmark streams its corpus of {self.binding.row_count} vectors and "
+            f"cannot hand it over as one array; read it in ranges through `binding`",
+            context=ErrorContext(phase=Phase.DATASET_LOAD),
         )
 
     # ------------------------------------------------------------------ phases
 
     def load(self, adapter: SystemAdapter) -> float:
-        outcome = adapter.load_dataset(self.workload.table_spec(), self.corpus)
+        outcome = self.binding.load(adapter, self.workload.table_spec())
         if not outcome.complete:
             raise MeasurementError(
                 f"loaded {outcome.rows_loaded} of {outcome.rows_expected} vectors",
@@ -358,12 +389,10 @@ class VectorBenchmark:
                 f"system returned neighbour id outside the corpus of {corpus_size} vectors",
                 context=ErrorContext(phase=Phase.MEASUREMENT),
             )
-        from theodb_bench.analysis.quality import neighbors_ground_truth
-
-        run_distances = neighbors_ground_truth(
-            self.corpus, self.queries[: ids.shape[0]], ids, k, self.workload.metric
+        run_distances = self.binding.returned_distances(
+            self.queries[: ids.shape[0]], ids, k, self.workload.metric
         )
-        return recall_at_k(self._ground_truth[: ids.shape[0]], run_distances, k)
+        return float(recall_at_k(self._ground_truth[: ids.shape[0]], run_distances, k))
 
     # ------------------------------------------------------------------ points
 

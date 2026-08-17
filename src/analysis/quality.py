@@ -185,19 +185,37 @@ def neighbors_ground_truth(
             context=ErrorContext(phase=Phase.OFFLINE),
         )
 
-    left = _as_oracle_input(corpus)
+    return distances_to_gathered(_as_oracle_input(corpus)[selected], queries, metric)
+
+
+def distances_to_gathered(
+    gathered: FloatArray, queries: FloatArray, metric: str = "l2"
+) -> npt.NDArray[np.float64]:
+    """Distances from queries to their own already-gathered neighbours.
+
+    Split out from `neighbors_ground_truth` because a corpus too large to hold
+    gathers the same vectors a different way — reading only the distinct rows the
+    ids name (`streaming.neighbour_vectors`) instead of fancy-indexing an array.
+    Only the gather differs; the metric arithmetic is one implementation, and
+    duplicating it per corpus shape would let the two drift apart on whichever
+    metric nobody thought to compare.
+
+    `gathered` is `(queries, k, dimension)` and is assumed already at oracle
+    precision when it comes from an array; anything else is rounded here, so both
+    paths compute over the float32 the column actually stores (I1).
+    """
+    left = np.ascontiguousarray(gathered, dtype=np.float32).astype(np.float64)
     right = _as_oracle_input(queries)
-    gathered = left[selected]
     if metric == "l2":
-        deltas = gathered - right[:, None, :]
+        deltas = left - right[:, None, :]
         return np.asarray(np.einsum("qkd,qkd->qk", deltas, deltas), dtype=np.float64)
     if metric == "ip":
-        return np.asarray(-np.einsum("qkd,qd->qk", gathered, right), dtype=np.float64)
+        return np.asarray(-np.einsum("qkd,qd->qk", left, right), dtype=np.float64)
     if metric == "cosine":
         query_norm = np.linalg.norm(right, axis=1)[:, None]
-        neighbour_norm = np.linalg.norm(gathered, axis=2)
+        neighbour_norm = np.linalg.norm(left, axis=2)
         with np.errstate(divide="ignore", invalid="ignore"):
-            similarity = np.einsum("qkd,qd->qk", gathered, right) / (query_norm * neighbour_norm)
+            similarity = np.einsum("qkd,qd->qk", left, right) / (query_norm * neighbour_norm)
         return np.asarray(
             np.nan_to_num(1.0 - similarity, nan=1.0, posinf=1.0, neginf=1.0), dtype=np.float64
         )

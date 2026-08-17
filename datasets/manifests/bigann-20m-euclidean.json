@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "bigann-20m-euclidean",
+  "version": "texmex-bigann-prefix-20m",
+  "description": "The first 20 000 000 records of the BIGANN base set: real 128-dimensional SIFT descriptors, uint8, from TEXMEX/INRIA. One order of magnitude past SIFT1M, and the largest scale that fits this project's measured host with room for an index (1.27 GB per million measured, heap plus HNSW). The 10 000 published queries are used in full; the published neighbour ids are NOT, because they index the whole billion and against a 20M prefix they name rows that do not exist - the harness refuses them rather than dropping them, since dropping would raise recall by removing the neighbours a system failed to find. Ground truth is therefore computed by the harness over the streamed corpus.",
+  "source": {
+    "url": "ftp://ftp.irisa.fr/local/texmex/corpus/bigann_base.bvecs.gz"
+  },
+  "license": {
+    "name": "unverified - TEXMEX/INRIA BIGANN corpus",
+    "redistributable": false
+  },
+  "files": [
+    {
+      "path": "base_20m.bvecs",
+      "sha256": "36c27c17c70f405a62bec98084f8034f6bae23b89c956f6030ed1408b148c710",
+      "size_bytes": 2640000000,
+      "role": "train"
+    },
+    {
+      "path": "query.bvecs",
+      "sha256": "d3a86cad074451910b072155330c16fe142425daed2d398d79da4335059f663e",
+      "size_bytes": 1320000,
+      "url": "ftp://ftp.irisa.fr/local/texmex/corpus/bigann_query.bvecs.gz",
+      "role": "queries"
+    }
+  ],
+  "preprocess": {
+    "version": 1,
+    "description": "The base file is a prefix, and its checksum is of the prefix rather than of a published artifact - so the derivation is the reproduction recipe: `curl -s ftp://ftp.irisa.fr/local/texmex/corpus/bigann_base.bvecs.gz | gunzip -c | head -c 2640000000 > base_20m.bvecs`. That is exactly 20 000 000 records of 132 bytes (int32 dimension + 128 uint8), and the record count is checked against the file size on open rather than assumed. Decompressing a stream and stopping transfers about 2.6 GB instead of the 97.9 GB gzip. The query file is taken whole and unmodified. Neither file is modified after download; components stay uint8 on disk and are widened to float32 on read, because the column under test is float4 and the oracle must see what the system sees."
+  },
+  "properties": {
+    "corpus_size": 20000000,
+    "dimension": 128,
+    "query_count": 10000,
+    "metric": "l2",
+    "neighbours_per_query": 0
+  }
+}

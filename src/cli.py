@@ -19,7 +19,13 @@ from typing import Any, Final
 
 from theodb_bench import __version__
 from theodb_bench.adapters.base import IndexSpec
-from theodb_bench.bench.vector import VectorBenchmark, VectorWorkload, generate_corpus
+from theodb_bench.bench.vector import (
+    FloatArray,
+    VectorBenchmark,
+    VectorCorpus,
+    VectorWorkload,
+    generate_corpus,
+)
 from theodb_bench.bundle import RunBundle
 from theodb_bench.compare import render_paired_verdict
 from theodb_bench.datasets import (
@@ -33,7 +39,12 @@ from theodb_bench.datasets import (
 from theodb_bench.doctor import render_report, run_doctor
 from theodb_bench.environment import capture_environment
 from theodb_bench.errors import BenchError, ConfigError, ErrorContext, Phase
-from theodb_bench.formats import AnnDataset, read_ann_hdf5
+from theodb_bench.formats import (
+    AnnDataset,
+    StreamedAnnDataset,
+    read_ann_hdf5,
+    read_bvecs_dataset,
+)
 from theodb_bench.interleaved import interleave
 from theodb_bench.profiles import PROFILES, ProfileName, get_profile
 from theodb_bench.registry import ADAPTERS, BENCHMARKS, get_adapter, get_benchmark
@@ -233,7 +244,7 @@ def cmd_dataset_fetch(args: argparse.Namespace) -> int:
 
 def _load_ann_dataset(
     manifest: DatasetManifest, root: Path, workload: object
-) -> tuple[AnnDataset, str]:
+) -> tuple[AnnDataset | StreamedAnnDataset, str]:
     """Verify a dataset, then read the vectors the run will actually measure.
 
     Verification happens first and unconditionally. Reading unverified bytes
@@ -248,13 +259,31 @@ def _load_ann_dataset(
             context=ErrorContext(phase=Phase.DATASET_LOAD),
         )
     path = manifest.resolve(root, entry)
-    if path.suffix.lower() not in {".hdf5", ".h5"}:
+    suffix = path.suffix.lower()
+    dataset: AnnDataset | StreamedAnnDataset
+    if suffix in {".hdf5", ".h5"}:
+        dataset = read_ann_hdf5(path)
+    elif suffix == ".bvecs":
+        # A corpus this format is used for does not fit in memory, so it is read
+        # in ranges. The query set is a second file, and its absence is an error
+        # rather than a fallback to slicing queries out of the corpus: a query
+        # drawn from the corpus is its own nearest neighbour, which inflates
+        # recall for every system by exactly one hit per query.
+        query_entry = manifest.file_by_role("queries") or manifest.file_by_role("test")
+        if query_entry is None:
+            raise ConfigError(
+                f"dataset {manifest.id} supplies a {path.name} corpus but declares no file "
+                f"with role `queries`. Slicing queries out of the corpus would make each "
+                f"query its own nearest neighbour and raise recall for every system alike.",
+                context=ErrorContext(phase=Phase.DATASET_LOAD),
+            )
+        dataset = read_bvecs_dataset(path, manifest.resolve(root, query_entry))
+    else:
         raise ConfigError(
-            f"dataset {manifest.id}: only ANN-Benchmarks HDF5 files can be loaded today; "
-            f"{path.name} is not one",
+            f"dataset {manifest.id}: only ANN-Benchmarks HDF5 and BIGANN bvecs files can be "
+            f"loaded today; {path.name} is neither",
             context=ErrorContext(phase=Phase.DATASET_LOAD),
         )
-    dataset = read_ann_hdf5(path)
     digest = next((f.expected_sha256 for f in verification.files if f.path == entry.path), "")
     return dataset, digest
 
@@ -266,7 +295,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     repetitions = args.repetitions if args.repetitions is not None else entry.default_repetitions
 
     workload = entry.workload
-    corpus = queries = None
+    corpus: VectorCorpus | None = None
+    queries: FloatArray | None = None
     dataset_id = dataset_version = dataset_sha256 = None
 
     if args.dataset:
@@ -396,6 +426,7 @@ def cmd_head2head(args: argparse.Namespace) -> int:
             f"`{entry_a.id}` is not a vector benchmark",
             context=ErrorContext(phase=Phase.PREFLIGHT),
         )
+    corpus: VectorCorpus
     corpus, queries = generate_corpus(workload)
     if args.dataset:
         manifest = _dataset_registry(args).load(args.dataset)
@@ -419,7 +450,9 @@ def cmd_head2head(args: argparse.Namespace) -> int:
         adapter.prepare()
         adapter.start()
         adapter.wait_ready()
-        adapter.load_dataset(spec, corpus)
+        # Through the binding, not `load_dataset` directly: a corpus too large to
+        # hold arrives as a source, and the binding is what knows to stream it.
+        benchmark.binding.load(adapter, spec)
         side_workload = entry.workload
         if not isinstance(side_workload, VectorWorkload):  # already refused above
             raise ConfigError(

@@ -25,10 +25,16 @@ worse than one whose limits are written down.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Protocol, runtime_checkable
+from typing import Any, Final, Protocol, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
+from theodb_bench.analysis.quality import pairwise_distances
+
+#: Budget for the working distance matrix of the streaming oracle. The chunk width
+#: is derived from it and the query count, so the resident set stays flat however
+#: large the corpus is.
+_ORACLE_CHUNK_BYTES: Final[int] = 256 * 1024 * 1024
 
 
 @runtime_checkable
@@ -44,6 +50,42 @@ class CorpusSource(Protocol):
     def rows(self, start: int, stop: int) -> npt.NDArray[np.floating]:
         """Rows `[start, stop)`. Only this slice need be resident."""
         ...
+
+
+class PrefixSource:
+    """The first `rows` records of another source, as a source.
+
+    A workload declares a corpus size and the file may hold more. Reducing an
+    array to fit is a slice; reducing a source has to be a view, because
+    materialising it in order to cut it defeats the reason it is a source.
+
+    Reads past the limit are refused even though the underlying rows exist —
+    especially because they exist. A silent read past the declared corpus would
+    score against vectors the run states it never loaded, so recall would be
+    measured against the wrong oracle while every artifact named the right one.
+    """
+
+    def __init__(self, source: CorpusSource, rows: int) -> None:
+        if rows < 1:
+            raise ValueError(f"a prefix must keep at least 1 row, got {rows}")
+        available = source.row_count
+        if rows > available:
+            raise ValueError(f"cannot take {rows} rows: the source has only {available}")
+        self._source = source
+        self._rows = int(rows)
+
+    @property
+    def row_count(self) -> int:
+        return self._rows
+
+    @property
+    def dimension(self) -> int:
+        return self._source.dimension
+
+    def rows(self, start: int, stop: int) -> npt.NDArray[np.floating[Any]]:
+        if start < 0 or stop > self._rows or stop < start:
+            raise ValueError(f"rows({start}, {stop}) is outside the prefix of {self._rows} rows")
+        return self._source.rows(start, stop)
 
 
 def chunk_source(
@@ -113,6 +155,104 @@ def neighbour_vectors(
             gathered[query_index, neighbour_index] = fetched[lookup[int(row_id)]]
 
     return gathered, int(distinct.size)
+
+
+def streaming_ground_truth(
+    source: CorpusSource,
+    queries: npt.NDArray[np.floating[Any]],
+    k: int,
+    metric: str = "l2",
+    chunk_rows: int | None = None,
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
+    """Exact nearest neighbours over a corpus that is never resident.
+
+    `brute_force_ground_truth` chunks over *queries* and holds the corpus, which
+    is the right trade when the corpus fits: 20 000 000 x 128 float32 is 10.2 GB,
+    on a host that also runs the database under test. Here the *corpus* is what
+    streams, and the top-k is carried across chunks.
+
+    The answer is identical to the resident oracle's, and that equivalence is the
+    only reason this is usable — a second oracle that disagreed with the first
+    would make every recall figure depend on which one ran.
+
+    What makes it exact is the ordering. Both oracles rank by distance and break
+    ties by **ascending id**, which is a total order because ids are unique, and
+    the top-k of a total order is recoverable by taking the top-k of each
+    partition and merging them. A running top-k that kept only "the k smallest by
+    value" per chunk would not be: when a chunk holds more ties than k, which of
+    them it keeps is arbitrary, and the id-minimal ones can be dropped before the
+    merge ever sees them. So ties at the selection boundary are re-admitted per
+    chunk, exactly as the resident oracle re-admits them per query.
+    """
+    total = source.row_count
+    if k < 1:
+        raise ValueError(f"k must be at least 1, got {k}")
+    if k > total:
+        raise ValueError(f"k={k} exceeds the corpus size {total}")
+
+    query_array = np.asarray(queries)
+    query_count = int(query_array.shape[0])
+    if chunk_rows is None:
+        # float64 distances plus the boolean tie mask over the same shape.
+        chunk_rows = max(k, _ORACLE_CHUNK_BYTES // max(1, query_count * 9))
+
+    best_distances: npt.NDArray[np.float64] = np.empty((query_count, 0), dtype=np.float64)
+    best_ids: npt.NDArray[np.int64] = np.empty((query_count, 0), dtype=np.int64)
+
+    for start, block in chunk_source(source, chunk_rows):
+        distances = np.asarray(pairwise_distances(block, query_array, metric), dtype=np.float64)
+        ids = start + np.arange(block.shape[0], dtype=np.int64)
+        chunk_distances, chunk_ids = _select_top_k(distances, ids, k)
+        best_distances, best_ids = _merge_top_k(
+            best_distances, best_ids, chunk_distances, chunk_ids, k
+        )
+
+    return best_ids, best_distances
+
+
+def _select_top_k(
+    distances: npt.NDArray[np.float64], ids: npt.NDArray[np.int64], k: int
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
+    """The k best of one chunk, ordered by distance then ascending id."""
+    width = distances.shape[1]
+    take = min(k, width)
+
+    if take == width:
+        order = np.lexsort((np.broadcast_to(ids, distances.shape), distances), axis=1)
+        selected = order[:, :take]
+    else:
+        partitioned = np.argpartition(distances, take - 1, axis=1)[:, :take]
+        partitioned_distances = np.take_along_axis(distances, partitioned, 1)
+        thresholds = partitioned_distances.max(axis=1, keepdims=True)
+        order = np.lexsort((ids[partitioned], partitioned_distances), axis=1)
+        selected = np.take_along_axis(partitioned, order, 1)
+
+        # Rows where more candidates tie with the k-th than fit: the partition
+        # kept an arbitrary subset of the tie, so those rows are redone against
+        # every tied candidate. Real corpora hit this rarely; a corpus with
+        # duplicate vectors hits it on every row, which is why it is not skipped.
+        tied = (distances <= thresholds).sum(axis=1) > take
+        for row in np.flatnonzero(tied):
+            candidates = np.flatnonzero(distances[row] <= thresholds[row, 0])
+            row_distances = distances[row, candidates]
+            selected[row] = candidates[np.lexsort((ids[candidates], row_distances))][:take]
+
+    return np.take_along_axis(distances, selected, 1), ids[selected]
+
+
+def _merge_top_k(
+    best_distances: npt.NDArray[np.float64],
+    best_ids: npt.NDArray[np.int64],
+    chunk_distances: npt.NDArray[np.float64],
+    chunk_ids: npt.NDArray[np.int64],
+    k: int,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
+    """Merge two per-query top-k sets, keeping the k best of the union."""
+    distances = np.concatenate((best_distances, chunk_distances), axis=1)
+    ids = np.concatenate((best_ids, chunk_ids), axis=1)
+    take = min(k, distances.shape[1])
+    order = np.lexsort((ids, distances), axis=1)[:, :take]
+    return np.take_along_axis(distances, order, 1), np.take_along_axis(ids, order, 1)
 
 
 def _contiguous_runs(sorted_ids: npt.NDArray[np.integer]) -> Iterator[tuple[int, int]]:
