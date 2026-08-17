@@ -221,6 +221,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The recall oracle can no longer be OOM-killed by the corpus it is supposed to measure** (B-057).
+  `brute_force_ground_truth` was measured being killed at **10.5 GB** of resident memory while building ground
+  truth for a 512 MB corpus — one million 128-dimensional vectors against 500 queries, on a 16 GB host. The
+  cause was two allocations, neither algorithmic: a `(queries x corpus)` float64 distance matrix (4 GB) and an
+  identically shaped int64 tile of `arange(corpus_size)` (4 GB) whose only purpose was breaking ties by id. It
+  also full-sorted a million distances per query to take the top ten. It now chunks over queries, keeping the
+  working matrix in the tens of megabytes whatever the corpus size, and selects with a partition plus a
+  tie-safe re-admission of everything level with the k-th element. Behaviour is unchanged and pinned by tests
+  that compare against the previous implementation across all three metrics, including the case a careless
+  partition gets wrong: ties spanning the top-k boundary must still resolve by ascending id, or recall stops
+  being reproducible. A benchmark harness that cannot build ground truth at the scale it is meant to measure
+  is not measuring that scale, and the tests assert the memory ceiling rather than a wall time.
+
 - The module docstring of `src/adapters/postgres.py` no longer claims an invariant the code does not
   enforce. It advertised, as I5, that "the index is forced *and* verified"; measured 2026-08-17,
   `assert_index_used` has no caller anywhere in the package, raises `ProgrammingError` if called
