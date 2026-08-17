@@ -250,6 +250,35 @@ substitute for it.
 Every approximate result carries a quality axis. Throughput alone cannot
 distinguish a fast system from one returning worse answers faster.
 
+### What is reachable today
+
+The surfaces above are what the project set out to measure. This table is what
+an adapter can actually exercise right now, and it is **generated from the same
+registry the runs use** — regenerate it with `theodb-bench capabilities`. A table
+typed by hand is a table that reports the state it had on the day someone typed
+it.
+
+**11 of 14 capabilities are reachable by a real adapter.**
+
+| capability | adapters |
+|---|---|
+| `vector_exact` | `alloydbomni`, `pgvector`, `postgres`, `theodb` |
+| `vector_hnsw` | `alloydbomni`, `pgvector`, `theodb` |
+| `vector_ivfflat` | `alloydbomni`, `pgvector`, `theodb` |
+| `vector_scann` | `alloydbomni` |
+| `vector_quantized` | `theodb` |
+| `vector_filtered` | `alloydbomni`, `pgvector`, `theodb` |
+| `lexical` | `theodb` |
+| `hybrid` | `theodb` |
+| `rerank` | — |
+| `columnar` | `alloydbomni`, `theodb` |
+| `parquet` | `theodb` |
+| `graph` | `theodb` |
+| `vectorizer` | — |
+| `ai_sql` | — |
+
+A dash is not a gap in this table — it is the measured state. `rerank`, `vectorizer` and `ai_sql` each reach an external model, and without an endpoint there is nothing to measure; a stub would put a number where an absence belongs.
+
 ---
 
 ## Profiles

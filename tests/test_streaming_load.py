@@ -432,3 +432,60 @@ def test_the_resident_load_gets_the_same_budget() -> None:
     applied = _timeouts(server.statements)
     assert applied[0] == adapter.config.build_timeout_ms
     assert applied[-1] == adapter.config.statement_timeout_ms
+
+
+# ------------------------ the equivalence, pushed at what breaks a running top-k
+#
+# The shape tests above cover the mechanism. What a 20 000 000-vector recall
+# figure actually rests on is whether the two oracles still agree when the data is
+# hostile: heavy ties, a chunk boundary falling inside one, k at the corpus size,
+# and a chunk of a single row. Swept across every metric, 270 combinations agreed
+# exactly; these are the corners of that sweep, kept small enough to run always.
+
+
+@pytest.mark.parametrize("metric", ["l2", "ip", "cosine"])
+@pytest.mark.parametrize("chunk_rows", [1, 7, 100_000])
+@pytest.mark.parametrize(
+    "name",
+    ["continuous", "heavy_ties", "all_identical", "quantised"],
+)
+def test_the_oracles_agree_on_hostile_data(name: str, chunk_rows: int, metric: str) -> None:
+    rng = np.random.default_rng(20260817)
+    corpora = {
+        # Distinct floats: no tie ever reaches the selection boundary.
+        "continuous": rng.random((60, 6), dtype=np.float32),
+        # Eight distinct vectors repeated: every boundary is a tie.
+        "heavy_ties": np.repeat(rng.integers(0, 3, size=(8, 6)).astype(np.float32), 8, axis=0),
+        # Only the id can decide, at every position.
+        "all_identical": np.ones((40, 4), dtype=np.float32),
+        # What a uint8 SIFT corpus actually looks like once widened.
+        "quantised": rng.integers(0, 256, size=(80, 8)).astype(np.float32),
+    }
+    corpus = corpora[name]
+    queries = rng.random((4, corpus.shape[1]), dtype=np.float32)
+
+    from theodb_bench.analysis.quality import brute_force_ground_truth
+    from theodb_bench.streaming import streaming_ground_truth
+
+    reference_ids, reference_distances = brute_force_ground_truth(corpus, queries, 10, metric)
+    ids, distances = streaming_ground_truth(
+        _ArraySource(corpus), queries, 10, metric, chunk_rows=chunk_rows
+    )
+
+    np.testing.assert_array_equal(ids, reference_ids)
+    np.testing.assert_allclose(distances, reference_distances, rtol=1e-9, atol=1e-12)
+
+
+def test_the_oracles_agree_when_k_is_the_whole_corpus() -> None:
+    """k = N takes the selection path that skips the partition entirely, and it
+    is the one a small-corpus run reaches."""
+    from theodb_bench.analysis.quality import brute_force_ground_truth
+    from theodb_bench.streaming import streaming_ground_truth
+
+    corpus = np.ones((30, 3), dtype=np.float32)
+    queries = np.zeros((2, 3), dtype=np.float32)
+
+    ids, _ = streaming_ground_truth(_ArraySource(corpus), queries, 30, chunk_rows=4)
+    reference, _ = brute_force_ground_truth(corpus, queries, 30)
+
+    np.testing.assert_array_equal(ids, reference)

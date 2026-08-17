@@ -381,7 +381,10 @@ class VectorBenchmark:
         if not usable:
             return 0.0
         ids = np.asarray(usable[: len(usable)], dtype=np.int64)[:, :k]
-        corpus_size = self.corpus.shape[0]
+        # From the binding, not from an array: a streamed corpus knows its row
+        # count without ever being materialised, and reaching for the array here
+        # refused a 20 000 000-vector run *after* it had loaded and queried.
+        corpus_size = self.binding.row_count
         if ids.min() < 0 or ids.max() >= corpus_size:
             # The system returned an id that is not in the corpus. That is a
             # correctness failure, not a quality score.

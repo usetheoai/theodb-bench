@@ -14,6 +14,7 @@ import json
 import sys
 from collections.abc import Sequence
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Final
 
@@ -288,6 +289,40 @@ def _load_ann_dataset(
     return dataset, digest
 
 
+def cmd_capabilities(args: argparse.Namespace) -> int:
+    """Print the capability matrix, derived from the registry the runs use."""
+    from theodb_bench.capabilities import render_capability_matrix
+
+    print(render_capability_matrix())
+    return 0
+
+
+def adapter_overrides(build_timeout: int | None) -> dict[str, Any]:
+    """Adapter settings the run command may override from the command line.
+
+    Only the bulk budget so far, and it exists because the harness already tells
+    the operator to raise it: a phase that exceeds it aborts with `budget_exceeded`
+    and the words "Raise the budget for this phase or reduce the scale". Offering
+    no way to do the first made that advice a dead end at exactly the scale that
+    needs it -- an HNSW build over 20 000 000 vectors is hours, and the default is
+    one.
+
+    Zero and negative are refused rather than passed through. In PostgreSQL a
+    `statement_timeout` of 0 means *no limit*, so accepting one would silently
+    remove the guard while looking like it widened it.
+    """
+    if build_timeout is None:
+        return {}
+    if build_timeout <= 0:
+        raise ConfigError(
+            f"--build-timeout must be a positive number of seconds, got {build_timeout}. "
+            f"A statement_timeout of 0 means no limit in PostgreSQL, which removes the "
+            f"guard instead of widening it.",
+            context=ErrorContext(phase=Phase.PREFLIGHT),
+        )
+    return {"build_timeout_ms": int(build_timeout) * 1000}
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     entry = get_benchmark(args.benchmark)
     adapter = get_adapter(args.system)
@@ -334,7 +369,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         RunRequest(
             benchmark_id=entry.id,
             workload=workload,
-            adapter_factory=adapter.build,
+            adapter_factory=partial(adapter.build, **adapter_overrides(args.build_timeout)),
             baseline_dir=args.baseline,
             profile=profile,
             repetitions=repetitions,
@@ -696,9 +731,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="an accepted run bundle to detect regression against. Profiles that "
         "declare regression_gate record that no detection happened without one.",
     )
+    run.add_argument(
+        "--build-timeout",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help="budget for bulk phases (index build, dataset load), in seconds. The "
+        "default of one hour is ample below a few million vectors and short of an "
+        "HNSW build at twenty million; a phase that exceeds it aborts as "
+        "budget_exceeded, which is a harness limit and not a system failure.",
+    )
     run.add_argument("--manifest-dir", type=Path, default=None)
     run.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
     run.set_defaults(func=cmd_run)
+
+    capabilities = subparsers.add_parser(
+        "capabilities",
+        help="which capabilities a real adapter can exercise, derived from the registry",
+    )
+    capabilities.set_defaults(func=cmd_capabilities)
 
     report = subparsers.add_parser("report", help="render the report for an existing run")
     report.add_argument("run_dir", type=Path)

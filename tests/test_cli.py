@@ -116,3 +116,58 @@ def test_typed_errors_become_messages_not_tracebacks(
     err = capsys.readouterr().err
     assert err.startswith("error:")
     assert "Traceback" not in err
+
+
+# ---------------------------------------------- raising the budget the error names
+#
+# When a bulk phase exceeds its budget the harness says: "Raise the budget for
+# this phase or reduce the scale". Until now it offered no way to do the first,
+# which makes the advice a dead end at exactly the scale that needs it — a
+# 20 000 000-vector HNSW build is hours, and the default budget is one.
+
+
+def test_the_run_command_accepts_a_bulk_budget() -> None:
+    from theodb_bench.cli import build_parser
+
+    args = build_parser().parse_args(
+        ["run", "vector/synthetic/smoke", "--system", "fake", "--build-timeout", "7200"]
+    )
+
+    assert args.build_timeout == 7200
+
+
+def test_the_bulk_budget_is_optional_and_defaults_to_the_adapter_setting() -> None:
+    from theodb_bench.cli import build_parser
+
+    args = build_parser().parse_args(["run", "vector/synthetic/smoke", "--system", "fake"])
+
+    assert args.build_timeout is None
+
+
+def test_the_bulk_budget_reaches_the_adapter() -> None:
+    """The flag has to change the adapter the run actually uses; a flag parsed
+    and dropped is worse than no flag, because the run then looks configured."""
+    from theodb_bench.adapters.postgres import PgvectorAdapter
+    from theodb_bench.cli import adapter_overrides
+
+    overrides = adapter_overrides(build_timeout=7200)
+    adapter = PgvectorAdapter(**overrides)
+
+    assert adapter.config.build_timeout_ms == 7_200_000
+
+
+def test_no_flag_leaves_the_adapter_default_untouched() -> None:
+    from theodb_bench.adapters.postgres import PgvectorAdapter
+    from theodb_bench.cli import adapter_overrides
+
+    assert adapter_overrides(build_timeout=None) == {}
+    assert PgvectorAdapter().config.build_timeout_ms == 3_600_000
+
+
+def test_a_negative_budget_is_refused() -> None:
+    """A zero or negative statement_timeout means *no limit* in PostgreSQL, so
+    accepting one here would silently remove the guard rather than widen it."""
+    from theodb_bench.cli import adapter_overrides
+
+    with pytest.raises(Exception, match="positive"):
+        adapter_overrides(build_timeout=0)
