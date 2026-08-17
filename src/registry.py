@@ -71,6 +71,12 @@ def _theodb_factory(**kwargs: Any) -> SystemAdapter:
     return TheoDBAdapter(**kwargs)
 
 
+def _alloydbomni_factory(**kwargs: Any) -> SystemAdapter:
+    from theodb_bench.adapters.alloydb import AlloyDBOmniAdapter
+
+    return AlloyDBOmniAdapter(**kwargs)
+
+
 ADAPTERS: Final[dict[str, AdapterEntry]] = {
     "fake": AdapterEntry(
         name="fake",
@@ -93,6 +99,16 @@ ADAPTERS: Final[dict[str, AdapterEntry]] = {
         name="theodb",
         description="TheoDB: PostgreSQL 18 with the theodb_rs extension.",
         factory=_theodb_factory,
+        requires=("psycopg",),
+    ),
+    "alloydbomni": AdapterEntry(
+        name="alloydbomni",
+        description=(
+            "AlloyDB Omni: PostgreSQL with Google's scann access method. A query "
+            "layer, not the managed service -- no disaggregated storage or read "
+            "pool. The published image measured PostgreSQL 17."
+        ),
+        factory=_alloydbomni_factory,
         requires=("psycopg",),
     ),
 }

@@ -5,11 +5,25 @@ hierarchy rather than three copies. Upstream PostgreSQL has no vector type at
 all and can only do exact search over ``real[]``; pgvector adds the ``vector``
 type with HNSW and IVFFlat; TheoDB adds its own access methods on top.
 
-Four measurement invariants are enforced here rather than trusted:
+Measurement invariants live here. One of them is **not** enforced, and saying so
+is the point:
 
-The index is forced *and* verified. ``SET enable_seqscan = off`` alone proves
-nothing -- the planner may still choose a sequential scan, and a benchmark that
-believed otherwise would report scan performance under an index's name (I5).
+I5 -- the index forced *and* verified -- is **not in force**. Measured 2026-08-17:
+``assert_index_used`` below has no caller anywhere in the package, it raises
+``ProgrammingError`` if called (this class overrides ``_query_sql`` to repeat the
+distance expression, so the probe binds twice, and the inherited verifier binds
+once), and ``SET enable_seqscan = off`` appears in this docstring and nowhere
+else in executable code. The harness measures whatever plan the planner chooses.
+At the registered suite's size (10 000 x 64) the planner does choose the index on
+pgvector, Omni/hnsw and Omni/scann -- verified by EXPLAIN -- so no published
+number is retracted; at 200 rows it chose a sequential scan. Tracked as B-063.
+This paragraph replaces a claim that this file made for its whole life and that
+another item cited as exemplary discipline.
+
+A requested search knob is applied *and* proven in force before a point is
+measured -- and a knob the adapter cannot apply is refused rather than ignored.
+See :meth:`PostgresAdapter.set_search_parameters`; this one is real, and it is
+currently the only apply-then-verify that executes.
 
 Indexes from other configurations are dropped before a point is measured. Two
 indexes of the same family on the same column let the planner choose, and one
@@ -30,7 +44,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 
 import numpy as np
 from theodb_bench.absent import encode, unavailable
@@ -59,9 +73,14 @@ from theodb_bench.errors import (
 DEFAULT_DSN: Final[str] = "postgresql:///postgres"
 COPY_BATCH: Final[int] = 1000
 
-# Operator classes per access method and metric. A metric absent from an
-# access method's map is unsupported for that method -- never approximated
-# with a different one.
+# Operator classes per access method and metric, in pgvector's convention. A
+# metric absent from an access method's map is unsupported for that method --
+# never approximated with a different one.
+#
+# This is pgvector's naming, not a universal one: AlloyDB's scann access method
+# names the same three classes `cosine` / `dot_product` / `l2`. An adapter for
+# another engine therefore declares its own table (PgvectorAdapter.OPCLASSES)
+# rather than inheriting this one.
 OPCLASSES: Final[dict[str, dict[str, str]]] = {
     "hnsw": {"l2": "vector_l2_ops", "ip": "vector_ip_ops", "cosine": "vector_cosine_ops"},
     "ivfflat": {"l2": "vector_l2_ops", "ip": "vector_ip_ops", "cosine": "vector_cosine_ops"},
@@ -126,6 +145,11 @@ class PostgresAdapter(SystemAdapter):
     """
 
     system_id = "postgres"
+
+    #: Search parameters this adapter can actually apply. A request naming
+    #: anything else is refused rather than silently ignored -- upstream
+    #: PostgreSQL has no ANN knobs, and exact search has nothing to tune.
+    SEARCH_PARAMETERS: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(self, config: PostgresConfig | None = None, **kwargs: Any) -> None:
         self.config = config if config is not None else PostgresConfig(**kwargs)
@@ -313,8 +337,35 @@ class PostgresAdapter(SystemAdapter):
         before ``LOAD 'theodb_rs'`` and 38 after. That is the same condition under which
         AlloyDB's ``scann.num_leaves_to_search`` silently does nothing without
         ``LOAD 'alloydb_scann'``.
+
+        Verifying only the knobs the adapter *mapped* is not enough either, and a second
+        engine is what proved it. AlloyDB Omni bundles a fork of pgvector that does not
+        register ``hnsw.ef_search`` at all, and its adapter maps
+        ``num_leaves_to_search`` instead. A sweep of ``ef_search`` therefore produced an
+        empty mapping, the gate had nothing to check, and it passed vacuously --
+        publishing three rows labelled 16 / 64 / 256 whose measured recall was identical
+        to four decimal places. So a requested knob the adapter does not declare is a
+        refusal, for the same reason :meth:`VectorBenchmark.sweep_for` refuses to sweep
+        exact search: it would put duplicate points in the table under labels that
+        describe operating points nobody ran.
         """
         self._search_parameters = dict(parameters)
+
+        unsupported = sorted(set(parameters) - set(type(self).SEARCH_PARAMETERS))
+        if unsupported:
+            raise AdapterError(
+                f"{self.system_id} cannot apply search parameter(s) "
+                f"{', '.join(repr(name) for name in unsupported)}; it understands "
+                f"{', '.join(sorted(type(self).SEARCH_PARAMETERS)) or 'none'}. Accepting "
+                f"the request and measuring the default would publish this point under a "
+                f"label that does not describe it.",
+                context=ErrorContext(
+                    phase=Phase.MEASUREMENT,
+                    system=self.system_id,
+                    details={"unsupported": unsupported},
+                ),
+            )
+
         mapping = self._search_guc_mapping(parameters)
         for guc, literal in mapping.items():
             self._execute(f"SET {guc} = {literal}")
@@ -499,6 +550,29 @@ class PgvectorAdapter(PostgresAdapter):
     system_id = "pgvector"
     extension = "vector"
 
+    #: Operator classes this engine names, per access method and metric.
+    #: A subclass whose engine uses a different convention overrides it; the
+    #: lookup in `opclass` reads it off the concrete class, so inheriting the
+    #: wrong table is not possible by accident.
+    OPCLASSES: ClassVar[dict[str, dict[str, str]]] = OPCLASSES
+
+    #: `ef_search` for HNSW, `probes` for IVFFlat -- both registered GUCs of the
+    #: extension, verified in force before a point is measured.
+    SEARCH_PARAMETERS: ClassVar[frozenset[str]] = frozenset({"ef_search", "probes"})
+
+    #: Engine access-method name per index family. The family is the *label* a
+    #: bundle reports (`hnsw`); the access method is what the engine calls its
+    #: implementation, and the two are not always the same word. Empty means the
+    #: label is already the engine's name, which is true for upstream pgvector.
+    ACCESS_METHODS: ClassVar[dict[str, str]] = {}
+
+    #: Library to LOAD into the session, when the extension's GUCs are only
+    #: registered once it is loaded. Measured on both TheoDB and AlloyDB Omni:
+    #: `pg_settings` lists none of the extension's settings before the LOAD, so
+    #: every `SET` is a placeholder the server accepts and ignores. None means
+    #: the extension registers its GUCs without one.
+    library: ClassVar[str | None] = None
+
     def capabilities(self) -> dict[str, bool]:
         return {
             "vector_exact": True,
@@ -510,6 +584,45 @@ class PgvectorAdapter(PostgresAdapter):
     def wait_ready(self, timeout_seconds: float = 60.0) -> None:
         super().wait_ready(timeout_seconds)
         self._execute(f"CREATE EXTENSION IF NOT EXISTS {_identifier(self.extension)} CASCADE")
+        if type(self).library is not None:
+            # CREATE EXTENSION registers the access method in the catalog; the
+            # LOAD registers the extension's GUCs in *this backend*. They are
+            # different acts, and only the second one makes `SET` mean anything.
+            self._execute(f"LOAD {_literal(str(type(self).library))}")
+
+    def export_config(self) -> dict[str, Any]:
+        """Server configuration, with the server *and* extension versions named.
+
+        Both halves are read from the server, never inferred from an image tag.
+        A three-way race measured on one machine on 2026-08-17 ran TheoDB on
+        PostgreSQL 18.6, pgvector on 17.11 and AlloyDB Omni on 17.9 -- the
+        comparison crosses a major version, and a bundle that records only the
+        extension hides that from every reader of the result. It is the same
+        reason the tag is not trusted: the published Omni image says `latest`
+        and serves 17.
+
+        A server that will not answer gets nothing invented for it.
+        """
+        payload = super().export_config()
+        parts: list[str] = []
+
+        server = payload.get("version")
+        if server:
+            # Trim at " on <arch>": the platform triple is already in the
+            # environment record, and repeating it buries the version.
+            parts.append(str(server).split(" on ")[0])
+
+        extension = self._fetch_one(
+            "SELECT extversion FROM pg_extension WHERE extname = %s", (self.extension,)
+        )
+        if extension is not None and extension[0]:
+            parts.append(f"{self.extension} {extension[0]}")
+
+        if parts:
+            payload["version"] = " / ".join(parts)
+        else:
+            payload.pop("version", None)
+        return payload
 
     def column_type(self, dimension: int) -> str:
         return f"vector({int(dimension)})"
@@ -530,7 +643,7 @@ class PgvectorAdapter(PostgresAdapter):
 
     def opclass(self, kind: str, metric: str) -> str:
         """Operator class for an access method and metric, or unsupported."""
-        available = OPCLASSES.get(kind, {})
+        available = type(self).OPCLASSES.get(kind, {})
         opclass = available.get(metric)
         if opclass is None:
             raise UnsupportedCapabilityError(
@@ -544,6 +657,38 @@ class PgvectorAdapter(PostgresAdapter):
             )
         return opclass
 
+    def _render_reloption(self, key: str, value: Any) -> str:
+        """Render one `WITH (...)` value, by type.
+
+        Not every index parameter is an integer. AlloyDB's scann access method
+        takes `quantizer='sq8'`, and rendering it through `int()` raises a bare
+        ValueError with no phase, no system and no option name -- a failure the
+        caller cannot act on.
+
+        A type this does not know is refused rather than coerced: a benchmark
+        definition that reached here with a list or a dict is a broken
+        definition, and silently stringifying it would put an unintended index
+        configuration into a published measurement.
+        """
+        if isinstance(value, bool):
+            # Before the int branch: bool is a subclass of int in Python, and
+            # `WITH (opt = 1)` is not what PostgreSQL wants for a boolean.
+            return "true" if value else "false"
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, str):
+            return _literal(value)
+        raise AdapterError(
+            f"index parameter {key!r} has value {value!r} of type "
+            f"{type(value).__name__}, which cannot be rendered as a reloption; "
+            "expected an int, a bool or a str",
+            context=ErrorContext(
+                phase=Phase.INDEX_BUILD,
+                system=self.system_id,
+                details={"parameter": key},
+            ),
+        )
+
     def index_ddl(self, spec: VectorTableSpec, index: IndexSpec) -> tuple[str, str]:
         """(index name, CREATE INDEX statement) for a configuration."""
         opclass = self.opclass(index.kind, spec.metric)
@@ -552,11 +697,15 @@ class PgvectorAdapter(PostgresAdapter):
         if index.kind == "ivfflat":
             # Derived from the real row count, never from a default.
             parameters.setdefault("lists", ivfflat_lists(self._row_count))
-        rendered = ", ".join(f"{key} = {int(value)}" for key, value in sorted(parameters.items()))
+        rendered = ", ".join(
+            f"{key} = {self._render_reloption(key, value)}"
+            for key, value in sorted(parameters.items())
+        )
         with_clause = f" WITH ({rendered})" if rendered else ""
+        access_method = type(self).ACCESS_METHODS.get(index.kind, index.kind)
         ddl = (
             f"CREATE INDEX {_identifier(name)} ON {_identifier(spec.table)} "
-            f"USING {index.kind} ({_identifier(spec.embedding_column)} {opclass}){with_clause}"
+            f"USING {access_method} ({_identifier(spec.embedding_column)} {opclass}){with_clause}"
         )
         return name, ddl
 
@@ -622,6 +771,40 @@ class TheoDBAdapter(PgvectorAdapter):
     system_id = "theodb"
     extension = "theodb_rs"
 
+    #: Measured on the image this project's own Dockerfile builds (PostgreSQL
+    #: 18.6, theodb_rs 1.5.0): `pg_am` holds `theodb_hnsw` and `theodb_ivfflat`,
+    #: and there is no bare `hnsw`. The bare name and the `vector_*_ops` classes
+    #: come from the separate `vector` compatibility shim (ADR-0058), which the
+    #: image creates in `template1` and not in the `postgres` database a client
+    #: connects to by default -- so inheriting pgvector's spelling made every
+    #: indexed row of this axis fail with `access method "hnsw" does not exist`.
+    #:
+    #: The shim's access method uses the *same* handler, so measuring through it
+    #: would measure the same engine. Naming the native surface is what makes the
+    #: bundle say which surface was exercised.
+    ACCESS_METHODS: ClassVar[dict[str, str]] = {
+        "hnsw": "theodb_hnsw",
+        "ivfflat": "theodb_ivfflat",
+    }
+
+    OPCLASSES: ClassVar[dict[str, dict[str, str]]] = {
+        "hnsw": {
+            "l2": "theodb_hnsw_l2_ops",
+            "ip": "theodb_hnsw_ip_ops",
+            "cosine": "theodb_hnsw_cosine_ops",
+        },
+        "ivfflat": {
+            "l2": "theodb_ivfflat_l2_ops",
+            "ip": "theodb_ivfflat_ip_ops",
+            "cosine": "theodb_ivfflat_cosine_ops",
+        },
+    }
+
+    #: Measured: a fresh session holds zero `theodb%` rows in `pg_settings`, and
+    #: no `hnsw.ef_search` either, until this loads. Every swept `ef_search`
+    #: before this line was a placeholder, and the search ran at the default.
+    library: ClassVar[str | None] = "theodb_rs"
+
     def capabilities(self) -> dict[str, bool]:
         """What this adapter can actually exercise, not what TheoDB can do.
 
@@ -642,14 +825,23 @@ class TheoDBAdapter(PgvectorAdapter):
             "vector_filtered": True,
         }
 
-    def export_config(self) -> dict[str, Any]:
-        payload = super().export_config()
-        row = self._fetch_one(
-            "SELECT extversion FROM pg_extension WHERE extname = %s", (self.extension,)
-        )
-        if row is not None:
-            payload["version"] = f"{self.extension} {row[0]}"
-        return payload
+    def _search_guc_mapping(self, parameters: dict[str, Any]) -> dict[str, str]:
+        """TheoDB's own GUC namespaces, matching the access methods it registers.
+
+        The engine also registers `hnsw.ef_search` and `ivfflat.probes` as
+        compatibility aliases, and both work. The native names are used because
+        this adapter builds the native access methods, and a bundle should not
+        report a compatibility spelling for a run that exercised the engine's own
+        surface.
+        """
+        mapping: dict[str, str] = {}
+        for name, value in parameters.items():
+            if name == "ef_search":
+                mapping["theodb_hnsw.ef_search"] = str(int(value))
+            elif name == "probes":
+                lists = ivfflat_lists(self._row_count)
+                mapping["theodb_ivfflat.probes"] = str(clamp_probes(int(value), lists))
+        return mapping
 
 
 # --------------------------------------------------------------------- helpers
