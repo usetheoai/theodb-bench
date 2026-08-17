@@ -594,3 +594,110 @@ def test_every_declared_search_parameter_is_mapped_to_a_guc(name: str) -> None:
         probe = {knob: 1}
         mapped = adapter._search_guc_mapping(probe)  # type: ignore[attr-defined]
         assert mapped, f"{name} declares {knob!r} but maps it to no GUC"
+
+
+# --------------------------- TheoDB names its own access methods and knobs
+#
+# Measured 2026-08-17 against the image the project's own Dockerfile builds
+# (theodb:b059, PostgreSQL 18.6, theodb_rs 1.5.0):
+#
+#   emitted:  CREATE INDEX ... USING hnsw ("embedding" vector_l2_ops) WITH (m = 16)
+#   server:   UndefinedObject: access method "hnsw" does not exist
+#   pg_am:    theodb_hnsw, theodb_ivfflat
+#   pg_opclass: theodb_hnsw_l2_ops, theodb_ivfflat_l2_ops, ...
+#
+# The `hnsw` alias and `vector_*_ops` do exist -- in the separate `vector` shim
+# extension (ADR-0058), which the image creates in `template1`, not in the
+# `postgres` database the harness connects to. So the whole indexed half of the
+# theodb axis returned INVALID. Tracked as B-064.
+
+
+def test_theodb_emits_its_own_access_method() -> None:
+    adapter = TheoDBAdapter()
+    adapter._row_count = 10_000
+
+    name, ddl = adapter.index_ddl(SPEC, IndexSpec(kind="hnsw", parameters={"m": 16}))
+
+    assert "USING theodb_hnsw " in ddl
+    assert "USING hnsw " not in ddl
+    assert "theodb_hnsw_l2_ops" in ddl
+    assert "vector_l2_ops" not in ddl
+    # The bundle label stays the index *family*, not the engine's spelling.
+    assert name == "bench_vectors_hnsw_l2_idx"
+
+
+def test_theodb_emits_its_own_ivfflat_access_method() -> None:
+    adapter = TheoDBAdapter()
+    adapter._row_count = 10_000
+
+    _, ddl = adapter.index_ddl(SPEC, IndexSpec(kind="ivfflat"))
+
+    assert "USING theodb_ivfflat " in ddl
+    assert "theodb_ivfflat_l2_ops" in ddl
+
+
+def test_pgvector_still_emits_the_upstream_access_method() -> None:
+    """Regression: only TheoDB renames, and upstream pgvector must not."""
+    adapter = PgvectorAdapter()
+    adapter._row_count = 10_000
+
+    _, ddl = adapter.index_ddl(SPEC, IndexSpec(kind="hnsw", parameters={"m": 16}))
+
+    assert "USING hnsw " in ddl
+    assert "vector_l2_ops" in ddl
+
+
+def test_theodb_loads_its_library_into_the_session() -> None:
+    """Measured: pg_settings holds no `theodb%` row, and no `hnsw.ef_search`
+    either, until `LOAD 'theodb_rs'` runs. Sweeping ef_search without it
+    searched at the default for every point."""
+    server = _ServerStub({})
+    adapter = TheoDBAdapter()
+    adapter._execute = server.execute  # type: ignore[method-assign]
+    adapter._fetch_one = server.fetch_one  # type: ignore[method-assign]
+
+    adapter.wait_ready()
+
+    statements = " | ".join(server.executed)
+    assert "LOAD 'theodb_rs'" in statements
+
+
+def test_theodb_maps_ef_search_to_its_own_guc() -> None:
+    server = _ServerStub({"theodb_hnsw.ef_search": ("200", "session")})
+    adapter = TheoDBAdapter()
+    adapter._row_count = 10_000
+    adapter._execute = server.execute  # type: ignore[method-assign]
+    adapter._fetch_one = server.fetch_one  # type: ignore[method-assign]
+
+    adapter.set_search_parameters({"ef_search": 200})
+
+    assert adapter.effective_search_parameters() == {"theodb_hnsw.ef_search": "200"}
+
+
+def test_theodb_records_the_postgresql_version_too() -> None:
+    """The three-way race crosses major versions, and the bundle has to say so.
+
+    Measured 2026-08-17 on one machine: theodb on PostgreSQL 18.6, pgvector on
+    17.11, AlloyDB Omni on 17.9. The pgvector and Omni bundles named their
+    server; the theodb bundle said only `theodb_rs 1.5.0`, because this override
+    replaced the base adapter's version instead of composing with it. The one
+    bundle that hid which PostgreSQL it ran on was our own product's.
+    """
+
+    class _VersionStub(_ServerStub):
+        def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
+            if "version()" in sql:
+                return ("PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64",)
+            if "pg_extension" in sql:
+                return ("1.5.0",)
+            return super().fetch_one(sql, parameters)
+
+    adapter = TheoDBAdapter()
+    server = _VersionStub({})
+    adapter._execute = server.execute  # type: ignore[method-assign]
+    adapter._fetch_one = server.fetch_one  # type: ignore[method-assign]
+
+    version = adapter.export_config()["version"]
+
+    assert "18.6" in version
+    assert "theodb_rs 1.5.0" in version

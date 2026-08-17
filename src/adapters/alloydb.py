@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from theodb_bench.adapters.postgres import PgvectorAdapter, _literal
+from theodb_bench.adapters.postgres import PgvectorAdapter
 
 
 class AlloyDBOmniAdapter(PgvectorAdapter):
@@ -44,7 +44,9 @@ class AlloyDBOmniAdapter(PgvectorAdapter):
     extension = "alloydb_scann"
 
     #: The library that has to be in the session for `scann.*` to be real GUCs.
-    library = "alloydb_scann"
+    #: Declared rather than loaded by an override: the base class issues the LOAD
+    #: for every adapter that names one, so a third engine cannot forget it.
+    library: ClassVar[str | None] = "alloydb_scann"
 
     #: Measured from `pg_opclass` on the running server. The `scann` names are
     #: the engine's own; the pgvector rows come from the bundled fork and are
@@ -85,17 +87,6 @@ class AlloyDBOmniAdapter(PgvectorAdapter):
             "vector_filtered": True,
         }
 
-    def wait_ready(self, timeout_seconds: float = 60.0) -> None:
-        """Wait, create the extension, then load the library into the session.
-
-        The LOAD is not redundant with CREATE EXTENSION: the extension registers
-        the access method in the catalog, the LOAD registers the `scann.*` GUCs
-        in *this backend*. Without it every `SET scann.…` is a placeholder that
-        the server accepts and ignores.
-        """
-        super().wait_ready(timeout_seconds)
-        self._execute(f"LOAD {_literal(self.library)}")
-
     def _search_guc_mapping(self, parameters: dict[str, Any]) -> dict[str, str]:
         """The scann search knobs, by the names `pg_settings` uses.
 
@@ -115,33 +106,3 @@ class AlloyDBOmniAdapter(PgvectorAdapter):
                 # the default measures ScaNN without it.
                 mapping["scann.enable_ah_quantizer"] = "on" if value else "off"
         return mapping
-
-    def export_config(self) -> dict[str, Any]:
-        """Server-reported configuration, with the version read, never inferred.
-
-        The independent AlloyDB evaluation of 2026-08 measured the Docker Hub
-        image sitting on PostgreSQL 17 while the Linux packages had moved to 18.
-        A version taken from the image tag would have hidden that; a version
-        taken from the server cannot.
-
-        A server that does not answer gets no version invented for it: the field
-        is simply absent, which a reader can act on.
-        """
-        payload = super().export_config()
-        parts: list[str] = []
-
-        server = self._fetch_one("SELECT version()")
-        if server is not None and server[0]:
-            parts.append(str(server[0]).split(" on ")[0])
-
-        extension = self._fetch_one(
-            "SELECT extversion FROM pg_extension WHERE extname = %s", (self.extension,)
-        )
-        if extension is not None and extension[0]:
-            parts.append(f"{self.extension} {extension[0]}")
-
-        if parts:
-            payload["version"] = " / ".join(parts)
-        else:
-            payload.pop("version", None)
-        return payload

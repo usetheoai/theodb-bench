@@ -41,6 +41,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The TheoDB adapter now emits TheoDB's own access methods** (B-064). Measured against the image this
+  project's own Dockerfile builds — PostgreSQL 18.6, `theodb_rs` 1.5.0 — the harness emitted
+  `CREATE INDEX ... USING hnsw ("embedding" vector_l2_ops)` and the server answered
+  `access method "hnsw" does not exist`. `pg_am` holds `theodb_hnsw` and `theodb_ivfflat`, with
+  `theodb_hnsw_l2_ops` and friends. The bare `hnsw` name and the `vector_*_ops` classes do exist — in the
+  separate `vector` compatibility shim, which the image creates in `template1` rather than in the
+  `postgres` database a client reaches by default. So every indexed row of our own product's axis
+  returned `INVALID`, while the exact-search row measured and was published: the bundle was not empty,
+  it was partial. The engine's access-method name is now declared per adapter, while the bundle label
+  stays the index family. Verified: the same run is `VALID` with a real recall curve
+  (0.5928 → 0.7800 → 0.9650 across ef_search 16 / 64 / 256).
+- The TheoDB adapter loads `theodb_rs` into the session (B-064). Measured: a fresh session holds zero
+  `theodb%` rows in `pg_settings`, and no `hnsw.ef_search` either, until the LOAD runs — so every swept
+  `ef_search` was a placeholder and the search ran at the default of 64. The LOAD is now issued by the
+  base class for any adapter that declares a library, so a third engine cannot forget it.
+- The server version reaches the bundle alongside the extension version, for every adapter that has an
+  extension (B-064). One machine, one afternoon: TheoDB on PostgreSQL 18.6, pgvector on 17.11, AlloyDB
+  Omni on 17.9. The comparison crosses a major version, and the only bundle that hid which PostgreSQL it
+  ran on was our own product's, because its override replaced the base version instead of composing with
+  it. Three separate implementations became one.
 - Index parameters are rendered by type instead of forced through `int()` (B-059). Measured:
   `scann` accepts `quantizer='sq8'`, a string, and the previous renderer raised a bare
   `ValueError` with no phase, system or option name. Strings are now quoted and escaped through

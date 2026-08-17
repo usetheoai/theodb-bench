@@ -560,6 +560,19 @@ class PgvectorAdapter(PostgresAdapter):
     #: extension, verified in force before a point is measured.
     SEARCH_PARAMETERS: ClassVar[frozenset[str]] = frozenset({"ef_search", "probes"})
 
+    #: Engine access-method name per index family. The family is the *label* a
+    #: bundle reports (`hnsw`); the access method is what the engine calls its
+    #: implementation, and the two are not always the same word. Empty means the
+    #: label is already the engine's name, which is true for upstream pgvector.
+    ACCESS_METHODS: ClassVar[dict[str, str]] = {}
+
+    #: Library to LOAD into the session, when the extension's GUCs are only
+    #: registered once it is loaded. Measured on both TheoDB and AlloyDB Omni:
+    #: `pg_settings` lists none of the extension's settings before the LOAD, so
+    #: every `SET` is a placeholder the server accepts and ignores. None means
+    #: the extension registers its GUCs without one.
+    library: ClassVar[str | None] = None
+
     def capabilities(self) -> dict[str, bool]:
         return {
             "vector_exact": True,
@@ -571,6 +584,45 @@ class PgvectorAdapter(PostgresAdapter):
     def wait_ready(self, timeout_seconds: float = 60.0) -> None:
         super().wait_ready(timeout_seconds)
         self._execute(f"CREATE EXTENSION IF NOT EXISTS {_identifier(self.extension)} CASCADE")
+        if type(self).library is not None:
+            # CREATE EXTENSION registers the access method in the catalog; the
+            # LOAD registers the extension's GUCs in *this backend*. They are
+            # different acts, and only the second one makes `SET` mean anything.
+            self._execute(f"LOAD {_literal(str(type(self).library))}")
+
+    def export_config(self) -> dict[str, Any]:
+        """Server configuration, with the server *and* extension versions named.
+
+        Both halves are read from the server, never inferred from an image tag.
+        A three-way race measured on one machine on 2026-08-17 ran TheoDB on
+        PostgreSQL 18.6, pgvector on 17.11 and AlloyDB Omni on 17.9 -- the
+        comparison crosses a major version, and a bundle that records only the
+        extension hides that from every reader of the result. It is the same
+        reason the tag is not trusted: the published Omni image says `latest`
+        and serves 17.
+
+        A server that will not answer gets nothing invented for it.
+        """
+        payload = super().export_config()
+        parts: list[str] = []
+
+        server = payload.get("version")
+        if server:
+            # Trim at " on <arch>": the platform triple is already in the
+            # environment record, and repeating it buries the version.
+            parts.append(str(server).split(" on ")[0])
+
+        extension = self._fetch_one(
+            "SELECT extversion FROM pg_extension WHERE extname = %s", (self.extension,)
+        )
+        if extension is not None and extension[0]:
+            parts.append(f"{self.extension} {extension[0]}")
+
+        if parts:
+            payload["version"] = " / ".join(parts)
+        else:
+            payload.pop("version", None)
+        return payload
 
     def column_type(self, dimension: int) -> str:
         return f"vector({int(dimension)})"
@@ -650,9 +702,10 @@ class PgvectorAdapter(PostgresAdapter):
             for key, value in sorted(parameters.items())
         )
         with_clause = f" WITH ({rendered})" if rendered else ""
+        access_method = type(self).ACCESS_METHODS.get(index.kind, index.kind)
         ddl = (
             f"CREATE INDEX {_identifier(name)} ON {_identifier(spec.table)} "
-            f"USING {index.kind} ({_identifier(spec.embedding_column)} {opclass}){with_clause}"
+            f"USING {access_method} ({_identifier(spec.embedding_column)} {opclass}){with_clause}"
         )
         return name, ddl
 
@@ -718,6 +771,40 @@ class TheoDBAdapter(PgvectorAdapter):
     system_id = "theodb"
     extension = "theodb_rs"
 
+    #: Measured on the image this project's own Dockerfile builds (PostgreSQL
+    #: 18.6, theodb_rs 1.5.0): `pg_am` holds `theodb_hnsw` and `theodb_ivfflat`,
+    #: and there is no bare `hnsw`. The bare name and the `vector_*_ops` classes
+    #: come from the separate `vector` compatibility shim (ADR-0058), which the
+    #: image creates in `template1` and not in the `postgres` database a client
+    #: connects to by default -- so inheriting pgvector's spelling made every
+    #: indexed row of this axis fail with `access method "hnsw" does not exist`.
+    #:
+    #: The shim's access method uses the *same* handler, so measuring through it
+    #: would measure the same engine. Naming the native surface is what makes the
+    #: bundle say which surface was exercised.
+    ACCESS_METHODS: ClassVar[dict[str, str]] = {
+        "hnsw": "theodb_hnsw",
+        "ivfflat": "theodb_ivfflat",
+    }
+
+    OPCLASSES: ClassVar[dict[str, dict[str, str]]] = {
+        "hnsw": {
+            "l2": "theodb_hnsw_l2_ops",
+            "ip": "theodb_hnsw_ip_ops",
+            "cosine": "theodb_hnsw_cosine_ops",
+        },
+        "ivfflat": {
+            "l2": "theodb_ivfflat_l2_ops",
+            "ip": "theodb_ivfflat_ip_ops",
+            "cosine": "theodb_ivfflat_cosine_ops",
+        },
+    }
+
+    #: Measured: a fresh session holds zero `theodb%` rows in `pg_settings`, and
+    #: no `hnsw.ef_search` either, until this loads. Every swept `ef_search`
+    #: before this line was a placeholder, and the search ran at the default.
+    library: ClassVar[str | None] = "theodb_rs"
+
     def capabilities(self) -> dict[str, bool]:
         """What this adapter can actually exercise, not what TheoDB can do.
 
@@ -738,14 +825,23 @@ class TheoDBAdapter(PgvectorAdapter):
             "vector_filtered": True,
         }
 
-    def export_config(self) -> dict[str, Any]:
-        payload = super().export_config()
-        row = self._fetch_one(
-            "SELECT extversion FROM pg_extension WHERE extname = %s", (self.extension,)
-        )
-        if row is not None:
-            payload["version"] = f"{self.extension} {row[0]}"
-        return payload
+    def _search_guc_mapping(self, parameters: dict[str, Any]) -> dict[str, str]:
+        """TheoDB's own GUC namespaces, matching the access methods it registers.
+
+        The engine also registers `hnsw.ef_search` and `ivfflat.probes` as
+        compatibility aliases, and both work. The native names are used because
+        this adapter builds the native access methods, and a bundle should not
+        report a compatibility spelling for a run that exercised the engine's own
+        surface.
+        """
+        mapping: dict[str, str] = {}
+        for name, value in parameters.items():
+            if name == "ef_search":
+                mapping["theodb_hnsw.ef_search"] = str(int(value))
+            elif name == "probes":
+                lists = ivfflat_lists(self._row_count)
+                mapping["theodb_ivfflat.probes"] = str(clamp_probes(int(value), lists))
+        return mapping
 
 
 # --------------------------------------------------------------------- helpers
