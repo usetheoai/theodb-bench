@@ -167,6 +167,37 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
         ),
         default_repetitions=3,
     ),
+    # The scann sweep is a separate suite for the same reason the hnsw one sweeps
+    # `ef_search`: the search knob belongs to the index family, not to the
+    # benchmark. `scann` takes `num_leaves_to_search`, `hnsw` takes `ef_search`,
+    # and one suite cannot ask for both -- an adapter that cannot apply a
+    # requested knob refuses the run rather than publishing one operating point
+    # under several labels. The two families are compared at MATCHED RECALL from
+    # their frontiers, never by pairing knob values that mean different things.
+    "vector/synthetic/scann-sweep": BenchmarkEntry(
+        id="vector/synthetic/scann-sweep",
+        description=(
+            "Seeded synthetic corpus with a scann num_leaves_to_search sweep, "
+            "producing the quality/throughput frontier of AlloyDB's own access "
+            "method. Compared to an hnsw frontier at matched recall, never "
+            "knob-to-knob."
+        ),
+        workload=VectorWorkload(
+            corpus_size=10_000,
+            dimension=64,
+            query_count=500,
+            k=10,
+            warmup_queries=50,
+            indexes=(
+                IndexSpec(kind="none"),
+                # num_leaves is passed, not derived: deriving it from cardinality
+                # is a heuristic nobody here has measured.
+                IndexSpec(kind="scann", parameters={"num_leaves": 100, "quantizer": "sq8"}),
+            ),
+            search_sweep={"num_leaves_to_search": (1, 10, 50)},
+        ),
+        default_repetitions=3,
+    ),
 }
 
 

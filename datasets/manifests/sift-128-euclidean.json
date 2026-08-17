@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "sift-128-euclidean",
+  "version": "ann-benchmarks-2018",
+  "description": "SIFT1M: one million 128-dimensional SIFT descriptors with 10 000 queries and their exact 100 nearest neighbours under L2, as repackaged by ANN-Benchmarks. This is the corpus ADR-0035 used when it measured the ~25x QPS gap against the ScaNN library, so it is the only corpus on which a measurement against the scann access method can be compared to that conclusion.",
+  "source": {
+    "url": "http://ann-benchmarks.com/sift-128-euclidean.hdf5"
+  },
+  "license": {
+    "name": "unverified - TEXMEX/INRIA corpus repackaged by ANN-Benchmarks",
+    "redistributable": false
+  },
+  "files": [
+    {
+      "path": "sift-128-euclidean.hdf5",
+      "sha256": "dd6f0a6ed6b7ebb8934680f861a33ed01ff33991eaee4fd60914d854a0ca5984",
+      "size_bytes": 525128288,
+      "url": "http://ann-benchmarks.com/sift-128-euclidean.hdf5",
+      "role": "corpus"
+    }
+  ],
+  "preprocess": {
+    "version": 1,
+    "description": "None. The HDF5 is read as published; published distances are never read, and recall is recomputed from the vectors."
+  },
+  "properties": {
+    "corpus_size": 1000000,
+    "dimension": 128,
+    "query_count": 10000,
+    "metric": "l2",
+    "neighbours_per_query": 100
+  }
+}

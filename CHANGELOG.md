@@ -9,6 +9,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **SIFT1M is a registered dataset** (B-057): one million 128-dimensional SIFT descriptors with 10 000 queries,
+  identified by the checksum of the bytes actually downloaded
+  (`dd6f0a6ed6b7ebb8934680f861a33ed01ff33991eaee4fd60914d854a0ca5984`, 525 128 288 bytes) rather than by a
+  version string. It is the corpus ADR-0035 used when it measured the ~25x QPS gap against the ScaNN
+  *library*, so it is the only corpus on which a measurement against the scann *access method* can be
+  compared to that conclusion. The licence is recorded as unverified and `redistributable: false`, because
+  the TEXMEX/INRIA corpus repackaged by ANN-Benchmarks carries no licence text this project could confirm —
+  and inventing one to fill the field is the fabrication the manifest exists to prevent.
+- **A scann search sweep is a registered suite** (B-057): `vector/synthetic/scann-sweep` sweeps
+  `num_leaves_to_search` over a scann index, as the hnsw suite sweeps `ef_search`. They are separate suites
+  because the search knob belongs to the index family and one suite cannot ask for both — an adapter that
+  cannot apply a requested knob now refuses the run. The two families are compared at **matched recall** from
+  their frontiers, never by pairing knob values that mean different things.
 - **The analytical surface reaches real engines** (B-061): `load_analytical` and `execute_analytical` are
   implemented for the PostgreSQL family. Before this, only the in-process fake could execute an analytical
   query — the 336-line `AnalyticalBenchmark`, its oracle and its three declared execution paths had no
