@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from theodb_bench.adapters.base import AnalyticalQuery, AnalyticalTable
+from theodb_bench.adapters.base import AnalyticalQuery, AnalyticalTable, IndexSpec
 from theodb_bench.adapters.postgres import PgvectorAdapter, _identifier, _literal
 from theodb_bench.errors import AdapterError, ErrorContext, Phase
 
@@ -65,7 +65,11 @@ class AlloyDBOmniAdapter(PgvectorAdapter):
     #: (0.7820 both). Declaring it would let a sweep publish one operating point
     #: under three labels.
     SEARCH_PARAMETERS: ClassVar[frozenset[str]] = frozenset(
-        {"num_leaves_to_search", "pct_leaves_to_search", "enable_ah_quantizer"}
+        {
+            "num_leaves_to_search",
+            "pct_leaves_to_search",
+            "pre_reordering_num_neighbors",
+        }
     )
 
     def capabilities(self) -> dict[str, bool]:
@@ -94,6 +98,24 @@ class AlloyDBOmniAdapter(PgvectorAdapter):
             "columnar": True,
         }
 
+    def _build_session_settings(self, index: IndexSpec) -> dict[str, str]:
+        """AH quantization is enabled at build time or it is not enabled at all.
+
+        Measured on the running server: `CREATE INDEX ... WITH (quantizer='AH')`
+        fails with `AH quantization is not enabled for the index` unless
+        `scann.enable_ah_quantizer` is on in the session doing the build. With it
+        on, the reloption records `quantizer=AH`.
+
+        This matters more than a flag usually does. AH is the anisotropic
+        quantizer ADR-0035 credits for the ~25x QPS gap it measured against the
+        ScaNN library, and it ships **off** -- so a run that left the default
+        would build SQ8, measure scalar quantization, and answer a question about
+        AH with it.
+        """
+        if str(index.parameters.get("quantizer", "")).upper() == "AH":
+            return {"scann.enable_ah_quantizer": "on"}
+        return {}
+
     def _search_guc_mapping(self, parameters: dict[str, Any]) -> dict[str, str]:
         """The scann search knobs, by the names `pg_settings` uses.
 
@@ -107,11 +129,17 @@ class AlloyDBOmniAdapter(PgvectorAdapter):
                 mapping["scann.num_leaves_to_search"] = str(int(value))
             elif name == "pct_leaves_to_search":
                 mapping["scann.pct_leaves_to_search"] = str(int(value))
-            elif name == "enable_ah_quantizer":
-                # Measured `off` by default -- the anisotropic quantizer that
-                # gives ScaNN its published throughput is opt-in, and a run at
-                # the default measures ScaNN without it.
-                mapping["scann.enable_ah_quantizer"] = "on" if value else "off"
+            elif name == "pre_reordering_num_neighbors":
+                # How many quantized candidates get rescored with exact
+                # distances. Ships at -1, and that default caps recall at the
+                # quantizer's fidelity: measured at 100k SIFT-128 with AH and 80
+                # leaves searched, recall goes from 0.6568 at the default to
+                # 0.9964 at 100 and 0.9998 at 500. Searching four times more
+                # leaves had bought 1.4 points, so the ceiling was quantization
+                # error and not search depth. A frontier measured at the default
+                # would report the competitor topping out at two thirds recall,
+                # which is false and happens to flatter us.
+                mapping["scann.pre_reordering_num_neighbors"] = str(int(value))
         return mapping
 
     # ----------------------------------------------------------- analytical

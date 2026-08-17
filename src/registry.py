@@ -174,6 +174,96 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     # requested knob refuses the run rather than publishing one operating point
     # under several labels. The two families are compared at MATCHED RECALL from
     # their frontiers, never by pairing knob values that mean different things.
+    # The AH variant exists because `quantizer` changes what is being measured,
+    # not just how fast it is. Measured on the running server: AH is the
+    # anisotropic quantizer ADR-0035 credits for the ~25x gap it found against the
+    # ScaNN library, `CREATE INDEX ... WITH (quantizer='AH')` fails outright unless
+    # `scann.enable_ah_quantizer` is on at build time, and the flag ships off. A
+    # single scann suite would therefore have measured SQ8 and answered a question
+    # about AH with it.
+    "vector/sift/scann-ah": BenchmarkEntry(
+        id="vector/sift/scann-ah",
+        description=(
+            "SIFT descriptors against AlloyDB's scann access method with its "
+            "anisotropic AH quantizer, which is the configuration ADR-0035's gap "
+            "was attributed to. Compared to an hnsw frontier at matched recall."
+        ),
+        workload=VectorWorkload(
+            corpus_size=100_000,
+            dimension=128,
+            query_count=500,
+            k=10,
+            warmup_queries=50,
+            indexes=(IndexSpec(kind="scann", parameters={"num_leaves": 316, "quantizer": "AH"}),),
+            # The rerank depth is swept together with the leaves because the two
+            # trade against each other, and pinning it at its -1 default would
+            # measure a quantization-error ceiling instead of a frontier.
+            search_sweep={
+                "num_leaves_to_search": (5, 20, 80),
+                "pre_reordering_num_neighbors": (100,),
+            },
+        ),
+        default_repetitions=3,
+    ),
+    "vector/sift/hnsw": BenchmarkEntry(
+        id="vector/sift/hnsw",
+        description=(
+            "SIFT descriptors against an hnsw access method at the same corpus "
+            "size, queries and k as vector/sift/scann-ah, so the two frontiers "
+            "can be read at matched recall."
+        ),
+        workload=VectorWorkload(
+            corpus_size=100_000,
+            dimension=128,
+            query_count=500,
+            k=10,
+            warmup_queries=50,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (16, 64, 256)},
+        ),
+        default_repetitions=3,
+    ),
+    # The 1M pair exists because scale is the decisive caveat on the 100k result:
+    # ADR-0035's ~25x gap was measured at one million vectors, and an IVF-style
+    # index and a graph index do not scale the same way. Comparing a 100k ratio to
+    # a 1M ratio would compare two different experiments.
+    "vector/sift1m/scann-ah": BenchmarkEntry(
+        id="vector/sift1m/scann-ah",
+        description=(
+            "SIFT1M in full against AlloyDB's scann access method with the AH "
+            "quantizer and exact-distance rescoring. The scale ADR-0035 measured."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_000_000,
+            dimension=128,
+            query_count=500,
+            k=10,
+            warmup_queries=50,
+            indexes=(IndexSpec(kind="scann", parameters={"num_leaves": 1000, "quantizer": "AH"}),),
+            search_sweep={
+                "num_leaves_to_search": (20, 80),
+                "pre_reordering_num_neighbors": (100,),
+            },
+        ),
+        default_repetitions=3,
+    ),
+    "vector/sift1m/hnsw": BenchmarkEntry(
+        id="vector/sift1m/hnsw",
+        description=(
+            "SIFT1M in full against an hnsw access method, at the same corpus "
+            "size, queries and k as vector/sift1m/scann-ah."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_000_000,
+            dimension=128,
+            query_count=500,
+            k=10,
+            warmup_queries=50,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (64, 256)},
+        ),
+        default_repetitions=3,
+    ),
     "vector/synthetic/scann-sweep": BenchmarkEntry(
         id="vector/synthetic/scann-sweep",
         description=(

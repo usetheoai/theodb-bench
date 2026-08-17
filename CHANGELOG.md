@@ -17,6 +17,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
   compared to that conclusion. The licence is recorded as unverified and `redistributable: false`, because
   the TEXMEX/INRIA corpus repackaged by ANN-Benchmarks carries no licence text this project could confirm —
   and inventing one to fill the field is the fabrication the manifest exists to prevent.
+- **The ScaNN rerank depth is a declared, swept search knob** (B-057), and without it an AH frontier measures
+  quantization error rather than the index. Measured at 100 000 SIFT-128 vectors with `quantizer=AH` and 80 of
+  316 leaves searched: `scann.pre_reordering_num_neighbors` ships at `-1`, and at that default recall@10 is
+  **0.6568**; at 100 it is **0.9964**; at 500, **0.9998**. Searching four times more leaves had bought 1.4
+  points, so the ceiling was the missing exact-distance rescore, which is how ScaNN is designed to work. A
+  frontier taken at the default would have reported the competitor topping out at two thirds recall — false,
+  and it happened to flatter us.
+- **AH quantization is applied at build time, and verified in force** (B-057). Measured:
+  `CREATE INDEX ... WITH (quantizer='AH')` fails with `AH quantization is not enabled for the index` unless
+  `scann.enable_ah_quantizer` is on in the building session; valid quantizer values are `SQ8`, `Flat` and `AH`,
+  and the flag ships off. Build-time settings are therefore a separate declaration from the search knobs: one
+  applied after the index exists changes nothing about the index already written, so an adapter treating one as
+  the other builds SQ8 and labels it AH.
 - **A scann search sweep is a registered suite** (B-057): `vector/synthetic/scann-sweep` sweeps
   `num_leaves_to_search` over a scann index, as the hnsw suite sweeps `ef_search`. They are separate suites
   because the search knob belongs to the index family and one suite cannot ask for both — an adapter that

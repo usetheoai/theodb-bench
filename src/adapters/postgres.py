@@ -288,10 +288,30 @@ class PostgresAdapter(SystemAdapter):
 
     # ------------------------------------------------------------------ index
 
+    def _build_session_settings(self, index: IndexSpec) -> dict[str, str]:
+        """Session settings an index needs in force *while it is being built*.
+
+        Distinct from the search knobs: those are applied per operating point,
+        after the index exists. A build-time switch applied afterwards changes
+        nothing about the index that was already written, so an adapter that
+        treated one as the other would build one structure and label it another.
+        """
+        return {}
+
+    def _apply_build_session(self, index: IndexSpec) -> None:
+        mapping = self._build_session_settings(index)
+        if not mapping:
+            return
+        for guc, literal in mapping.items():
+            self._execute(f"SET {guc} = {literal}")
+        # Verified in force, exactly as the search knobs are.
+        self._verified_search_settings(mapping)
+
     def build_index(self, spec: VectorTableSpec, index: IndexSpec) -> BuildOutcome:
         self.require(index.capability, f"index kind {index.kind!r}")
         if index.kind == "none":
             return BuildOutcome(seconds=0.0, index_size_bytes=None, parameters_in_force={})
+        self._apply_build_session(index)
         raise UnsupportedCapabilityError(
             f"{self.system_id} cannot build a {index.kind} index",
             context=ErrorContext(phase=Phase.INDEX_BUILD, system=self.system_id),
@@ -910,10 +930,30 @@ class PgvectorAdapter(PostgresAdapter):
         )
         return name, ddl
 
+    def _build_session_settings(self, index: IndexSpec) -> dict[str, str]:
+        """Session settings an index needs in force *while it is being built*.
+
+        Distinct from the search knobs: those are applied per operating point,
+        after the index exists. A build-time switch applied afterwards changes
+        nothing about the index that was already written, so an adapter that
+        treated one as the other would build one structure and label it another.
+        """
+        return {}
+
+    def _apply_build_session(self, index: IndexSpec) -> None:
+        mapping = self._build_session_settings(index)
+        if not mapping:
+            return
+        for guc, literal in mapping.items():
+            self._execute(f"SET {guc} = {literal}")
+        # Verified in force, exactly as the search knobs are.
+        self._verified_search_settings(mapping)
+
     def build_index(self, spec: VectorTableSpec, index: IndexSpec) -> BuildOutcome:
         self.require(index.capability, f"index kind {index.kind!r}")
         if index.kind == "none":
             return BuildOutcome(seconds=0.0, index_size_bytes=None, parameters_in_force={})
+        self._apply_build_session(index)
 
         name, ddl = self.index_ddl(spec, index)
         started = time.perf_counter()
