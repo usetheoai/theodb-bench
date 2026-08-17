@@ -9,6 +9,35 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The analytical surface reaches real engines** (B-061): `load_analytical` and `execute_analytical` are
+  implemented for the PostgreSQL family. Before this, only the in-process fake could execute an analytical
+  query — the 336-line `AnalyticalBenchmark`, its oracle and its three declared execution paths had no
+  engine attached to them. The heap path is a plain table; TheoDB's columnar path is
+  `CREATE TABLE ... USING theodb_columnar`; AlloyDB Omni's is a heap table plus a cache registration. Two
+  mechanisms under one label, declared per adapter rather than derived from the label.
+- **A residency gate that refuses every state in which the columnar label would be a lie** (B-061).
+  Measured against a running AlloyDB Omni, its columnar engine has four distinguishable states and three of
+  them answer queries correctly while silently falling back to heap: engine off (the default, and its
+  context is `postmaster`, so only a restart changes it); enabled but never populated; **enabled and
+  registered with an empty store**; and enabled, populated, actually used. The third one is why the gate is
+  not built on `g_columnar_columns`, which the published independent evaluation recommends as the residency
+  proof: measured, that view reported **4 columns while the engine summary reported Memory Used = 0 MB**,
+  and the plan was still a sequential scan. It reports registration, not residency. The measured cause is
+  that the refresh needs shared memory a default Docker container does not have — it fails with
+  `could not resize shared memory segment`. Each state produces a different message, because they need
+  different actions.
+- The columnar aggregate pushdown is enabled and **verified in force** before an analytical number is taken
+  (B-061). `theodb.enable_columnar_agg` ships off. Measured on the built image, same table of one million
+  rows and same query: off → `Seq Scan`, **1407 ms**; on → `Custom Scan (theodb_columnar_agg)`, **108 ms**.
+  Thirteen times, decided by a GUC, with the catalog reporting a columnar table either way. Leaving it at
+  the default measures columnar storage without its pushdown — a path the project already knows loses to
+  heap — and publishing that as "our columnar" would be the same error as measuring ScaNN with its AH
+  quantizer off.
+- The plan proof is taken **per query, not per table** (B-061), because pushdown coverage depends on the
+  query shape. Measured at one million rows with the pushdown on: `sum(amount)` plans as
+  `Custom Scan (theodb_columnar_agg)`, while `GROUP BY category` falls back to Seq Scan → external-merge
+  Sort (25 456 kB spilled to disk) → GroupAggregate and runs **14× slower than heap**. A gate that probed
+  one query and generalised would have called the grouped one pushed down.
 - **AlloyDB Omni is a measurable system** (B-059): `alloydbomni` is a registered adapter driving
   Google's `scann` access method. Every property below was measured against
   `google/alloydbomni:latest` on an ephemeral droplet rather than read from documentation.

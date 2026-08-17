@@ -199,14 +199,38 @@ def test_pgvector_declares_both_index_families() -> None:
     assert adapter.supports("vector_ivfflat")
 
 
-def test_theodb_declares_only_the_vector_surface_it_can_exercise() -> None:
-    # TheoDB the database has hybrid, columnar, Parquet, graph and a
-    # vectorizer. This adapter reaches none of them, and declaring them would
-    # put a false claim into every system.json and into `theodb-bench list`.
+def test_theodb_declares_only_the_surface_it_can_exercise() -> None:
+    """TheoDB the database has hybrid, columnar, Parquet, graph and a vectorizer.
+
+    `columnar` left this list when the analytical surface arrived: the adapter
+    creates the table `USING theodb_columnar` and proves residency from
+    `pg_class.relam`, so the claim is now checkable. The rest stay out — a
+    capability is a statement about this code path, and declaring one whose
+    lifecycle methods fall through to the base puts a false claim into every
+    `system.json`.
+    """
     adapter = TheoDBAdapter()
     assert adapter.supports("vector_hnsw")
-    for capability in ("hybrid", "lexical", "columnar", "parquet", "graph", "vectorizer"):
+    assert adapter.supports("columnar")
+    for capability in ("hybrid", "lexical", "parquet", "graph", "vectorizer"):
         assert not adapter.supports(capability), capability
+
+
+@pytest.mark.parametrize("name", sorted(ADAPTERS))
+def test_a_declared_analytical_capability_has_a_path_to_run_it(name: str) -> None:
+    """`columnar` and `parquet` share their lifecycle methods, so the structural
+    guard cannot tell them apart. An adapter that declared `parquet` while its
+    `ANALYTICAL_PATHS` had no such entry would pass that guard and refuse at
+    runtime -- which is safe, but late.
+    """
+    adapter = ADAPTERS[name].factory()
+    paths = getattr(type(adapter), "ANALYTICAL_PATHS", None)
+    if paths is None:
+        pytest.skip(f"{name} is not a PostgreSQL-family adapter")
+
+    for capability, path in (("columnar", "columnar"), ("parquet", "parquet")):
+        if adapter.supports(capability):
+            assert path in paths, f"{name} declares {capability} with no {path!r} path"
 
 
 # The surfaces beyond vector need these adapter methods. A capability may only
