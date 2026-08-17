@@ -22,6 +22,15 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 import pytest
+from theodb_bench.adapters.base import (
+    BuildOutcome,
+    IndexSpec,
+    KnnQuery,
+    KnnResult,
+    LoadOutcome,
+    SystemAdapter,
+    VectorTableSpec,
+)
 from theodb_bench.formats import read_bvecs_dataset
 from theodb_bench.streaming import CorpusSource
 
@@ -238,3 +247,121 @@ def test_the_corpus_file_size_is_exactly_twenty_million_records() -> None:
     assert entry is not None
 
     assert entry.size_bytes == 20_000_000 * (4 + 128)
+
+
+# ------------------------------------- the path a real run takes, end to end
+#
+# Measured 2026-08-17: a 20 000 000-vector run reached the measurement window and
+# then refused, because `_recall` validated returned ids against `self.corpus`
+# rather than the binding — 31 minutes to find a one-line defect the suite should
+# have caught in milliseconds.
+#
+# It did not, and the reason is worth more than the fix: the test above builds the
+# benchmark and checks the oracle, then stops. It asserted the *setup* and called
+# it the path. Recall is computed inside `measure`, which nothing exercised on a
+# streamed corpus.
+
+
+class _RecordingAdapter(SystemAdapter):
+    """Answers every query with the same ids, so recall is computed for real.
+
+    A real subclass rather than a duck-typed stand-in: the adapter contract is an
+    ABC, and a double that cannot satisfy it is not evidence that the path works.
+    """
+
+    system_id = "fake"
+
+    def __init__(self, ids: tuple[int, ...]) -> None:
+        self._ids = ids
+        self.streamed = 0
+
+    def capabilities(self) -> dict[str, bool]:
+        return {"vector_exact": True}
+
+    def prepare(self) -> None:
+        return None
+
+    def start(self) -> None:
+        return None
+
+    def wait_ready(self, timeout_seconds: float = 60.0) -> None:
+        return None
+
+    def load_dataset(self, spec: VectorTableSpec, vectors: Any) -> LoadOutcome:
+        raise AssertionError("the resident load path was taken for a streamed corpus")
+
+    def load_dataset_streaming(
+        self, spec: VectorTableSpec, source: Any, *, chunk_rows: int = 50_000
+    ) -> LoadOutcome:
+        self.streamed += 1
+        rows = int(source.row_count)
+        return LoadOutcome(seconds=0.1, rows_loaded=rows, rows_expected=rows)
+
+    def build_index(self, spec: VectorTableSpec, index: IndexSpec) -> BuildOutcome:
+        return BuildOutcome(seconds=0.0, index_size_bytes=None, parameters_in_force={})
+
+    def execute(self, query: KnnQuery) -> KnnResult:
+        return KnnResult(
+            ids=self._ids, distances=tuple(0.0 for _ in self._ids), latency_seconds=0.001
+        )
+
+    def collect_stats(self) -> dict[str, Any]:
+        return {}
+
+    def export_config(self) -> dict[str, Any]:
+        return {}
+
+    def stop(self) -> None:
+        return None
+
+    def cleanup(self) -> None:
+        return None
+
+
+def test_a_streamed_run_computes_recall_instead_of_refusing(
+    pair: tuple[
+        Path, Path, npt.NDArray[np.unsignedinteger[Any]], npt.NDArray[np.unsignedinteger[Any]]
+    ],
+) -> None:
+    """The whole point of the streamed path: a measured window that ends in a
+    number. Validating ids against an array the run deliberately never holds
+    turned that into a refusal after the work was already done."""
+    from theodb_bench.bench.vector import VectorWorkload
+
+    base_path, query_path, _, _ = pair
+    dataset = read_bvecs_dataset(base_path, query_path).subsample(40, 5)
+    workload = VectorWorkload(corpus_size=40, dimension=10, query_count=5, k=3)
+    benchmark = workload.build(dataset.train, dataset.test)
+    adapter = _RecordingAdapter(ids=(0, 1, 2))
+
+    benchmark.load(adapter)
+    result = benchmark.measure(adapter, repetition=1)
+
+    assert adapter.streamed == 1, "the load did not go through the streaming path"
+    assert result.successes == 5
+    assert result.recall is not None, "a streamed run must produce a recall figure"
+    assert 0.0 <= result.recall <= 1.0
+
+
+def test_an_id_outside_a_streamed_corpus_is_still_a_correctness_failure(
+    pair: tuple[
+        Path, Path, npt.NDArray[np.unsignedinteger[Any]], npt.NDArray[np.unsignedinteger[Any]]
+    ],
+) -> None:
+    """The check `_recall` was doing when it reached for the array. It has to
+    survive the fix: a system answering with an id it was never given is wrong,
+    and scoring it would reward the wrong answer."""
+    from theodb_bench.bench.vector import VectorWorkload
+    from theodb_bench.errors import MeasurementError
+
+    base_path, query_path, _, _ = pair
+    dataset = read_bvecs_dataset(base_path, query_path).subsample(40, 5)
+    benchmark = VectorWorkload(corpus_size=40, dimension=10, query_count=5, k=3).build(
+        dataset.train, dataset.test
+    )
+    adapter = _RecordingAdapter(ids=(0, 1, 999))
+
+    benchmark.load(adapter)
+
+    with pytest.raises(MeasurementError, match="outside the corpus"):
+        benchmark.measure(adapter, repetition=1)
