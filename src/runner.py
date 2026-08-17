@@ -14,6 +14,7 @@ measurement completed.
 from __future__ import annotations
 
 import os
+import statistics
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from theodb_bench.abort import AbortKind, classify_abort
-from theodb_bench.absent import Absent
+from theodb_bench.absent import Absent, unavailable
 from theodb_bench.adapters.base import SystemAdapter
 from theodb_bench.analysis.statistics import (
     PointStatistics,
@@ -47,6 +48,8 @@ from theodb_bench.isolation import (
     online_cpus,
 )
 from theodb_bench.profiles import Profile, get_profile
+from theodb_bench.regression_wiring import regression_for
+from theodb_bench.report import pareto_payload
 from theodb_bench.telemetry import CollectorSet, PerfStatCollector, ProcessCollector
 from theodb_bench.validation import RunObservations, validate_run
 
@@ -70,6 +73,10 @@ class RunRequest:
     isolation: IsolationPlan = field(default_factory=IsolationPlan)
     collect_process_telemetry: bool = True
     collect_perf_telemetry: bool = False
+    baseline_dir: Path | None = None
+    """An accepted run to detect regression against. Absent means no detection
+    happened, which the profile gate records rather than treating as a pass."""
+
     dataset_id: str | None = None
     dataset_version: str | None = None
     dataset_sha256: str | None = None
@@ -300,6 +307,27 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
         ),
     )
 
+    # The frontier, when the run swept enough to have one. Without it a headline
+    # throughput comparison has only the other branch of the rule available --
+    # a stated target quality with its interpolation method -- and nothing was
+    # emitting either.
+    pareto = pareto_payload(points)
+    if pareto is not None:
+        bundle.write_derived("pareto", pareto)
+
+    baseline_run_id: str | Absent = unavailable("no baseline supplied for this run")
+    baseline_comparable = True
+    if request.baseline_dir is not None:
+        regression, baseline_comparable = _regression_artifact(
+            request, bundle, points, system_id=adapter.system_id
+        )
+        bundle.write_derived("regression", regression)
+        baseline_run_id = (
+            str(regression["baseline"]["run_id"])
+            if regression["baseline"]
+            else (unavailable("baseline bundle carried no run id"))
+        )
+
     telemetry = collectors.as_dict()
     bundle.write_raw_text("telemetry.json", _as_json(telemetry))
 
@@ -325,6 +353,8 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
         cpu_limit_respected=_cpu_limit_respected(applied, escapes),
         memory_limit_respected=applied.memory_limit_applied,
         quality_reported=request.workload.quality_was_reported(points),
+        baseline_run_id=baseline_run_id,
+        baseline_comparable=baseline_comparable,
         quality_required=True,
         telemetry_complete=_telemetry_complete(telemetry),
         dirty_source_tree=_dirty_tree(environment),
@@ -369,6 +399,79 @@ def _build_collectors(request: RunRequest) -> CollectorSet:
     collectors.add(ProcessCollector(pid, enabled=request.collect_process_telemetry))
     collectors.add(PerfStatCollector(pid, enabled=request.collect_perf_telemetry))
     return collectors
+
+
+def _run_metrics(points: list[PointResult]) -> dict[str, float]:
+    """The headline metrics a regression gate judges, median across repetitions."""
+    throughputs = [
+        r.throughput for point in points for r in point.repetitions if r.throughput is not None
+    ]
+    p95: list[float] = []
+    for point in points:
+        for repetition in point.repetitions:
+            value = repetition.latency.p95 if repetition.latency is not None else None
+            if isinstance(value, float):
+                p95.append(value)
+    metrics: dict[str, float] = {}
+    if throughputs:
+        metrics["throughput_per_second"] = statistics.median(throughputs)
+    if p95:
+        metrics["latency_p95_ms"] = statistics.median(p95)
+    return metrics
+
+
+def _regression_artifact(
+    request: RunRequest,
+    bundle: RunBundle,
+    points: list[PointResult],
+    *,
+    system_id: str,
+) -> tuple[dict[str, Any], bool]:
+    """Compare this run to the supplied baseline bundle."""
+    if request.baseline_dir is None:
+        raise ConfigError(
+            "regression artefact requested without a baseline",
+            context=ErrorContext(phase=Phase.OFFLINE),
+        )
+    baseline_bundle = RunBundle.open(request.baseline_dir)
+    baseline_manifest = baseline_bundle.read_artifact("manifest")
+    baseline_result = baseline_bundle.read_artifact("result")
+    baseline_points = _points_from_artifact(baseline_result)
+
+    common = {
+        "benchmark_id": request.benchmark_id,
+        "benchmark_version": request.benchmark_version,
+        "profile": request.profile.name.value,
+        # Taken from the adapter rather than from this run's manifest: the
+        # manifest is written at finalization, which has not happened yet.
+        "system": system_id,
+        "hardware_class": "unclassified",
+    }
+    baseline_common = {
+        "benchmark_id": baseline_manifest["benchmark"]["id"],
+        "benchmark_version": baseline_manifest["benchmark"].get("version", 1),
+        "profile": baseline_manifest.get("profile", "unknown"),
+        "system": baseline_manifest["system"]["id"],
+        "hardware_class": "unclassified",
+    }
+    return regression_for(
+        candidate={**common, "run_id": bundle.run_id, "metrics": _run_metrics(points)},
+        baseline={
+            **baseline_common,
+            "run_id": baseline_manifest["run_id"],
+            "metrics": baseline_points,
+        },
+    )
+
+
+def _points_from_artifact(result: dict[str, Any]) -> dict[str, float]:
+    """Headline metrics from an already-written result artefact."""
+    throughputs = [
+        point["throughput_per_second"]
+        for point in result.get("points", [])
+        if point.get("throughput_per_second") is not None
+    ]
+    return {"throughput_per_second": statistics.median(throughputs)} if throughputs else {}
 
 
 def _expected_operations(request: RunRequest, points: list[PointResult]) -> int | None:

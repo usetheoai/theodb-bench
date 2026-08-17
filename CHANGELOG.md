@@ -9,6 +9,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A swept run emits its Pareto frontier** (B-067). `analysis/pareto.py` computed dominance and had no caller,
+  so no run produced one — while the project's own rule says a headline throughput comparison needs a stated
+  target quality with its interpolation method **or** the complete frontier, leaving every comparison to fall
+  to the first branch by default. Each point records *which* configurations dominate it rather than only that
+  it is dominated: an operator fixing one needs to know what to compare against. Below two measured
+  configurations no frontier is written, because a frontier of one point is a point and publishing it as a
+  curve would dress a single measurement as a trade-off.
+- **`--baseline` runs regression detection** (B-067, B-072). `analysis/regression.py` implemented comparability
+  checks, per-metric gates and a verdict, and had zero importers while three profiles declared
+  `regression_gate = True`. First run against a real baseline returned **INCOMPARABLE** with the reason named:
+  `profile: pr vs smoke`. That is the gate working — comparing a one-repetition run against a three-repetition
+  one compares protocols, not code, and I22 requires the comparison to fail closed rather than report a
+  reassuring number. Default thresholds are marked **advisory**, not measured: a regression threshold is only
+  trustworthy once the runner's own variance has been characterised, and the same-day evidence for why they are
+  not tighter is that the same configuration re-run on the same host varied by 24% and 46%.
+
 - **The orchestrator depends on a workload protocol, not on one family** (B-067), so the analytical surface can
   finally be run. `RunRequest.workload` was typed `VectorWorkload` and the runner constructed `VectorBenchmark`
   by hand, which is why `bench/analytical.py`, `bench/graph.py` and `bench/retrieval.py` had zero importers in

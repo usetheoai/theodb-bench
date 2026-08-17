@@ -305,6 +305,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             benchmark_id=entry.id,
             workload=workload,
             adapter_factory=adapter.build,
+            baseline_dir=args.baseline,
             profile=profile,
             repetitions=repetitions,
             results_root=args.output,
@@ -654,6 +655,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--dataset",
         default=None,
         help="measure a verified dataset instead of the seeded synthetic corpus",
+    )
+    run.add_argument(
+        "--baseline",
+        type=Path,
+        default=None,
+        help="an accepted run bundle to detect regression against. Profiles that "
+        "declare regression_gate record that no detection happened without one.",
     )
     run.add_argument("--manifest-dir", type=Path, default=None)
     run.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)

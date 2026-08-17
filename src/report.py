@@ -13,10 +13,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import statistics
 from pathlib import Path
 from typing import Any, Final
 
 from theodb_bench.absent import Absent
+from theodb_bench.analysis.pareto import (
+    MAXIMIZE,
+    PARETO_SCHEMA_VERSION,
+    Objective,
+    Point,
+    dominates,
+    frontier,
+)
+from theodb_bench.bench.vector import PointResult
 from theodb_bench.bundle import RunBundle
 from theodb_bench.compare import match_by_recall, render_paired_verdict
 from theodb_bench.errors import ErrorContext, Phase, SchemaValidationError
@@ -451,3 +461,68 @@ def _latency_by_query(bundle: RunBundle) -> dict[str, dict[int, float]]:
         if totals:
             out[point["label"]] = {q: sum(v) / len(v) for q, v in totals.items()}
     return out
+
+
+def pareto_payload(points: list[PointResult]) -> dict[str, Any] | None:
+    """The quality/throughput frontier of a swept run, or None when there is none.
+
+    The project's own rule is that a headline throughput comparison needs a stated
+    target quality with its interpolation method, *or* the complete frontier.
+    `analysis/pareto.py` computed frontiers and had no caller, so no run emitted
+    one and every comparison fell to the first branch by default.
+
+    Returns None below two measured configurations. A frontier of one point is a
+    point, and publishing it as a curve would dress a single measurement as a
+    trade-off.
+    """
+    measured = [
+        point
+        for point in points
+        if point.status == "measured" and point.repetitions and _median_recall(point) is not None
+    ]
+    if len(measured) < 2:
+        return None
+
+    objectives = [
+        Objective(metric="throughput_per_second", direction=MAXIMIZE),
+        Objective(metric="recall", direction=MAXIMIZE),
+    ]
+    candidates = [
+        Point(
+            label=point.label,
+            values={
+                "throughput_per_second": _median_throughput(point) or 0.0,
+                "recall": _median_recall(point) or 0.0,
+            },
+        )
+        for point in measured
+    ]
+    best = frontier(candidates, objectives)
+    on_frontier = {point.label for point in best}
+    return {
+        "schema_version": PARETO_SCHEMA_VERSION,
+        "objectives": [objective.as_dict() for objective in objectives],
+        "points": [
+            {
+                "label": point.label,
+                "values": point.values,
+                # Who beat it, not merely that something did: an operator fixing a
+                # dominated configuration needs to know which one to compare with.
+                "dominated_by": [
+                    other.label for other in candidates if dominates(other, point, objectives)
+                ],
+            }
+            for point in candidates
+        ],
+        "frontier": [point.label for point in sorted(best, key=lambda p: p.values["recall"])],
+    }
+
+
+def _median_recall(point: PointResult) -> float | None:
+    values = [r.recall for r in point.repetitions if r.recall is not None]
+    return statistics.median(values) if values else None
+
+
+def _median_throughput(point: PointResult) -> float | None:
+    values = [r.throughput for r in point.repetitions if r.throughput is not None]
+    return statistics.median(values) if values else None
