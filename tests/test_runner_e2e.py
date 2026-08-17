@@ -280,6 +280,6 @@ def test_the_bundle_records_what_was_in_force_not_only_what_was_asked(tmp_path: 
         assert "ef_search" in point["parameters"], "the request must stay in the record"
         # FakeAdapter is in-process, so effective == requested; the point of the assertion is
         # that the effective values REACH the artifact at all.
-        assert any(
-            key.endswith("ef_search") for key in point["parameters"]
-        ), f"no effective search parameter reached the bundle: {sorted(point['parameters'])}"
+        assert any(key.endswith("ef_search") for key in point["parameters"]), (
+            f"no effective search parameter reached the bundle: {sorted(point['parameters'])}"
+        )

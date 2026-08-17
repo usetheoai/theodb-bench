@@ -30,7 +30,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 
 import numpy as np
 from theodb_bench.absent import encode, unavailable
@@ -59,9 +59,14 @@ from theodb_bench.errors import (
 DEFAULT_DSN: Final[str] = "postgresql:///postgres"
 COPY_BATCH: Final[int] = 1000
 
-# Operator classes per access method and metric. A metric absent from an
-# access method's map is unsupported for that method -- never approximated
-# with a different one.
+# Operator classes per access method and metric, in pgvector's convention. A
+# metric absent from an access method's map is unsupported for that method --
+# never approximated with a different one.
+#
+# This is pgvector's naming, not a universal one: AlloyDB's scann access method
+# names the same three classes `cosine` / `dot_product` / `l2`. An adapter for
+# another engine therefore declares its own table (PgvectorAdapter.OPCLASSES)
+# rather than inheriting this one.
 OPCLASSES: Final[dict[str, dict[str, str]]] = {
     "hnsw": {"l2": "vector_l2_ops", "ip": "vector_ip_ops", "cosine": "vector_cosine_ops"},
     "ivfflat": {"l2": "vector_l2_ops", "ip": "vector_ip_ops", "cosine": "vector_cosine_ops"},
@@ -499,6 +504,12 @@ class PgvectorAdapter(PostgresAdapter):
     system_id = "pgvector"
     extension = "vector"
 
+    #: Operator classes this engine names, per access method and metric.
+    #: A subclass whose engine uses a different convention overrides it; the
+    #: lookup in `opclass` reads it off the concrete class, so inheriting the
+    #: wrong table is not possible by accident.
+    OPCLASSES: ClassVar[dict[str, dict[str, str]]] = OPCLASSES
+
     def capabilities(self) -> dict[str, bool]:
         return {
             "vector_exact": True,
@@ -530,7 +541,7 @@ class PgvectorAdapter(PostgresAdapter):
 
     def opclass(self, kind: str, metric: str) -> str:
         """Operator class for an access method and metric, or unsupported."""
-        available = OPCLASSES.get(kind, {})
+        available = type(self).OPCLASSES.get(kind, {})
         opclass = available.get(metric)
         if opclass is None:
             raise UnsupportedCapabilityError(
@@ -544,6 +555,38 @@ class PgvectorAdapter(PostgresAdapter):
             )
         return opclass
 
+    def _render_reloption(self, key: str, value: Any) -> str:
+        """Render one `WITH (...)` value, by type.
+
+        Not every index parameter is an integer. AlloyDB's scann access method
+        takes `quantizer='sq8'`, and rendering it through `int()` raises a bare
+        ValueError with no phase, no system and no option name -- a failure the
+        caller cannot act on.
+
+        A type this does not know is refused rather than coerced: a benchmark
+        definition that reached here with a list or a dict is a broken
+        definition, and silently stringifying it would put an unintended index
+        configuration into a published measurement.
+        """
+        if isinstance(value, bool):
+            # Before the int branch: bool is a subclass of int in Python, and
+            # `WITH (opt = 1)` is not what PostgreSQL wants for a boolean.
+            return "true" if value else "false"
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, str):
+            return _literal(value)
+        raise AdapterError(
+            f"index parameter {key!r} has value {value!r} of type "
+            f"{type(value).__name__}, which cannot be rendered as a reloption; "
+            "expected an int, a bool or a str",
+            context=ErrorContext(
+                phase=Phase.INDEX_BUILD,
+                system=self.system_id,
+                details={"parameter": key},
+            ),
+        )
+
     def index_ddl(self, spec: VectorTableSpec, index: IndexSpec) -> tuple[str, str]:
         """(index name, CREATE INDEX statement) for a configuration."""
         opclass = self.opclass(index.kind, spec.metric)
@@ -552,7 +595,10 @@ class PgvectorAdapter(PostgresAdapter):
         if index.kind == "ivfflat":
             # Derived from the real row count, never from a default.
             parameters.setdefault("lists", ivfflat_lists(self._row_count))
-        rendered = ", ".join(f"{key} = {int(value)}" for key, value in sorted(parameters.items()))
+        rendered = ", ".join(
+            f"{key} = {self._render_reloption(key, value)}"
+            for key, value in sorted(parameters.items())
+        )
         with_clause = f" WITH ({rendered})" if rendered else ""
         ddl = (
             f"CREATE INDEX {_identifier(name)} ON {_identifier(spec.table)} "

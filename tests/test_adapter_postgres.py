@@ -7,6 +7,8 @@ invariants live. Behaviour that needs a live server is marked `integration`.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import numpy as np
 import pytest
 from theodb_bench.adapters.base import IndexSpec, KnnQuery, SystemAdapter, VectorTableSpec
@@ -18,6 +20,7 @@ from theodb_bench.adapters.postgres import (
     ivfflat_lists,
 )
 from theodb_bench.errors import AdapterError, UnsupportedCapabilityError
+from theodb_bench.registry import ADAPTERS, get_adapter
 from theodb_bench.schemas import validate
 
 SPEC = VectorTableSpec(table="bench_vectors", dimension=8, metric="l2")
@@ -368,6 +371,7 @@ def test_gate_distinguishes_could_not_verify_from_verified_and_divergent() -> No
     """A read that fails is not a divergence. Collapsing the two would report a
     configuration defect where there was an unavailable server — the distinction
     `cycle-acceptance` protects with NOT_VALIDATED."""
+
     class _Unreadable(_ServerStub):
         def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
             raise RuntimeError("connection reset")
@@ -377,16 +381,130 @@ def test_gate_distinguishes_could_not_verify_from_verified_and_divergent() -> No
         adapter.set_search_parameters({"ef_search": 200})
 
 
-@pytest.mark.parametrize("name", ["postgres", "pgvector", "theodb", "fake"])
+@pytest.mark.parametrize("name", sorted(ADAPTERS))
 def test_every_adapter_reports_effective_search_parameters(name: str) -> None:
     """A new engine cannot be added without answering what is in force.
 
     Without this, the contract holds for three adapters out of four and the fourth breaks
     it in silence — and `fake` is the one the runner's own tests exercise most.
-    """
-    from theodb_bench.registry import get_adapter
 
+    Parametrized off `ADAPTERS` rather than a written-out list. The list version was
+    measured passing while `alloydbomni` was already registered and uncovered: a test
+    that enumerates what it claims to cover universally excludes every adapter added
+    after it was written, and reports green for doing so.
+    """
     entry = get_adapter(name)
     assert hasattr(entry.factory, "effective_search_parameters") or hasattr(
         entry.factory(), "effective_search_parameters"
     ), f"{name} does not report its effective search parameters"
+
+
+def test_alloydbomni_is_registered() -> None:
+    entry = get_adapter("alloydbomni")
+
+    assert entry.requires == ("psycopg",)
+    assert "query layer" in entry.description
+    assert "PostgreSQL 17" in entry.description  # the measured version, not the tag
+
+
+# ------------------------------------------------ reloption rendering by type
+#
+# Measured on google/alloydbomni:latest (droplet 138.197.22.192, 2026-08-17):
+#   CREATE INDEX ... USING scann (emb cosine) WITH (num_leaves=10, quantizer='sq8')
+#   -> CREATE INDEX; pg_class.reloptions = {num_leaves=10, quantizer=sq8}
+# `quantizer` is a string, and the renderer only knew how to write integers.
+
+
+class _ScannLike(PgvectorAdapter):
+    """An engine whose access method takes a string reloption, as scann does."""
+
+    OPCLASSES: ClassVar[dict[str, dict[str, str]]] = {
+        "scann": {"l2": "l2", "ip": "dot_product", "cosine": "cosine"}
+    }
+
+
+def test_a_string_reloption_is_rendered_quoted() -> None:
+    adapter = _ScannLike()
+    adapter._row_count = 200
+
+    _, ddl = adapter.index_ddl(SPEC, IndexSpec(kind="scann", parameters={"quantizer": "sq8"}))
+
+    assert "quantizer = 'sq8'" in ddl
+
+
+def test_an_int_reloption_is_still_rendered_bare() -> None:
+    """Regression: the existing integer path must not gain quotes."""
+    adapter = PgvectorAdapter()
+    adapter._row_count = 200
+
+    _, ddl = adapter.index_ddl(SPEC, IndexSpec(kind="hnsw", parameters={"m": 16}))
+
+    assert "m = 16" in ddl
+
+
+def test_an_unrenderable_reloption_raises_adapter_error_not_value_error() -> None:
+    """A bad benchmark definition must fail with phase and system, not a bare ValueError."""
+    adapter = PgvectorAdapter()
+    adapter._row_count = 200
+
+    with pytest.raises(AdapterError) as exc:
+        adapter.index_ddl(SPEC, IndexSpec(kind="hnsw", parameters={"m": [1, 2]}))
+
+    assert "m" in str(exc.value)
+
+
+def test_a_string_reloption_cannot_inject_sql() -> None:
+    """Benchmark definitions are data, and data does not get to write SQL."""
+    adapter = _ScannLike()
+    adapter._row_count = 200
+
+    _, ddl = adapter.index_ddl(
+        SPEC, IndexSpec(kind="scann", parameters={"quantizer": "sq8') OR '1'='1"})
+    )
+
+    assert "''" in ddl
+
+
+def test_setting_opclasses_on_an_instance_does_not_change_the_lookup() -> None:
+    """The table is read off the class on purpose.
+
+    An adapter declares its convention by subclassing, so a stray instance
+    attribute cannot silently redirect which operator class an index is built
+    with.
+    """
+    adapter = PgvectorAdapter()
+    adapter.OPCLASSES = {"scann": {"l2": "l2"}}  # type: ignore[misc]
+
+    with pytest.raises(UnsupportedCapabilityError):
+        adapter.opclass("scann", "l2")
+
+
+# ------------------------------------------------------- per-adapter opclasses
+#
+# Measured on the same droplet: the scann access method names its operator
+# classes `cosine` / `dot_product` / `l2` — none of which match pgvector's
+# `vector_*_ops` convention. A shared module-level table cannot serve both.
+
+
+def test_an_adapter_declares_its_own_opclasses() -> None:
+    class _Stub(PgvectorAdapter):
+        OPCLASSES: ClassVar[dict[str, dict[str, str]]] = {
+            "scann": {"cosine": "cosine", "ip": "dot_product", "l2": "l2"}
+        }
+
+    assert _Stub().opclass("scann", "cosine") == "cosine"
+    assert _Stub().opclass("scann", "ip") == "dot_product"
+
+
+def test_the_pgvector_convention_survives_the_move() -> None:
+    assert PgvectorAdapter().opclass("hnsw", "cosine") == "vector_cosine_ops"
+
+
+def test_an_unknown_metric_names_what_is_available() -> None:
+    class _Stub(PgvectorAdapter):
+        OPCLASSES: ClassVar[dict[str, dict[str, str]]] = {"scann": {"cosine": "cosine"}}
+
+    with pytest.raises(UnsupportedCapabilityError) as exc:
+        _Stub().opclass("scann", "hamming")
+
+    assert "cosine" in str(exc.value)

@@ -9,6 +9,44 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **AlloyDB Omni is a measurable system** (B-059): `alloydbomni` is a registered adapter driving
+  Google's `scann` access method. Every property below was measured against
+  `google/alloydbomni:latest` on an ephemeral droplet rather than read from documentation.
+  `capabilities()` declares only what this code exercises, and deliberately claims none of the
+  managed service's platform features — Omni is a query layer, with no disaggregated storage,
+  read pool or managed failover. Racing against capabilities the running product does not have
+  would measure a product that is not there.
+- The adapter issues `LOAD 'alloydb_scann'` per session, and the knob gate from B-060 is what
+  proves it took effect (B-059). Measured: in a session without the LOAD,
+  `SET scann.num_leaves_to_search = 500` **succeeds**, `current_setting` echoes `500` back, and
+  `pg_settings` does not list the GUC — the engine keeps searching at its default of 0.
+  `shared_preload_libraries` does not carry the library. This is the same placeholder mechanism
+  the gate was built for, now confirmed on another engine; removing the LOAD makes two tests
+  fail rather than producing a shallow result.
+- The measured server version reaches the bundle read from the server, never inferred from the
+  image tag (B-059). The published image serves **PostgreSQL 17.9**, so a head-to-head against
+  TheoDB crosses a major version — a fact a report has to state, not hide. A server that will
+  not answer gets no version invented for it: the field is omitted.
+
+### Changed
+
+- Index parameters are rendered by type instead of forced through `int()` (B-059). Measured:
+  `scann` accepts `quantizer='sq8'`, a string, and the previous renderer raised a bare
+  `ValueError` with no phase, system or option name. Strings are now quoted and escaped through
+  the existing literal helper; a type the renderer does not know is refused with an
+  `AdapterError` rather than coerced, because a benchmark definition carrying a list where a
+  scalar belongs is broken, and stringifying it would put an unintended index configuration into
+  a published measurement.
+- Operator classes are declared per adapter instead of by one shared table (B-059). Measured:
+  the `scann` access method names its three classes `cosine`, `dot_product` and `l2` — none of
+  pgvector's `vector_*_ops`. The lookup reads the table off the concrete class, so an adapter
+  cannot inherit the wrong convention by accident.
+- The contract test asserting that every adapter reports its effective search parameters is now
+  parametrized off the registry instead of a written-out list (B-059). The list version was
+  measured passing while `alloydbomni` was already registered and uncovered: a test that
+  enumerates what it claims to cover universally excludes every adapter added after it was
+  written, and reports green for doing so.
+
 - A search parameter is now **verified in force before anything is measured** (B-060). The
   harness already refused to report a number when the planner ignored the index
   (`assert_index_used`); it did not refuse when the *knob* was ignored — the `SET` was issued
