@@ -43,12 +43,16 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Final
 
 import numpy as np
 from theodb_bench.absent import encode, unavailable
 from theodb_bench.adapters.base import (
+    AnalyticalQuery,
+    AnalyticalResult,
+    AnalyticalTable,
     BuildOutcome,
     IndexSpec,
     KnnQuery,
@@ -539,6 +543,203 @@ class PostgresAdapter(SystemAdapter):
             },
         }
 
+    # ----------------------------------------------------------- analytical
+
+    #: Table access method per analytical execution path. `row` is heap, which
+    #: PostgreSQL uses without being told. A path absent from this map is not
+    #: supported by the adapter and is refused rather than silently stored as heap
+    #: -- measuring heap under the columnar label is the whole defect this
+    #: surface exists to avoid.
+    ANALYTICAL_PATHS: ClassVar[dict[str, str | None]] = {"row": None}
+
+    ANALYTICAL_SQL: ClassVar[dict[str, str]] = {
+        "total_rows": "SELECT count(*) FROM {table}",
+        "sum_amount": "SELECT sum(amount) FROM {table}",
+        "group_by_category": (
+            "SELECT category, sum(amount) FROM {table} GROUP BY category ORDER BY category"
+        ),
+        "filtered_sum": ("SELECT sum(amount) FROM {table} WHERE quantity < 24 AND amount > 0"),
+    }
+
+    def _analytical_column_types(self) -> str:
+        return "id integer, amount double precision, category text, quantity integer"
+
+    def _require_analytical_path(self, path: str) -> str | None:
+        if path not in type(self).ANALYTICAL_PATHS:
+            raise UnsupportedCapabilityError(
+                f"{self.system_id} has no {path!r} analytical execution path; "
+                f"it has {', '.join(sorted(type(self).ANALYTICAL_PATHS))}",
+                context=ErrorContext(
+                    phase=Phase.DATASET_LOAD,
+                    system=self.system_id,
+                    details={"path": path},
+                ),
+            )
+        return type(self).ANALYTICAL_PATHS[path]
+
+    def load_analytical(
+        self, table: AnalyticalTable, rows: Sequence[tuple[Any, ...]]
+    ) -> LoadOutcome:
+        """Load the same rows into one execution path.
+
+        The access method is declared per adapter, never derived from the path
+        name: `columnar` is `theodb_columnar` on TheoDB and a heap table plus a
+        cache registration on AlloyDB Omni. Two mechanisms, one label.
+        """
+        access_method = self._require_analytical_path(table.path)
+        name = _identifier(table.name)
+        using = f" USING {access_method}" if access_method else ""
+
+        started = time.perf_counter()
+        self._execute(f"DROP TABLE IF EXISTS {name} CASCADE")
+        self._execute(f"CREATE TABLE {name} ({self._analytical_column_types()}){using}")
+        with self._cursor() as cursor:
+            batch: list[tuple[Any, ...]] = []
+            placeholders = ", ".join(["%s"] * len(table.columns))
+            columns = ", ".join(_identifier(column) for column in table.columns)
+            insert = f"INSERT INTO {name} ({columns}) VALUES ({placeholders})"
+            for row in rows:
+                batch.append(row)
+                if len(batch) >= COPY_BATCH:
+                    cursor.executemany(insert, batch)
+                    batch.clear()
+            if batch:
+                cursor.executemany(insert, batch)
+        self._execute(f"ANALYZE {name}")
+        self._apply_analytical_session(table)
+        self._after_analytical_load(table)
+
+        counted = self._fetch_one(f"SELECT count(*) FROM {name}")
+        loaded = int(counted[0]) if counted else 0
+        return LoadOutcome(
+            seconds=time.perf_counter() - started,
+            rows_loaded=loaded,
+            rows_expected=len(rows),
+        )
+
+    def _after_analytical_load(self, table: AnalyticalTable) -> None:
+        """Hook for a path whose residency is a separate act from storing the rows.
+
+        Heap and a columnar table access method need nothing here: writing the
+        rows *is* putting them in the path. A cache-based engine does not, and
+        overrides this.
+        """
+
+    #: Session settings a path needs to actually be that path, per path name.
+    #: Applied and then read back from `pg_settings`, exactly as the search knobs
+    #: are: a GUC that ships off and silently stays off is how a measurement ends
+    #: up describing a configuration nobody ran.
+    ANALYTICAL_SESSION_SETTINGS: ClassVar[dict[str, dict[str, str]]] = {}
+
+    #: Plan fragment that proves the path was used, per path name. A path absent
+    #: from this map is proven by the catalog alone, which is correct for heap:
+    #: there is no other path a heap table could take.
+    ANALYTICAL_PLAN_MARKERS: ClassVar[dict[str, str]] = {}
+
+    def _apply_analytical_session(self, table: AnalyticalTable) -> None:
+        mapping = type(self).ANALYTICAL_SESSION_SETTINGS.get(table.path, {})
+        if not mapping:
+            return
+        for guc, literal in mapping.items():
+            self._execute(f"SET {guc} = {literal}")
+        # Same verification the search knobs get, and for the same reason.
+        self._verified_search_settings(mapping)
+
+    def _analytical_query_sql(self, table: AnalyticalTable, query: AnalyticalQuery) -> str:
+        template = type(self).ANALYTICAL_SQL.get(query.id)
+        if template is None:
+            raise AdapterError(
+                f"unknown analytical query {query.id!r}; "
+                f"{self.system_id} knows {', '.join(sorted(type(self).ANALYTICAL_SQL))}",
+                context=ErrorContext(
+                    phase=Phase.MEASUREMENT,
+                    system=self.system_id,
+                    details={"query": query.id},
+                ),
+            )
+        return template.format(table=_identifier(table.name))
+
+    def execute_analytical(
+        self, table: AnalyticalTable, query: AnalyticalQuery
+    ) -> AnalyticalResult:
+        sql = self._analytical_query_sql(table, query)
+        started = time.perf_counter()
+        rows = self._fetch_all(sql)
+        elapsed = time.perf_counter() - started
+        return AnalyticalResult(
+            rows=tuple(tuple(row) for row in rows),
+            wall_seconds=elapsed,
+        )
+
+    def assert_analytical_path(
+        self, table: AnalyticalTable, query: AnalyticalQuery | None = None
+    ) -> None:
+        """Prove the rows are really in the path the label claims.
+
+        The default proof is the catalog: `pg_class.relam` names the table access
+        method, and it cannot disagree with where the rows are. An engine whose
+        columnar surface is a cache needs a different proof and overrides this.
+        """
+        expected = self._require_analytical_path(table.path)
+        if expected is None:
+            return
+        row = self._fetch_one(
+            "SELECT a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE c.relname = %s",
+            (table.name,),
+        )
+        actual = str(row[0]) if row and row[0] else "<absent>"
+        if actual != expected:
+            raise AdapterError(
+                f"{table.name} claims path {table.path!r} but its access method is "
+                f"{actual!r}, not {expected!r}. Measuring it would report "
+                f"{actual} timings under the {table.path} label.",
+                context=ErrorContext(
+                    phase=Phase.MEASUREMENT,
+                    system=self.system_id,
+                    details={"path": table.path, "access_method": actual},
+                ),
+            )
+        self._assert_plan_uses_the_path(table, query)
+
+    def _assert_plan_uses_the_path(
+        self, table: AnalyticalTable, query: AnalyticalQuery | None = None
+    ) -> None:
+        """Residency proves where the rows are; only the plan proves what ran.
+
+        Measured on the built image at one million rows, same table and query:
+        with `theodb.enable_columnar_agg` off -- its default -- the plan is a plain
+        Seq Scan and the query takes 1407 ms; with it on the plan is
+        `Custom Scan (theodb_columnar_agg)` and it takes 108 ms. Thirteen times,
+        decided by a GUC, with the catalog reporting a columnar table either way.
+        """
+        marker = type(self).ANALYTICAL_PLAN_MARKERS.get(table.path)
+        if marker is None:
+            return
+        # Per query, not once per table: pushdown coverage depends on the query
+        # shape. Measured on the built image at one million rows, with the
+        # pushdown on, `sum(amount)` plans as Custom Scan (theodb_columnar_agg)
+        # while `GROUP BY category` falls back to Seq Scan -> external-merge Sort
+        # (25 456 kB spilled) -> GroupAggregate, and runs 14x slower than heap.
+        # A gate that probed one query and generalised would call the second one
+        # pushed down.
+        probe = query if query is not None else AnalyticalQuery(id="filtered_sum", description="")
+        sql = self._analytical_query_sql(table, probe)
+        plan = self._fetch_one(f"EXPLAIN (COSTS OFF) {sql}")
+        plan_text = str(plan[0]) if plan and plan[0] else ""
+        if marker not in plan_text:
+            raise AdapterError(
+                f"{table.name} is stored in the {table.path} path and the plan for "
+                f"query {probe.id!r} did not use it: {marker!r} is absent. Residency "
+                f"is necessary and not sufficient, and pushdown coverage varies by "
+                f"query shape — measured, the same table is 13x slower on a query "
+                f"whose plan falls back. Plan: {plan_text[:300]}",
+                context=ErrorContext(
+                    phase=Phase.MEASUREMENT,
+                    system=self.system_id,
+                    details={"path": table.path, "marker": marker},
+                ),
+            )
+
     def _scalar(self, sql: str) -> Any:
         row = self._fetch_one(sql)
         return row[0] if row else None
@@ -805,6 +1006,30 @@ class TheoDBAdapter(PgvectorAdapter):
     #: before this line was a placeholder, and the search ran at the default.
     library: ClassVar[str | None] = "theodb_rs"
 
+    #: Measured on the built image: `pg_am` holds `theodb_columnar` with
+    #: `amtype = 't'`, so the columnar surface here is *storage*, not a cache.
+    #: `CREATE TABLE ... USING theodb_columnar` puts the rows in it, and
+    #: `pg_class.relam` proves they are there -- there is no "enabled but empty"
+    #: state to detect, which is the state that makes the competitor's engine
+    #: dangerous to measure.
+    ANALYTICAL_PATHS: ClassVar[dict[str, str | None]] = {
+        "row": None,
+        "columnar": "theodb_columnar",
+    }
+
+    #: `theodb.enable_columnar_agg` ships **off**, and the project's own wiki
+    #: records that the columnar's gain lives in the pushdown rather than in a
+    #: plain scan. Measured at one million rows: off -> Seq Scan, 1407 ms;
+    #: on -> Custom Scan (theodb_columnar_agg), 108 ms. Leaving it at the default
+    #: measures columnar storage without its pushdown, which is a path already
+    #: known to lose to heap -- and publishing that as "our columnar" would be
+    #: the same error as measuring ScaNN with its AH quantizer off.
+    ANALYTICAL_SESSION_SETTINGS: ClassVar[dict[str, dict[str, str]]] = {
+        "columnar": {"theodb.enable_columnar_agg": "on"}
+    }
+
+    ANALYTICAL_PLAN_MARKERS: ClassVar[dict[str, str]] = {"columnar": "theodb_columnar_agg"}
+
     def capabilities(self) -> dict[str, bool]:
         """What this adapter can actually exercise, not what TheoDB can do.
 
@@ -823,6 +1048,10 @@ class TheoDBAdapter(PgvectorAdapter):
             "vector_hnsw": True,
             "vector_ivfflat": True,
             "vector_filtered": True,
+            # Reached as of the analytical surface: `USING theodb_columnar` plus a
+            # `pg_class.relam` proof. Hybrid, Parquet, graph and the vectorizer are
+            # still not reachable from this adapter and stay undeclared.
+            "columnar": True,
         }
 
     def _search_guc_mapping(self, parameters: dict[str, Any]) -> dict[str, str]:

@@ -34,7 +34,9 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from theodb_bench.adapters.postgres import PgvectorAdapter
+from theodb_bench.adapters.base import AnalyticalQuery, AnalyticalTable
+from theodb_bench.adapters.postgres import PgvectorAdapter, _identifier, _literal
+from theodb_bench.errors import AdapterError, ErrorContext, Phase
 
 
 class AlloyDBOmniAdapter(PgvectorAdapter):
@@ -85,6 +87,11 @@ class AlloyDBOmniAdapter(PgvectorAdapter):
             "vector_hnsw": True,
             "vector_ivfflat": True,
             "vector_filtered": True,
+            # Reached as of the analytical surface. Declared only because the
+            # residency gate below refuses every state in which the label would
+            # be a lie -- without that gate this would be the false claim the
+            # docstring above warns about.
+            "columnar": True,
         }
 
     def _search_guc_mapping(self, parameters: dict[str, Any]) -> dict[str, str]:
@@ -106,3 +113,115 @@ class AlloyDBOmniAdapter(PgvectorAdapter):
                 # the default measures ScaNN without it.
                 mapping["scann.enable_ah_quantizer"] = "on" if value else "off"
         return mapping
+
+    # ----------------------------------------------------------- analytical
+    #
+    # The columnar engine is a cache populated by policy, not storage. Measured on
+    # the running server, it has four distinguishable states, and three of them
+    # answer queries correctly while silently falling back to heap:
+    #
+    #   1. `enabled = off` (the default). Reading g_columnar_columns errors.
+    #   2. enabled, never populated: 0 columns, 0 MB, Seq Scan.
+    #   3. enabled, `google_columnar_engine_add()` called, container /dev/shm at
+    #      Docker's 64 MB default: g_columnar_columns = 4 while the engine summary
+    #      reports Memory Used = 0 MB, and the plan is still a Seq Scan. The
+    #      refresh fails with `could not resize shared memory segment ... No space
+    #      left on device`.
+    #   4. enabled, populated, --shm-size=4g: Memory Used = 42 MB and the plan
+    #      carries `Parallel Custom Scan (columnar scan)`.
+    #
+    # State 3 is why this gate is not built on g_columnar_columns, which the
+    # published independent evaluation recommends as the residency proof: the view
+    # reports *registration*. Residency is `Memory Used > 0`, and even that is not
+    # sufficient -- at 50 000 rows the store was loaded and the planner still
+    # chose a sequential scan.
+
+    #: The columnar path is a heap table plus a cache registration, so no access
+    #: method is named for it. `_after_analytical_load` does the registration.
+    ANALYTICAL_PATHS: ClassVar[dict[str, str | None]] = {"row": None, "columnar": None}
+
+    def _after_analytical_load(self, table: AnalyticalTable) -> None:
+        """Register the table with the columnar engine.
+
+        Auto-columnarization is driven by query history, so a freshly loaded table
+        in a freshly started engine is recommended by nothing and stays out of the
+        store. Registering explicitly is what makes the run measure the engine
+        rather than the heap it silently falls back to.
+        """
+        if table.path != "columnar":
+            return
+        self._execute(f"SELECT google_columnar_engine_add({_literal(table.name)})")
+
+    def assert_analytical_path(
+        self, table: AnalyticalTable, query: AnalyticalQuery | None = None
+    ) -> None:
+        """Prove the columnar engine is on, loaded, and actually in the plan.
+
+        Three separate facts, because the three failures need three different
+        actions: turn the engine on (and restart), populate the store (and give
+        the container shared memory), or accept that at this size the planner
+        prefers heap. Collapsing them into one message would send a reader to fix
+        the wrong thing.
+        """
+        if table.path != "columnar":
+            super().assert_analytical_path(table, query)
+            return
+
+        enabled = self._fetch_one(
+            "SELECT setting, context FROM pg_settings WHERE name = %s",
+            ("google_columnar_engine.enabled",),
+        )
+        if enabled is None or str(enabled[0]) != "on":
+            raise AdapterError(
+                "google_columnar_engine.enabled is not on, so every columnar query "
+                "falls back to heap. Its context is `postmaster`: it cannot be SET "
+                "for a session, it needs ALTER SYSTEM and a server restart.",
+                context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+            )
+
+        registered = self._fetch_one(
+            "SELECT count(*) FROM g_columnar_columns WHERE relation_name = %s",
+            (table.name,),
+        )
+        count = int(registered[0]) if registered and registered[0] is not None else 0
+        if count == 0:
+            raise AdapterError(
+                f"the columnar engine holds no column of {table.name}, so the scan "
+                f"would run on heap under the columnar label.",
+                context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+            )
+
+        summary = self._fetch_one(
+            "SELECT value FROM g_columnar_engine_summary WHERE name = %s",
+            ("Memory Used (MB)",),
+        )
+        used = int(summary[0]) if summary and summary[0] is not None else 0
+        if used <= 0:
+            raise AdapterError(
+                f"{count} column(s) of {table.name} are registered with the columnar "
+                f"engine and the store is not loaded: Memory Used is {used} MB. "
+                f"g_columnar_columns reports registration, not residency. Measured "
+                f"cause: the refresh needs shared memory the container does not "
+                f"have -- run it with --shm-size and check for `could not resize "
+                f"shared memory segment`.",
+                context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+            )
+
+        # Probed with the query about to run, when there is one: pushdown coverage
+        # depends on the query shape here as much as on ours, and proving it once
+        # per table would call an unsupported shape supported.
+        sql = (
+            self._analytical_query_sql(table, query)
+            if query is not None
+            else f"SELECT count(*) FROM {_identifier(table.name)}"  # noqa: S608
+        )
+        plan = self._fetch_one(f"EXPLAIN (COSTS OFF) {sql}")
+        plan_text = str(plan[0]) if plan and plan[0] else ""
+        if "columnar scan" not in plan_text:
+            raise AdapterError(
+                f"the store is loaded ({used} MB) and the planner did not use the "
+                f"columnar scan for {table.name}: residency is necessary and not "
+                f"sufficient. Measured at 50 000 rows with the store loaded, the "
+                f"planner still chose a sequential scan. Plan: {plan_text[:300]}",
+                context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+            )

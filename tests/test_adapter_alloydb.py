@@ -91,12 +91,20 @@ def test_the_pgvector_access_methods_are_still_reachable() -> None:
 
 def test_capabilities_declares_only_what_this_code_exercises() -> None:
     """Omni is a query layer. Claiming platform features would race a product
-    that does not exist."""
+    that does not exist.
+
+    `columnar` is declared as of the analytical surface, and only because the
+    residency gate refuses every state in which the label would be a lie — engine
+    off, nothing registered, registered with an empty store, or a plan that never
+    reaches the columnar scan. Without that gate this would be exactly the false
+    claim the module docstring warns about.
+    """
     caps = AlloyDBOmniAdapter().capabilities()
 
     assert caps["vector_scann"] is True
     assert caps["vector_exact"] is True
-    for absent in ("disaggregated_storage", "managed_failover", "read_pool", "columnar"):
+    assert caps["columnar"] is True
+    for absent in ("disaggregated_storage", "managed_failover", "read_pool", "parquet"):
         assert absent not in caps
 
 
