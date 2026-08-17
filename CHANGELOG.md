@@ -28,6 +28,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
   TheoDB crosses a major version — a fact a report has to state, not hide. A server that will
   not answer gets no version invented for it: the field is omitted.
 
+- **A requested search knob the adapter cannot apply is now refused** (B-059). The gate added in
+  B-060 verified every knob it *mapped* and silently accepted every knob it did not — and a second
+  engine is what exposed the difference. Measured against a running AlloyDB Omni: its bundled
+  pgvector fork registers no `hnsw.*` GUC at all (zero rows in `pg_settings`), and the Omni adapter
+  maps `num_leaves_to_search`, not `ef_search`. A sweep of `ef_search` therefore produced an empty
+  mapping, the gate had nothing to check, and it passed vacuously: recall measured **0.7820 at both
+  ef_search=16 and ef_search=256**, and the bundle published three rows labelled 16 / 64 / 256 that
+  were one operating point. Each adapter now declares the knobs it understands, and a request naming
+  anything else fails the run instead of relabelling a default. The same command that produced the
+  fictional rows now reports `INVALID`.
+
 ### Changed
 
 - Index parameters are rendered by type instead of forced through `int()` (B-059). Measured:
@@ -46,7 +57,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   measured passing while `alloydbomni` was already registered and uncovered: a test that
   enumerates what it claims to cover universally excludes every adapter added after it was
   written, and reports green for doing so.
-
 - A search parameter is now **verified in force before anything is measured** (B-060). The
   harness already refused to report a number when the planner ignored the index
   (`assert_index_used`); it did not refuse when the *knob* was ignored — the `SET` was issued
@@ -64,7 +74,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - `SystemAdapter.effective_search_parameters()` is part of the contract, and every registered
   adapter answers it — including `FakeAdapter`, which is the double the runner's own tests
   exercise most, so a contract that skipped it would be untested where it runs most (B-060).
-
 - Versioned JSON schemas for every machine-readable artifact: benchmark,
   manifest, environment, dataset, system, validation, result, statistics,
   regression, pareto and summary. Artifacts are validated before being written,
@@ -129,9 +138,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
   request.
 - Methodology documents covering the measurement-integrity invariants and the
   agent workload surface.
+- Agent workload is now the primary benchmark surface; the seven capability
+  surfaces are components that explain an agent result rather than substitutes
+  for it.
+- Dataset manifests are JSON rather than YAML
+  (`docs/decisions/0002-json-dataset-manifests.md`).
 
 ### Fixed
 
+- The module docstring of `src/adapters/postgres.py` no longer claims an invariant the code does not
+  enforce. It advertised, as I5, that "the index is forced *and* verified"; measured 2026-08-17,
+  `assert_index_used` has no caller anywhere in the package, raises `ProgrammingError` if called
+  (this class overrides `_query_sql` to repeat the distance expression, so the probe binds twice
+  while the inherited verifier binds once), and `SET enable_seqscan = off` appears in that docstring
+  and nowhere else in executable code. The harness measures whatever plan the planner picks. No
+  published number is retracted: at the registered suite's size (10 000 × 64) EXPLAIN confirms the
+  planner does choose the index on pgvector, Omni/hnsw and Omni/scann — but at 200 rows it chose a
+  sequential scan, so the hole is latent rather than harmless. The mechanism is tracked separately;
+  what changed here is that the file stops asserting something untrue.
 - A run manifest could name a dataset the run never measured: `dataset_id` was
   recorded while the workload generated a synthetic corpus. Declaring a dataset
   now requires supplying the vectors, and supplying vectors requires declaring
@@ -139,13 +163,5 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - The TheoDB adapter declared hybrid, lexical, columnar, Parquet, graph and
   vectorizer capabilities it does not implement, putting false claims into
   every `system.json`. It now declares only the vector surface it can exercise.
-
-### Changed
-
-- Agent workload is now the primary benchmark surface; the seven capability
-  surfaces are components that explain an agent result rather than substitutes
-  for it.
-- Dataset manifests are JSON rather than YAML
-  (`docs/decisions/0002-json-dataset-manifests.md`).
 
 [Unreleased]: https://github.com/usetheoai/theodb-bench

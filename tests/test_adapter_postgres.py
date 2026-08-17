@@ -11,7 +11,13 @@ from typing import ClassVar
 
 import numpy as np
 import pytest
-from theodb_bench.adapters.base import IndexSpec, KnnQuery, SystemAdapter, VectorTableSpec
+from theodb_bench.adapters.base import (
+    CAPABILITIES,
+    IndexSpec,
+    KnnQuery,
+    SystemAdapter,
+    VectorTableSpec,
+)
 from theodb_bench.adapters.postgres import (
     PgvectorAdapter,
     PostgresAdapter,
@@ -508,3 +514,83 @@ def test_an_unknown_metric_names_what_is_available() -> None:
         _Stub().opclass("scann", "hamming")
 
     assert "cosine" in str(exc.value)
+
+
+@pytest.mark.parametrize("name", sorted(ADAPTERS))
+def test_every_declared_capability_is_a_known_one(name: str) -> None:
+    """A capability outside the vocabulary is refused at `supports()`, not ignored.
+
+    Found by running against a real server, which is the wrong place to find it:
+    `AlloyDBOmniAdapter` declared `vector_scann` while `CAPABILITIES` did not
+    list it, so `capabilities()` looked right, the unit tests asserting its
+    contents passed, and `build_index` raised `unknown capability` on the first
+    real build. Asserting the dict's contents proves what an adapter *says*;
+    only checking it against the vocabulary proves the run can use it.
+    """
+    declared = set(ADAPTERS[name].factory().capabilities())
+
+    unknown = declared - set(CAPABILITIES)
+    assert not unknown, f"{name} declares capabilities not in CAPABILITIES: {sorted(unknown)}"
+
+
+# ---------------------------------------- a knob the adapter cannot honour
+#
+# Measured on the droplet, 2026-08-17, and it is the hole a second engine was
+# needed to find. Omni's bundled pgvector fork does not register
+# `hnsw.ef_search` (zero rows in pg_settings), and AlloyDBOmniAdapter maps
+# `num_leaves_to_search`, not `ef_search`. So a sweep of ef_search produced an
+# EMPTY mapping, the gate had nothing to verify, and it passed vacuously:
+#
+#   alloydbomni  ef_search=16   recall@10 = 0.7820
+#   alloydbomni  ef_search=256  recall@10 = 0.7820
+#
+# Three bundle rows labelled 16 / 64 / 256 were one operating point. This is
+# `sweep_for`'s own reasoning about exact search -- "sweeping it would produce
+# duplicate points under different labels" -- one level further down.
+
+
+def test_a_requested_knob_the_adapter_cannot_map_is_refused() -> None:
+    server = _ServerStub({})
+    adapter = _adapter_with(server)
+
+    with pytest.raises(AdapterError, match="cannot apply"):
+        adapter.set_search_parameters({"num_leaves_to_search": 500})
+
+
+def test_the_knobs_an_adapter_declares_are_still_accepted() -> None:
+    server = _ServerStub({"hnsw.ef_search": ("64", "session")})
+    adapter = _adapter_with(server)
+
+    adapter.set_search_parameters({"ef_search": 64})
+
+    assert adapter.effective_search_parameters() == {"hnsw.ef_search": "64"}
+
+
+def test_exact_search_passes_no_knobs_and_is_not_refused() -> None:
+    """`sweep_for` hands `{}` to a `kind="none"` row; upstream PostgreSQL has no knobs."""
+    server = _ServerStub({})
+    adapter = PostgresAdapter()
+    adapter._execute = server.execute  # type: ignore[method-assign]
+    adapter._fetch_one = server.fetch_one  # type: ignore[method-assign]
+
+    adapter.set_search_parameters({})
+
+    assert adapter.effective_search_parameters() == {}
+
+
+@pytest.mark.parametrize("name", sorted(ADAPTERS))
+def test_every_declared_search_parameter_is_mapped_to_a_guc(name: str) -> None:
+    """A declared knob with no mapping would be accepted and do nothing."""
+    adapter = ADAPTERS[name].factory()
+    declared = getattr(type(adapter), "SEARCH_PARAMETERS", None)
+    if declared is None:
+        pytest.skip(f"{name} is not a PostgreSQL-family adapter")
+
+    # `probes` maps through ivfflat_lists, which refuses an empty table -- as it
+    # should. A real run always has a loaded corpus by the time knobs are set.
+    adapter._row_count = 10_000  # type: ignore[attr-defined]
+
+    for knob in declared:
+        probe = {knob: 1}
+        mapped = adapter._search_guc_mapping(probe)  # type: ignore[attr-defined]
+        assert mapped, f"{name} declares {knob!r} but maps it to no GUC"

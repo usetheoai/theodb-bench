@@ -55,6 +55,15 @@ class AlloyDBOmniAdapter(PgvectorAdapter):
         "ivfflat": {"l2": "vector_l2_ops", "ip": "vector_ip_ops", "cosine": "vector_cosine_ops"},
     }
 
+    #: The scann knobs this adapter applies. `ef_search` is deliberately absent:
+    #: measured on the running server, Omni's bundled pgvector fork registers no
+    #: `hnsw.*` GUC at all, and recall was identical at ef_search 16 and 256
+    #: (0.7820 both). Declaring it would let a sweep publish one operating point
+    #: under three labels.
+    SEARCH_PARAMETERS: ClassVar[frozenset[str]] = frozenset(
+        {"num_leaves_to_search", "pct_leaves_to_search", "enable_ah_quantizer"}
+    )
+
     def capabilities(self) -> dict[str, bool]:
         """What this adapter can exercise -- not what AlloyDB can do.
 

@@ -41,6 +41,10 @@ CAPABILITIES: Final[tuple[str, ...]] = (
     "vector_exact",
     "vector_hnsw",
     "vector_ivfflat",
+    # AlloyDB's own ANN access method. Distinct from `vector_hnsw` because Omni
+    # ships both -- a bundled fork of pgvector *and* scann -- and a comparison
+    # that conflated them would measure the fork under the name of the engine.
+    "vector_scann",
     "vector_quantized",
     "vector_filtered",
     "lexical",

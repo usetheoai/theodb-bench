@@ -5,11 +5,25 @@ hierarchy rather than three copies. Upstream PostgreSQL has no vector type at
 all and can only do exact search over ``real[]``; pgvector adds the ``vector``
 type with HNSW and IVFFlat; TheoDB adds its own access methods on top.
 
-Four measurement invariants are enforced here rather than trusted:
+Measurement invariants live here. One of them is **not** enforced, and saying so
+is the point:
 
-The index is forced *and* verified. ``SET enable_seqscan = off`` alone proves
-nothing -- the planner may still choose a sequential scan, and a benchmark that
-believed otherwise would report scan performance under an index's name (I5).
+I5 -- the index forced *and* verified -- is **not in force**. Measured 2026-08-17:
+``assert_index_used`` below has no caller anywhere in the package, it raises
+``ProgrammingError`` if called (this class overrides ``_query_sql`` to repeat the
+distance expression, so the probe binds twice, and the inherited verifier binds
+once), and ``SET enable_seqscan = off`` appears in this docstring and nowhere
+else in executable code. The harness measures whatever plan the planner chooses.
+At the registered suite's size (10 000 x 64) the planner does choose the index on
+pgvector, Omni/hnsw and Omni/scann -- verified by EXPLAIN -- so no published
+number is retracted; at 200 rows it chose a sequential scan. Tracked as B-063.
+This paragraph replaces a claim that this file made for its whole life and that
+another item cited as exemplary discipline.
+
+A requested search knob is applied *and* proven in force before a point is
+measured -- and a knob the adapter cannot apply is refused rather than ignored.
+See :meth:`PostgresAdapter.set_search_parameters`; this one is real, and it is
+currently the only apply-then-verify that executes.
 
 Indexes from other configurations are dropped before a point is measured. Two
 indexes of the same family on the same column let the planner choose, and one
@@ -131,6 +145,11 @@ class PostgresAdapter(SystemAdapter):
     """
 
     system_id = "postgres"
+
+    #: Search parameters this adapter can actually apply. A request naming
+    #: anything else is refused rather than silently ignored -- upstream
+    #: PostgreSQL has no ANN knobs, and exact search has nothing to tune.
+    SEARCH_PARAMETERS: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(self, config: PostgresConfig | None = None, **kwargs: Any) -> None:
         self.config = config if config is not None else PostgresConfig(**kwargs)
@@ -318,8 +337,35 @@ class PostgresAdapter(SystemAdapter):
         before ``LOAD 'theodb_rs'`` and 38 after. That is the same condition under which
         AlloyDB's ``scann.num_leaves_to_search`` silently does nothing without
         ``LOAD 'alloydb_scann'``.
+
+        Verifying only the knobs the adapter *mapped* is not enough either, and a second
+        engine is what proved it. AlloyDB Omni bundles a fork of pgvector that does not
+        register ``hnsw.ef_search`` at all, and its adapter maps
+        ``num_leaves_to_search`` instead. A sweep of ``ef_search`` therefore produced an
+        empty mapping, the gate had nothing to check, and it passed vacuously --
+        publishing three rows labelled 16 / 64 / 256 whose measured recall was identical
+        to four decimal places. So a requested knob the adapter does not declare is a
+        refusal, for the same reason :meth:`VectorBenchmark.sweep_for` refuses to sweep
+        exact search: it would put duplicate points in the table under labels that
+        describe operating points nobody ran.
         """
         self._search_parameters = dict(parameters)
+
+        unsupported = sorted(set(parameters) - set(type(self).SEARCH_PARAMETERS))
+        if unsupported:
+            raise AdapterError(
+                f"{self.system_id} cannot apply search parameter(s) "
+                f"{', '.join(repr(name) for name in unsupported)}; it understands "
+                f"{', '.join(sorted(type(self).SEARCH_PARAMETERS)) or 'none'}. Accepting "
+                f"the request and measuring the default would publish this point under a "
+                f"label that does not describe it.",
+                context=ErrorContext(
+                    phase=Phase.MEASUREMENT,
+                    system=self.system_id,
+                    details={"unsupported": unsupported},
+                ),
+            )
+
         mapping = self._search_guc_mapping(parameters)
         for guc, literal in mapping.items():
             self._execute(f"SET {guc} = {literal}")
@@ -509,6 +555,10 @@ class PgvectorAdapter(PostgresAdapter):
     #: lookup in `opclass` reads it off the concrete class, so inheriting the
     #: wrong table is not possible by accident.
     OPCLASSES: ClassVar[dict[str, dict[str, str]]] = OPCLASSES
+
+    #: `ef_search` for HNSW, `probes` for IVFFlat -- both registered GUCs of the
+    #: extension, verified in force before a point is measured.
+    SEARCH_PARAMETERS: ClassVar[frozenset[str]] = frozenset({"ef_search", "probes"})
 
     def capabilities(self) -> dict[str, bool]:
         return {
