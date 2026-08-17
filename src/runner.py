@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final
 
+from theodb_bench.abort import AbortKind, classify_abort
 from theodb_bench.absent import Absent
 from theodb_bench.adapters.base import SystemAdapter
 from theodb_bench.analysis.statistics import (
@@ -238,7 +239,7 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
     benchmark = VectorBenchmark(request.workload, request.corpus, request.queries)
     collectors = _build_collectors(request)
 
-    sut_crashed = False
+    abort_kind: AbortKind | None = None
     oom = False
     points: list[PointResult] = []
     try:
@@ -261,9 +262,15 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
         bundle.write_artifact("system", adapter.system_payload())
         bundle.write_raw_text("system-stats.json", _as_json(adapter.collect_stats()))
     except Exception as exc:
-        sut_crashed = True
+        # Classified rather than blamed on the system under test. A gate refusing
+        # to measure, a statement the harness itself cancelled, and a backend that
+        # died are three different facts, and this report is published.
+        abort_kind = classify_abort(exc)
         oom = bool(getattr(exc, "context", None) and exc.context.details.get("oom"))  # type: ignore[attr-defined]
-        bundle.write_raw_text("system.log", f"run aborted: {type(exc).__name__}: {exc}\n")
+        bundle.write_raw_text(
+            "system.log",
+            f"run aborted ({abort_kind.value}): {type(exc).__name__}: {exc}\n{abort_kind.detail}\n",
+        )
     finally:
         try:
             adapter.stop()
@@ -287,7 +294,9 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
         ),
         timeouts=sum(r.timeouts for p in points for r in p.repetitions),
         errors=sum(r.errors for p in points for r in p.repetitions),
-        sut_crashed=sut_crashed,
+        sut_crashed=abort_kind is AbortKind.CRASHED,
+        run_refused=abort_kind is AbortKind.REFUSED,
+        budget_exceeded=abort_kind is AbortKind.BUDGET_EXCEEDED,
         oom_observed=oom,
         escaped_processes=escapes,
         cpu_limit_respected=_cpu_limit_respected(applied, escapes),

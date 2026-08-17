@@ -21,11 +21,12 @@ from theodb_bench.adapters.base import (
 from theodb_bench.adapters.postgres import (
     PgvectorAdapter,
     PostgresAdapter,
+    PostgresConfig,
     TheoDBAdapter,
     clamp_probes,
     ivfflat_lists,
 )
-from theodb_bench.errors import AdapterError, UnsupportedCapabilityError
+from theodb_bench.errors import AdapterError, ErrorContext, Phase, UnsupportedCapabilityError
 from theodb_bench.registry import ADAPTERS, get_adapter
 from theodb_bench.schemas import validate
 
@@ -725,3 +726,110 @@ def test_theodb_records_the_postgresql_version_too() -> None:
 
     assert "18.6" in version
     assert "theodb_rs 1.5.0" in version
+
+
+# ------------------------------- build gets its own time budget, and says so
+#
+# Measured on 2026-08-17: building an hnsw index over one million SIFT-128
+# vectors was cancelled after 61 s by the harness's own
+# `statement_timeout = 60_000`, and the run was reported as
+# "system under test crashed during the run". The competitor's scann build fitted
+# inside the same 60 s, so a single budget silently decided which engines could be
+# measured at which scale -- while the report blamed the engine.
+#
+# A query taking 60 s at k=10 is still a defect worth catching, so the query
+# budget stays tight. Building an index is a different risk with a different
+# duration, and it gets its own.
+
+
+def test_the_build_budget_is_larger_than_the_query_budget() -> None:
+    config = PostgresConfig()
+
+    assert config.build_timeout_ms > config.statement_timeout_ms
+
+
+def test_building_an_index_raises_the_budget_and_restores_it() -> None:
+    server = _ServerStub({"hnsw.ef_search": ("64", "session")})
+    adapter = _adapter_with(server)
+
+    adapter.build_index(SPEC, IndexSpec(kind="hnsw", parameters={"m": 16}))
+
+    statements = [s for s in server.executed if "statement_timeout" in s]
+    assert statements, "the build never touched the statement timeout"
+    assert f"SET statement_timeout = {PostgresConfig().build_timeout_ms}" in statements[0]
+    # Restored afterwards, or every later query would inherit the build's budget
+    # and a runaway search would stop being caught.
+    assert f"SET statement_timeout = {PostgresConfig().statement_timeout_ms}" in statements[-1]
+
+
+def test_the_budget_is_restored_even_when_the_build_fails() -> None:
+    class _Failing(_ServerStub):
+        def execute(self, sql: str, parameters: tuple[object, ...] | None = None) -> None:
+            super().execute(sql, parameters)
+            if sql.startswith("CREATE INDEX"):
+                raise AdapterError("build blew up", context=ErrorContext(phase=Phase.INDEX_BUILD))
+
+    server = _Failing({})
+    adapter = _adapter_with(server)
+
+    with pytest.raises(AdapterError):
+        adapter.build_index(SPEC, IndexSpec(kind="hnsw", parameters={"m": 16}))
+
+    statements = [s for s in server.executed if "statement_timeout" in s]
+    assert f"SET statement_timeout = {PostgresConfig().statement_timeout_ms}" in statements[-1]
+
+
+# ---------------------- TheoDB's own ScaNN-class path, reachable from the harness
+#
+# TheoDB has the ScaNN recipe, as reloptions on theodb_ivfflat rather than as an
+# access method named scann. Verified on the built image:
+#
+#   CREATE INDEX ... USING theodb_ivfflat (emb theodb_ivfflat_l2_ops)
+#     WITH (lists=20, pq_subspaces=16, pq_bits=4, separate_storage=1, refine=1)
+#   -> CREATE INDEX; the planner uses it.
+#
+# `pq_subspaces` is the anisotropic quantizer (AqQuantizer), `pq_bits=4` is the
+# LUT16 pshufb width, `refine=1` plus `separate_storage=1` gives the exact-distance
+# second stage, and `aq_threshold` is ScaNN's anisotropic T. The internal name for
+# the arc is pg_scann (M75 built the algorithm, M77 the persisted access method).
+#
+# The rescore pool is `64 * theodb_hnsw.over_fetch` (customscan.rs), so comparing
+# our second stage against the competitor's `pre_reordering_num_neighbors` needs
+# that knob declared -- otherwise the harness can only sweep probe depth and the
+# two rescore pools stay whatever each engine defaults to.
+
+
+def test_theodb_can_sweep_its_rescore_pool() -> None:
+    server = _ServerStub({"theodb_hnsw.over_fetch": ("2", "session")})
+    adapter = TheoDBAdapter()
+    adapter._row_count = 100_000
+    adapter._execute = server.execute  # type: ignore[method-assign]
+    adapter._fetch_one = server.fetch_one  # type: ignore[method-assign]
+
+    adapter.set_search_parameters({"over_fetch": 2})
+
+    assert adapter.effective_search_parameters() == {"theodb_hnsw.over_fetch": "2"}
+
+
+def test_theodb_renders_the_pg_scann_reloptions() -> None:
+    adapter = TheoDBAdapter()
+    adapter._row_count = 100_000
+
+    _, ddl = adapter.index_ddl(
+        SPEC,
+        IndexSpec(
+            kind="ivfflat",
+            parameters={
+                "lists": 316,
+                "pq_subspaces": 16,
+                "pq_bits": 4,
+                "separate_storage": 1,
+                "refine": 1,
+            },
+        ),
+    )
+
+    assert "USING theodb_ivfflat " in ddl
+    assert "theodb_ivfflat_l2_ops" in ddl
+    for option in ("lists = 316", "pq_subspaces = 16", "pq_bits = 4", "refine = 1"):
+        assert option in ddl, option

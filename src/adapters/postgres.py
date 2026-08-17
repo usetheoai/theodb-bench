@@ -41,6 +41,7 @@ turn a missing capability into a failed run (I13).
 
 from __future__ import annotations
 
+import contextlib
 import math
 import time
 from collections.abc import Sequence
@@ -136,7 +137,19 @@ class PostgresConfig:
     """Connection and session settings for a PostgreSQL-family system."""
 
     dsn: str = DEFAULT_DSN
+
+    #: Budget for a *query*. Deliberately tight: a k=10 search that takes a minute
+    #: is a defect worth catching, not a measurement worth keeping.
     statement_timeout_ms: int = 60_000
+
+    #: Budget for building an index, which is a different risk with a different
+    #: duration. Measured: an hnsw build over one million SIFT-128 vectors was
+    #: cancelled at 61 s under the query budget, and the run was then reported as
+    #: the system under test crashing. The competitor's scann build fitted inside
+    #: 60 s, so one shared budget silently decided which engines were measurable at
+    #: which scale while the report blamed the engine. An hour is generous enough
+    #: for a billion-scale build and still catches a genuinely hung one.
+    build_timeout_ms: int = 3_600_000
     session_settings: dict[str, str] = field(default_factory=dict)
     application_name: str = "theodb-bench"
 
@@ -956,9 +969,17 @@ class PgvectorAdapter(PostgresAdapter):
         self._apply_build_session(index)
 
         name, ddl = self.index_ddl(spec, index)
+        # The build runs under its own budget, and the query budget is put back
+        # afterwards even when the build fails: leaving the build's hour in place
+        # would mean a runaway search is no longer caught, which is the safety
+        # property the tight query budget exists for.
+        self._execute(f"SET statement_timeout = {int(self.config.build_timeout_ms)}")
         started = time.perf_counter()
-        self._execute(ddl)
-        elapsed = time.perf_counter() - started
+        try:
+            self._execute(ddl)
+            elapsed = time.perf_counter() - started
+        finally:
+            self._restore_query_budget()
         self._built_indexes.add(name)
         size = self._scalar(f"SELECT pg_relation_size({_literal(name)})")
         return BuildOutcome(
@@ -966,6 +987,16 @@ class PgvectorAdapter(PostgresAdapter):
             index_size_bytes=int(size) if size is not None else None,
             parameters_in_force=dict(index.parameters),
         )
+
+    def _restore_query_budget(self) -> None:
+        """Put the query budget back, without masking why the build failed.
+
+        A dead connection makes this fail too, and the original exception is the
+        one worth propagating -- so the restore is allowed to fail silently here
+        and only here. Every later statement on a dead connection raises anyway.
+        """
+        with contextlib.suppress(Exception):  # see the docstring
+            self._execute(f"SET statement_timeout = {int(self.config.statement_timeout_ms)}")
 
     def _search_guc_mapping(self, parameters: dict[str, Any]) -> dict[str, str]:
         """The two knobs this adapter owns, and the literal each one sends.
@@ -1070,6 +1101,15 @@ class TheoDBAdapter(PgvectorAdapter):
 
     ANALYTICAL_PLAN_MARKERS: ClassVar[dict[str, str]] = {"columnar": "theodb_columnar_agg"}
 
+    #: `over_fetch` is the rescore pool of the AQ+AH scan: `customscan.rs` computes
+    #: `rerank_pool = 64 * theodb_hnsw.over_fetch`, and that second stage is what
+    #: makes this path comparable to AlloyDB's `pre_reordering_num_neighbors`.
+    #: Without it declared, the harness can only sweep probe depth and the two
+    #: rescore pools stay at whatever each engine defaults to -- which is how a
+    #: quantized index gets measured at its quantizer's fidelity instead of at its
+    #: real operating point.
+    SEARCH_PARAMETERS: ClassVar[frozenset[str]] = frozenset({"ef_search", "probes", "over_fetch"})
+
     def capabilities(self) -> dict[str, bool]:
         """What this adapter can actually exercise, not what TheoDB can do.
 
@@ -1110,6 +1150,8 @@ class TheoDBAdapter(PgvectorAdapter):
             elif name == "probes":
                 lists = ivfflat_lists(self._row_count)
                 mapping["theodb_ivfflat.probes"] = str(clamp_probes(int(value), lists))
+            elif name == "over_fetch":
+                mapping["theodb_hnsw.over_fetch"] = str(int(value))
         return mapping
 
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from theodb_bench.abort import AbortKind
 from theodb_bench.absent import Absent, Measured, is_present
 from theodb_bench.profiles import Profile
 
@@ -36,6 +37,8 @@ class RunObservations:
     errors: int = 0
     invalid_results: int = 0
     sut_crashed: bool = False
+    run_refused: bool = False
+    budget_exceeded: bool = False
     client_crashed: bool = False
     escaped_processes: tuple[int, ...] = ()
     cpu_limit_respected: Measured[bool] = True
@@ -155,7 +158,21 @@ def build_checks(
             "FAIL" if obs.sut_crashed else "PASS",
             required=True,
             description="System under test did not crash.",
-            detail="system under test crashed during the run" if obs.sut_crashed else None,
+            detail=AbortKind.CRASHED.detail if obs.sut_crashed else None,
+        ),
+        _Check(
+            "run_not_refused",
+            "FAIL" if obs.run_refused else "PASS",
+            required=True,
+            description="The harness did not refuse to measure.",
+            detail=AbortKind.REFUSED.detail if obs.run_refused else None,
+        ),
+        _Check(
+            "within_time_budget",
+            "FAIL" if obs.budget_exceeded else "PASS",
+            required=True,
+            description="No statement was cancelled by a harness time budget.",
+            detail=AbortKind.BUDGET_EXCEEDED.detail if obs.budget_exceeded else None,
         ),
         _Check(
             "client_alive",

@@ -9,6 +9,36 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **An aborted run says why it aborted, instead of blaming the system under test** (B-057). The runner set
+  `sut_crashed = True` for any exception, so three different facts reached the report as one sentence — "system
+  under test crashed during the run". Measured in a single session on 2026-08-17: the knob gate refusing a run
+  because a parameter was not in force (the harness working as designed), a `CREATE INDEX` cancelled by the
+  harness's *own* 60 s `statement_timeout`, and no crash at all — the container was `Up (healthy)` with no PANIC
+  and no FATAL in its log. For results that get published, that misattribution is the expensive kind: a reader
+  who sees the system crashed concludes the database is unstable. Aborts are now classified into `sut_alive`,
+  `run_not_refused` and `within_time_budget`, all three required, each with its own remediation. Classification
+  uses the driver's real exception classes in an order the tests pin, because `psycopg.errors.QueryCanceled` is
+  a subclass of `psycopg.OperationalError` — checking connection-loss first would have called every cancelled
+  statement a crash, which is the same misattribution one layer down. An unrecognised abort is reported as a
+  crash: the conservative direction, since hiding a real crash behind a harness message is the failure being
+  removed, pointed the other way.
+- **Building an index has its own time budget** (B-057), separate from the query budget and restored afterwards
+  even when the build fails. Measured: an hnsw build over one million SIFT-128 vectors was cancelled at 61 s
+  under the 60 s query budget, while the competitor's scann build fitted inside it — so one shared budget
+  silently decided which engines were measurable at which scale, and the report blamed the engine. A k=10 query
+  taking a minute is still a defect worth catching, so the query budget stays tight at 60 s; the build gets an
+  hour, generous enough for a billion-scale build and still short enough to catch a hung one.
+- **TheoDB's own ScaNN-class path is reachable from the harness** (B-057). TheoDB has the ScaNN recipe as
+  reloptions on `theodb_ivfflat` rather than as an access method named `scann`: `pq_subspaces` is the
+  anisotropic quantizer, `pq_bits=4` the LUT16 width, `aq_threshold` ScaNN's anisotropic T, `soar_lambda` its
+  SOAR spilling, and `separate_storage=1, refine=1` the exact-distance second stage. The internal name for the
+  arc is pg_scann. The rescore pool is `64 * theodb_hnsw.over_fetch`, and that knob is now declared and swept —
+  without it the harness could only sweep probe depth, which measures a quantized index at its quantizer's
+  fidelity rather than at its operating point.
+- `vector/sift/pg-scann` is registered as the counterpart of `vector/sift/scann-ah` (B-057), with both stages
+  matched: probe depth against `num_leaves_to_search`, and a rescore pool of 128 against their 100 — the closest
+  the two knobs reach, recorded in the artefact so a reader can see they are not identical.
+
 - **SIFT1M is a registered dataset** (B-057): one million 128-dimensional SIFT descriptors with 10 000 queries,
   identified by the checksum of the bytes actually downloaded
   (`dd6f0a6ed6b7ebb8934680f861a33ed01ff33991eaee4fd60914d854a0ca5984`, 525 128 288 bytes) rather than by a

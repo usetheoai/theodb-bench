@@ -264,6 +264,51 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
         ),
         default_repetitions=3,
     ),
+    # The pair that answers B-057, and it exists because the first attempt at that
+    # answer compared the wrong index on our side. TheoDB's ScaNN-class path is
+    # `theodb_ivfflat` with the anisotropic quantizer (`pq_subspaces`), the LUT16
+    # width (`pq_bits=4`) and the exact-distance second stage
+    # (`separate_storage=1, refine=1`) -- the arc is called pg_scann internally.
+    # Racing `theodb_hnsw` against AlloyDB's scann compares our graph index to
+    # their quantized IVF index, which is a real comparison and not the one the
+    # item asks for.
+    #
+    # Both stages are matched deliberately. Probe depth: `probes` against
+    # `num_leaves_to_search`. Rescore pool: ours is `64 * over_fetch`, so
+    # `over_fetch=2` gives 128 candidates against their 100 -- the closest the two
+    # knobs reach, and the artefact records both so a reader can see they are not
+    # identical.
+    "vector/sift/pg-scann": BenchmarkEntry(
+        id="vector/sift/pg-scann",
+        description=(
+            "SIFT descriptors against TheoDB's own ScaNN-class path: theodb_ivfflat "
+            "with the anisotropic quantizer, LUT16 codes and the exact-distance "
+            "second stage. The counterpart to vector/sift/scann-ah."
+        ),
+        workload=VectorWorkload(
+            corpus_size=100_000,
+            dimension=128,
+            query_count=500,
+            k=10,
+            warmup_queries=50,
+            indexes=(
+                IndexSpec(
+                    kind="ivfflat",
+                    parameters={
+                        # lists ~ sqrt(rows), the same rule the competitor's
+                        # num_leaves=316 follows, so the partitioning is comparable.
+                        "lists": 316,
+                        "pq_subspaces": 16,
+                        "pq_bits": 4,
+                        "separate_storage": 1,
+                        "refine": 1,
+                    },
+                ),
+            ),
+            search_sweep={"probes": (5, 20, 80), "over_fetch": (2,)},
+        ),
+        default_repetitions=3,
+    ),
     "vector/synthetic/scann-sweep": BenchmarkEntry(
         id="vector/synthetic/scann-sweep",
         description=(
