@@ -74,6 +74,50 @@ def pair_by_query(system_a: Mapping[int, float], system_b: Mapping[int, float]) 
     )
 
 
+@dataclass(frozen=True)
+class RecallMatch:
+    """Two operating points read at the same quality, one from each engine."""
+
+    label_a: str
+    recall_a: float
+    label_b: str
+    recall_b: float
+
+    @property
+    def gap(self) -> float:
+        return abs(self.recall_a - self.recall_b)
+
+
+def match_by_recall(
+    recalls_a: Mapping[str, float],
+    recalls_b: Mapping[str, float],
+    *,
+    tolerance: float = 0.01,
+) -> RecallMatch | None:
+    """The closest pair of operating points at comparable quality, or None.
+
+    Two engines never share a configuration label: the label carries
+    engine-specific parameters, `probes=20` on one side and
+    `num_leaves_to_search=20` on the other. Two knobs named differently and set to
+    the same integer are not the same operating point, and pairing them would
+    compare the knobs rather than the engines.
+
+    Quality is the axis both engines share, so the frontiers are read at matched
+    recall. `tolerance` is honoured rather than taking the nearest pair at any
+    distance: frontiers that never meet -- one topping out below the other's floor,
+    which is what an unrescored quantizer produces -- have no comparable point, and
+    inventing one would compare a fast low-quality configuration against a slow
+    high-quality one and call the first a winner.
+    """
+    best: RecallMatch | None = None
+    for label_a, recall_a in recalls_a.items():
+        for label_b, recall_b in recalls_b.items():
+            candidate = RecallMatch(label_a, float(recall_a), label_b, float(recall_b))
+            if candidate.gap <= tolerance and (best is None or candidate.gap < best.gap):
+                best = candidate
+    return best
+
+
 def render_paired_verdict(
     name_a: str,
     samples_a: Mapping[int, float],

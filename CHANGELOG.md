@@ -21,6 +21,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
   intersected — an intersection tests the subset where both systems succeeded, an easier question that favours
   whichever system dropped its hardest queries. Repetitions are averaged per query before pairing, because a
   query measured three times on each side is one paired observation, not three.
+- Two engines are paired **at matched recall**, never by configuration label (B-071). Their labels carry
+  engine-specific knobs — `probes=20` on one side, `num_leaves_to_search=20` on the other — and two knobs named
+  differently and set to the same integer are not the same operating point. Quality is the axis both share, so
+  the frontiers are read there, with a tolerance that is honoured rather than taking the nearest pair at any
+  distance: frontiers that never meet have no comparable point, and inventing one would compare a fast
+  low-quality configuration against a slow high-quality one and report the first as a winner. Same-label
+  pairing is kept for the regression case, where it is the right key.
+- The paired verdict states what the pairing does **not** control (B-074). It removes the variance of query
+  difficulty; it does not remove drift in the machine, because the two runs happen at different times. Measured
+  the same day: the same configuration re-run on the same host varied by 24% and 46% in median throughput, so a
+  busier machine during one side is attributed to the engine with the same confidence a real difference would
+  be — and the confidence interval does not protect against it, because it measures dispersion across queries
+  rather than across runs.
 - Two profile flags that promised gates now run them (B-072). Measured: of the four rigour flags a profile
   declares, `publishable` and `dirty_tree_invalidates` steered code and `regression_gate` and
   `frozen_methodology` steered nothing — both appeared only as values echoed by `theodb-bench list`. They now

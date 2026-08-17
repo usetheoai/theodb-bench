@@ -18,7 +18,7 @@ from typing import Any, Final
 
 from theodb_bench.absent import Absent
 from theodb_bench.bundle import RunBundle
-from theodb_bench.compare import render_paired_verdict
+from theodb_bench.compare import match_by_recall, render_paired_verdict
 from theodb_bench.errors import ErrorContext, Phase, SchemaValidationError
 from theodb_bench.profiles import get_profile
 from theodb_bench.schemas import validate
@@ -346,34 +346,86 @@ def _paired_verdicts(bundles: list[RunBundle]) -> list[str]:
     names = [b.read_artifact("manifest")["system"]["id"] for b in bundles]
 
     out = ["## Paired comparison", ""]
-    labels = sorted(set(samples[0]) & set(samples[1]))
-    if not labels:
+
+    shared = sorted(set(samples[0]) & set(samples[1]))
+    if shared:
+        # Same labels on both sides: a regression, one system measured twice.
+        for label in shared:
+            out.append(
+                "- "
+                + render_paired_verdict(
+                    names[0],
+                    samples[0][label],
+                    names[1],
+                    samples[1][label],
+                    metric=f"latency_ms @ {label}",
+                )
+            )
+        out += ["", _PAIRED_FOOTNOTE, ""]
+        return out
+
+    # Different engines. Their labels carry engine-specific knobs and can never
+    # coincide -- `probes=20` on one side, `num_leaves_to_search=20` on the other --
+    # so the frontiers are read on the quality axis both share.
+    recalls = [_recall_by_label(b) for b in bundles]
+    match = match_by_recall(recalls[0], recalls[1])
+    if match is None:
         out += [
-            "Not run: the two runs share no configuration label, so there is no "
-            "operating point measured on both. Comparing different configurations "
-            "would compare the configurations, not the systems.",
+            "Not run: the two frontiers have no operating point at comparable "
+            "recall (within 0.01). Pairing the nearest points regardless would "
+            "compare a fast low-quality configuration against a slow high-quality "
+            "one and report the first as a winner.",
             "",
         ]
         return out
 
-    for label in labels:
-        out.append(
-            "- "
-            + render_paired_verdict(
-                names[0],
-                samples[0][label],
-                names[1],
-                samples[1][label],
-                metric=f"latency_ms @ {label}",
-            )
-        )
     out += [
+        f"Matched at recall {match.recall_a:.4f} ({names[0]}, `{match.label_a}`) "
+        f"against {match.recall_b:.4f} ({names[1]}, `{match.label_b}`) — a gap of "
+        f"{match.gap:.4f}.",
         "",
-        "Lower latency wins. `p` is a paired randomisation test with Monte-Carlo "
-        "correction; the interval is a paired percentile bootstrap. An "
-        "`indistinguishable` verdict is a result, not a missing one.",
+        "- "
+        + render_paired_verdict(
+            names[0],
+            samples[0][match.label_a],
+            names[1],
+            samples[1][match.label_b],
+            metric="latency_ms at matched recall",
+        ),
+        "",
+        _PAIRED_FOOTNOTE,
         "",
     ]
+    return out
+
+
+_PAIRED_FOOTNOTE = (
+    "Lower latency wins. `p` is a paired randomisation test with Monte-Carlo "
+    "correction; the interval is a paired percentile bootstrap. An "
+    "`indistinguishable` verdict is a result, not a missing one.\n\n"
+    "**What the pairing does not control.** Pairing removes the variance of query "
+    "difficulty: both systems answered the same query. It does not remove drift in "
+    "the machine, because the two runs happened at different times. Measured on "
+    "2026-08-17, the same configuration re-run on the same host varied by 24% and "
+    "46% in median throughput, so a busier machine during one side of the pair is "
+    "attributed to the engine with the same confidence a real difference would be. "
+    "The interval does not protect against this: it measures dispersion across "
+    "queries, not across runs. Interleaving the two systems query by query would "
+    "control it, and this harness does not yet do that."
+)
+
+
+def _recall_by_label(bundle: RunBundle) -> dict[str, float]:
+    """Median recall per configuration, for reading a frontier at matched quality."""
+    try:
+        statistics = bundle.read_artifact("statistics")
+    except (SchemaValidationError, KeyError):
+        return {}
+    out: dict[str, float] = {}
+    for point in statistics.get("points", []):
+        recall = point.get("metrics", {}).get("recall", {}).get("median")
+        if recall is not None:
+            out[point["label"]] = float(recall)
     return out
 
 

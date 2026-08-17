@@ -22,7 +22,12 @@ from __future__ import annotations
 
 import pytest
 from theodb_bench.analysis.significance import compare_systems
-from theodb_bench.compare import PairedSamples, pair_by_query, render_paired_verdict
+from theodb_bench.compare import (
+    PairedSamples,
+    match_by_recall,
+    pair_by_query,
+    render_paired_verdict,
+)
 from theodb_bench.errors import ConfigError
 
 
@@ -123,3 +128,44 @@ def test_indistinguishable_systems_are_named_as_such() -> None:
     verdict = render_paired_verdict("a", a, "b", b, metric="latency_ms")
 
     assert "indistinguishable" in verdict
+
+
+# ------------------------------------------- pairing two engines at matched recall
+#
+# Measured 2026-08-17: pairing by configuration label can never compare two
+# engines, because the label carries engine-specific parameters --
+# `ivfflat ... probes=20` on one side and `scann ... num_leaves_to_search=20` on
+# the other. The label is the right key for a regression (same system, two runs)
+# and the wrong one for a comparison.
+#
+# The question the project asks is at MATCHED RECALL: each engine's frontier, read
+# at equal quality. Two knobs named differently and set to the same integer are not
+# the same operating point, and pairing them would compare the knobs.
+
+
+def test_two_engines_pair_at_the_closest_matching_recall() -> None:
+    a = {"probes=5": 0.7656, "probes=20": 0.9570, "probes=80": 0.9866}
+    b = {"leaves=5": 0.7060, "leaves=20": 0.9594, "leaves=80": 0.9960}
+
+    match = match_by_recall(a, b, tolerance=0.01)
+
+    assert match is not None
+    assert match.label_a == "probes=20"
+    assert match.label_b == "leaves=20"
+    assert abs(match.recall_a - match.recall_b) < 0.01
+
+
+def test_frontiers_that_never_meet_are_refused_not_forced() -> None:
+    """The AH-without-rescore case: one frontier tops out below the other's floor."""
+    a = {"probes=20": 0.9570, "probes=80": 0.9866}
+    b = {"leaves=20": 0.6440, "leaves=80": 0.6582}
+
+    assert match_by_recall(a, b, tolerance=0.01) is None
+
+
+def test_the_tolerance_is_honoured_rather_than_taking_the_nearest_at_any_distance() -> None:
+    a = {"probes=20": 0.9570}
+    b = {"leaves=20": 0.9000}
+
+    assert match_by_recall(a, b, tolerance=0.01) is None
+    assert match_by_recall(a, b, tolerance=0.10) is not None
