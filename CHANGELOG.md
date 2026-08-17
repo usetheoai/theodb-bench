@@ -15,6 +15,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Ground truth over a corpus that does not fit in memory, pinned equivalent to the
   resident oracle including its tie-break by ascending id (#B-073)
 
+### Fixed
+- A bulk dataset load no longer runs under the query time budget, which aborted a
+  20 000 000-vector load partway through the COPY. Index build and bulk load now share
+  one budget mechanism, because they are the same kind of unmeasured work (#B-073)
+
 ### Changed
 - A vector benchmark takes its corpus through one abstraction with two implementations
   (resident array, streamed source) instead of assuming an array at both call sites;

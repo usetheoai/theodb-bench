@@ -44,7 +44,7 @@ from __future__ import annotations
 import contextlib
 import math
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Final
 
@@ -363,6 +363,7 @@ class PostgresAdapter(SystemAdapter):
             f"{column} {self.column_type(spec.dimension)} NOT NULL)"
         )
         with (
+            self._under_bulk_budget(),
             self._cursor() as cursor,
             cursor.copy(f"COPY {table} (id, {column}) FROM STDIN WITH (FORMAT BINARY)") as copy,
         ):
@@ -380,6 +381,39 @@ class PostgresAdapter(SystemAdapter):
             rows_loaded=loaded,
             rows_expected=source.row_count,
         )
+
+    @contextlib.contextmanager
+    def _under_bulk_budget(self) -> Iterator[None]:
+        """Run bulk work under the wide budget, and put the query budget back.
+
+        Bulk work here is an index build or a dataset load. They look different
+        and are the same kind of thing: unmeasured work whose duration is a
+        property of the scale rather than a symptom, and which the tight query
+        budget was never meant to bound. That budget exists so a runaway *search*
+        cannot stall a run, and applying it to data movement is how a 20 000 000
+        vector load aborted at `COPY bench_vectors, line 4569000` — correctly
+        classified as `budget_exceeded` rather than a crash, because the system
+        under test had not failed.
+
+        The restore runs even when the body raises. Leaving the wide budget in
+        place would mean the next measured query is effectively unbounded, which
+        is the safety property being borrowed from, not discarded.
+        """
+        self._execute(f"SET statement_timeout = {int(self.config.build_timeout_ms)}")
+        try:
+            yield
+        finally:
+            self._restore_query_budget()
+
+    def _restore_query_budget(self) -> None:
+        """Put the query budget back, without masking why the build failed.
+
+        A dead connection makes this fail too, and the original exception is the
+        one worth propagating -- so the restore is allowed to fail silently here
+        and only here. Every later statement on a dead connection raises anyway.
+        """
+        with contextlib.suppress(Exception):  # see the docstring
+            self._execute(f"SET statement_timeout = {int(self.config.statement_timeout_ms)}")
 
     def load_dataset(self, spec: VectorTableSpec, vectors: VectorArray) -> LoadOutcome:
         table = _identifier(spec.table)
@@ -402,7 +436,8 @@ class PostgresAdapter(SystemAdapter):
         # pgvector-family adapters. Text COPY is one statement for the whole load
         # on every adapter, and `_to_column` already produces the text each engine
         # expects.
-        self._copy_vectors(table, column, vectors)
+        with self._under_bulk_budget():
+            self._copy_vectors(table, column, vectors)
 
         self._execute(f"ANALYZE {table}")
         row = self._fetch_one(f"SELECT count(*) FROM {table}")
@@ -1089,17 +1124,10 @@ class PgvectorAdapter(PostgresAdapter):
         self._apply_build_session(index)
 
         name, ddl = self.index_ddl(spec, index)
-        # The build runs under its own budget, and the query budget is put back
-        # afterwards even when the build fails: leaving the build's hour in place
-        # would mean a runaway search is no longer caught, which is the safety
-        # property the tight query budget exists for.
-        self._execute(f"SET statement_timeout = {int(self.config.build_timeout_ms)}")
         started = time.perf_counter()
-        try:
+        with self._under_bulk_budget():
             self._execute(ddl)
             elapsed = time.perf_counter() - started
-        finally:
-            self._restore_query_budget()
         self._built_indexes.add(name)
         size = self._scalar(f"SELECT pg_relation_size({_literal(name)})")
         return BuildOutcome(
@@ -1107,16 +1135,6 @@ class PgvectorAdapter(PostgresAdapter):
             index_size_bytes=int(size) if size is not None else None,
             parameters_in_force=dict(index.parameters),
         )
-
-    def _restore_query_budget(self) -> None:
-        """Put the query budget back, without masking why the build failed.
-
-        A dead connection makes this fail too, and the original exception is the
-        one worth propagating -- so the restore is allowed to fail silently here
-        and only here. Every later statement on a dead connection raises anyway.
-        """
-        with contextlib.suppress(Exception):  # see the docstring
-            self._execute(f"SET statement_timeout = {int(self.config.statement_timeout_ms)}")
 
     def _search_guc_mapping(self, parameters: dict[str, Any]) -> dict[str, str]:
         """The two knobs this adapter owns, and the literal each one sends.

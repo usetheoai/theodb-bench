@@ -280,3 +280,150 @@ def test_the_corpus_is_read_in_bounded_slices() -> None:
     streaming_ground_truth(source, rng.random((3, 4), dtype=np.float32), k=5, chunk_rows=25)
 
     assert reads == [(0, 25), (25, 50), (50, 75), (75, 100)]
+
+
+# ------------------------------------------- the budget a bulk load runs under
+#
+# Measured 2026-08-17 loading 20 000 000 vectors: the run aborted with
+# `budget_exceeded` at `COPY bench_vectors, line 4569000`. The harness classified
+# it correctly — "the system under test did not fail" — and the defect was the
+# harness's own. A bulk load was running under the *query* budget, which exists to
+# stop a runaway search from stalling a run and was never meant to bound data
+# movement. Index builds already swap in a wider budget for exactly this reason;
+# the load needs the same one, and for the same reason, so it is one mechanism.
+
+
+class _BudgetServer:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def execute(self, sql: str, parameters: object = None) -> None:
+        self.statements.append(sql)
+
+    def fetch_one(self, sql: str, parameters: object = None):
+        return (12,) if "count(*)" in sql else None
+
+    def cursor(self):
+        return _BudgetCursor(self)
+
+
+class _BudgetCursor:
+    def __init__(self, server: _BudgetServer) -> None:
+        self._server = server
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def copy(self, sql: str):
+        self._server.statements.append(sql)
+        return _BudgetWriter(self._server)
+
+    def executemany(self, sql: str, batch: object) -> None:
+        self._server.statements.append(sql)
+
+
+class _BudgetWriter:
+    def __init__(self, server: _BudgetServer) -> None:
+        self._server = server
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def write(self, payload: bytes) -> None:
+        return None
+
+    def write_row(self, row: object) -> None:
+        return None
+
+
+def _budget_adapter() -> tuple[object, _BudgetServer]:
+    from theodb_bench.adapters.postgres import PgvectorAdapter
+
+    server = _BudgetServer()
+    adapter = PgvectorAdapter()
+    adapter._execute = server.execute  # type: ignore[method-assign]
+    adapter._fetch_one = server.fetch_one  # type: ignore[method-assign]
+    adapter._cursor = server.cursor  # type: ignore[method-assign]
+    return adapter, server
+
+
+def _timeouts(statements: list[str]) -> list[int]:
+    return [
+        int(s.split("=")[1].strip()) for s in statements if s.startswith("SET statement_timeout")
+    ]
+
+
+def test_a_streamed_load_runs_under_the_bulk_budget_not_the_query_budget() -> None:
+    from theodb_bench.adapters.base import VectorTableSpec
+
+    adapter, server = _budget_adapter()
+
+    adapter.load_dataset_streaming(  # type: ignore[attr-defined]
+        VectorTableSpec(table="big", dimension=4, metric="l2"),
+        _ArraySource(np.zeros((12, 4), dtype=np.float32)),
+        chunk_rows=5,
+    )
+
+    applied = _timeouts(server.statements)
+    assert applied, "the load never set a statement budget"
+    assert applied[0] == adapter.config.build_timeout_ms  # type: ignore[attr-defined]
+
+
+def test_the_query_budget_is_put_back_after_a_load() -> None:
+    """Leaving the load's hour in place would mean a runaway search is no longer
+    caught, which is the safety property the tight query budget exists for."""
+    from theodb_bench.adapters.base import VectorTableSpec
+
+    adapter, server = _budget_adapter()
+
+    adapter.load_dataset_streaming(  # type: ignore[attr-defined]
+        VectorTableSpec(table="big", dimension=4, metric="l2"),
+        _ArraySource(np.zeros((12, 4), dtype=np.float32)),
+        chunk_rows=5,
+    )
+
+    assert _timeouts(server.statements)[-1] == adapter.config.statement_timeout_ms  # type: ignore[attr-defined]
+
+
+def test_the_query_budget_is_put_back_even_when_the_load_fails() -> None:
+    """A load that dies mid-COPY must not leave the wide budget behind: the next
+    measured query would then be unbounded."""
+    from theodb_bench.adapters.base import VectorTableSpec
+
+    adapter, server = _budget_adapter()
+
+    class _Exploding(_ArraySource):
+        def rows(self, start: int, stop: int) -> np.ndarray:
+            raise RuntimeError("disk went away")
+
+    with pytest.raises(RuntimeError, match="disk went away"):
+        adapter.load_dataset_streaming(  # type: ignore[attr-defined]
+            VectorTableSpec(table="big", dimension=4, metric="l2"),
+            _Exploding(np.zeros((12, 4), dtype=np.float32)),
+            chunk_rows=5,
+        )
+
+    assert _timeouts(server.statements)[-1] == adapter.config.statement_timeout_ms  # type: ignore[attr-defined]
+
+
+def test_the_resident_load_gets_the_same_budget() -> None:
+    """The two load paths differ in where the bytes come from, not in what kind
+    of work they are — a 1M resident load is bulk movement just the same."""
+    from theodb_bench.adapters.base import VectorTableSpec
+
+    adapter, server = _budget_adapter()
+
+    adapter.load_dataset(  # type: ignore[attr-defined]
+        VectorTableSpec(table="big", dimension=4, metric="l2"),
+        np.zeros((12, 4), dtype=np.float32),
+    )
+
+    applied = _timeouts(server.statements)
+    assert applied[0] == adapter.config.build_timeout_ms  # type: ignore[attr-defined]
+    assert applied[-1] == adapter.config.statement_timeout_ms  # type: ignore[attr-defined]
