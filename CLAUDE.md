@@ -121,6 +121,25 @@ Below are the project-level invariants derived from the PRD and TRD — what may
 8. **A published result is never silently overwritten.** A correction creates a new report and marks the previous one superseded (TRD §29).
 9. **Equal rules.** Any rule applied to TheoDB applies to competitors; TheoDB-specific tuning is allowed only if equivalent tuning is allowed for the competitor under the same published policy (README "Fairness", PRD P2).
 10. **A microbenchmark does not become a product claim** (PRD P6).
+11. **Every publishable number comes out of `theodb-bench run`.** A script that talks to an adapter directly
+    produces a number with no bundle, no schema validation, no environment record and no immutable artefact —
+    which means nobody outside the room can reproduce it. Owner's instruction, 2026-08-17. Ad-hoc queries are
+    fine for *diagnosis* (reading `pg_settings`, reading a plan); the moment a figure is reported, it comes
+    from a run. This also keeps the harness honest: three defects were found on 2026-08-17 only because a
+    measurement was forced through it — a single `statement_timeout` that cancelled million-row index builds,
+    an abort classifier that blamed the database for the harness's own refusals, and a rescore knob that could
+    not be swept.
+12. **Equal rules apply to configuration, and a default is not an operating point.** Invariant 9 says any rule
+    applied to TheoDB applies to competitors; this is the half that gets missed, because the unfair
+    configuration usually looks like *no* configuration. Measured in one session on 2026-08-17, four times:
+    AlloyDB's `scann.num_leaves_to_search` does nothing without `LOAD 'alloydb_scann'`; `quantizer='AH'` fails
+    unless `scann.enable_ah_quantizer` is on **at build time**, so the default builds SQ8; ScaNN's rescore
+    (`pre_reordering_num_neighbors`) ships at `-1` and caps recall at 0.6568 where 100 gives 0.9964; and on our
+    own side `theodb.enable_columnar_agg` ships off, which is a 13x difference on the same table and the same
+    query. Every one of those produced a `VALID` bundle with a plausible frontier. Before a cross-engine
+    number is reported, each engine's quality-critical settings are **verified in force**, and the report
+    states them. Publishing a competitor measured at a crippled default is the most dangerous error available
+    here, because it flatters us.
 
 ---
 

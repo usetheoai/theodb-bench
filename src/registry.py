@@ -309,6 +309,45 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
         ),
         default_repetitions=3,
     ),
+    # Quantizer width is a build parameter, so it is swept as separate index
+    # configurations rather than as a search knob. It exists because the first
+    # pg-scann frontier plateaued at 0.82 recall while its rescore pool was
+    # verified at 128 candidates for k=10 -- 128 exact rescores cannot cap recall
+    # at 0.82 unless the true neighbours are absent from the candidate set, so the
+    # ceiling is stage-1 quantization error. `pq_subspaces=16` over 128 dimensions
+    # is 8 dimensions per subspace; ScaNN and FAISS use 2. The sweep measures that
+    # instead of assuming it.
+    "vector/sift/pg-scann-quantizer": BenchmarkEntry(
+        id="vector/sift/pg-scann-quantizer",
+        description=(
+            "SIFT descriptors against TheoDB's pg_scann path at three quantizer "
+            "widths, to locate the operating point before any cross-engine "
+            "comparison is made. Coarse codes cap recall no rescore pool can lift."
+        ),
+        workload=VectorWorkload(
+            corpus_size=100_000,
+            dimension=128,
+            query_count=500,
+            k=10,
+            warmup_queries=50,
+            indexes=tuple(
+                IndexSpec(
+                    kind="ivfflat",
+                    parameters={
+                        "lists": 316,
+                        "pq_subspaces": subspaces,
+                        "pq_bits": 4,
+                        "separate_storage": 1,
+                        "refine": 1,
+                    },
+                )
+                # 8, 4 and 2 dimensions per subspace over 128 dims.
+                for subspaces in (16, 32, 64)
+            ),
+            search_sweep={"probes": (20,), "over_fetch": (2,)},
+        ),
+        default_repetitions=3,
+    ),
     "vector/synthetic/scann-sweep": BenchmarkEntry(
         id="vector/synthetic/scann-sweep",
         description=(
