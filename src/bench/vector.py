@@ -345,6 +345,18 @@ class VectorBenchmark:
             return point
 
         adapter.set_search_parameters(search)
+        # B-060 — record what the server has IN FORCE next to what was requested.
+        #
+        # The two are not always the same, and the difference is not hypothetical: `probes` is
+        # clamped to the list count derived from the real row count, so a request of 10000 on a
+        # 10k-row table is sent as 50. `point.parameters` above is built from the REQUEST, so
+        # without this the bundle would report an operating point that never existed.
+        #
+        # Keyed by GUC name (`ivfflat.probes`), which keeps it unambiguous against the logical
+        # request key (`probes`) and needs no schema change: `points[].parameters` is already
+        # declared as an open object of scalars, so this uses the field as intended rather than
+        # adding a property to a versioned schema.
+        point.parameters.update(adapter.effective_search_parameters())
         self.warm_up(adapter)
 
         for repetition in range(1, repetitions + 1):

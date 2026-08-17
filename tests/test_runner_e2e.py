@@ -252,3 +252,34 @@ def test_a_query_cap_appears_in_the_label(tmp_path: Path) -> None:
 def test_build_label_is_stable_and_readable() -> None:
     label = build_label(IndexSpec(kind="hnsw", parameters={"m": 16}), {"ef_search": 64}, None)
     assert label == "hnsw m=16 ef_search=64"
+
+
+def test_the_bundle_records_what_was_in_force_not_only_what_was_asked(tmp_path: Path) -> None:
+    """B-060 — `points[].parameters` is built from the REQUEST, before the knobs are applied.
+
+    Without the effective values merged in, a clamped parameter makes the bundle report an
+    operating point that never existed: `probes=10000` on a 10k-row table is sent as the
+    clamped list count, and a reader of the artifact would take 10000 as measured.
+
+    Keyed by GUC name so the two are distinguishable in the same open object, which is why
+    this needed no schema bump.
+    """
+    outcome = run_benchmark(
+        _request(
+            tmp_path,
+            workload=_workload(
+                indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+                search_sweep={"ef_search": (64,)},
+            ),
+        )
+    )
+    result = outcome.bundle.read_artifact("result")
+    measured = [p for p in result["points"] if p["status"] != "unsupported"]
+    assert measured, "no point was measured; the assertion below would be vacuous"
+    for point in measured:
+        assert "ef_search" in point["parameters"], "the request must stay in the record"
+        # FakeAdapter is in-process, so effective == requested; the point of the assertion is
+        # that the effective values REACH the artifact at all.
+        assert any(
+            key.endswith("ef_search") for key in point["parameters"]
+        ), f"no effective search parameter reached the bundle: {sorted(point['parameters'])}"

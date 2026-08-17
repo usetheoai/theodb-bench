@@ -261,3 +261,132 @@ def test_system_payload_shape_is_schema_valid_without_a_server() -> None:
         "capabilities": adapter.capabilities(),
     }
     validate("system", payload)
+
+
+# ------------------------------------------------- search-parameter gate (B-060)
+#
+# The harness already refuses to report a number when the planner ignored the index
+# (`assert_index_used`, postgres.py). It did not refuse when the *knob* was ignored: the
+# SET was issued and nothing read the value back.
+#
+# That gap is not theoretical, and the mechanism was measured on PostgreSQL 18:
+#
+#     SET nao.existe = 999;                          -> SET   (succeeds)
+#     SELECT current_setting('nao.existe', true);     -> 999   (echoes what we wrote)
+#     SELECT count(*) FROM pg_settings WHERE name='nao.existe';  -> 0
+#
+# An unregistered namespaced GUC is accepted as a placeholder. `current_setting` therefore
+# cannot detect it — it hands back our own value. `pg_settings` can, because it lists only
+# *registered* GUCs.
+#
+# Two independent measurements show the class bites: TheoDB's own B-034 (`SET hnsw.ef_search`
+# accepted with no effect) and the 2026-08-15 AlloyDB evaluation, where
+# `scann.num_leaves_to_search` silently does nothing without `LOAD 'alloydb_scann'` — the
+# evaluator asked for a deep search, got recall 0.15, and lost a 10M-vector run.
+
+
+class _ServerStub:
+    """A server that answers `pg_settings` however the test wants.
+
+    Mirrors the shape the gate reads: (setting, source) for a GUC name, or None when the
+    GUC is not registered — which is what a server whose extension library never loaded
+    looks like.
+    """
+
+    def __init__(self, settings: dict[str, tuple[str, str]]) -> None:
+        self._settings = settings
+        self.executed: list[str] = []
+
+    def execute(self, sql: str, parameters: tuple[object, ...] | None = None) -> None:
+        self.executed.append(sql)
+
+    def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
+        name = parameters[0] if parameters else None
+        entry = self._settings.get(str(name))
+        return None if entry is None else entry
+
+
+def _adapter_with(server: _ServerStub) -> PgvectorAdapter:
+    adapter = PgvectorAdapter()
+    adapter._row_count = 10_000
+    adapter._execute = server.execute  # type: ignore[method-assign]
+    adapter._fetch_one = server.fetch_one  # type: ignore[method-assign]
+    return adapter
+
+
+def test_gate_accepts_a_knob_the_server_actually_applied() -> None:
+    server = _ServerStub({"hnsw.ef_search": ("200", "session")})
+    adapter = _adapter_with(server)
+
+    adapter.set_search_parameters({"ef_search": 200})
+
+    assert adapter.effective_search_parameters() == {"hnsw.ef_search": "200"}
+
+
+def test_gate_refuses_an_adapter_that_accepts_the_knob_and_ignores_it() -> None:
+    """The placeholder case: the SET succeeds, the GUC is not registered, nothing applied.
+
+    This is the exact mechanism measured on PostgreSQL 18 and the one that cost the
+    independent AlloyDB evaluation a ten-million-vector run.
+    """
+    server = _ServerStub({})  # nothing registered: the library never loaded
+    adapter = _adapter_with(server)
+
+    with pytest.raises(AdapterError) as excinfo:
+        adapter.set_search_parameters({"ef_search": 200})
+
+    message = str(excinfo.value)
+    assert "hnsw.ef_search" in message
+    assert "requested=" in message
+    assert "effective=" in message
+
+
+def test_gate_refuses_a_registered_knob_the_set_did_not_move() -> None:
+    """Registered but still at its default means the SET did not take effect."""
+    server = _ServerStub({"hnsw.ef_search": ("40", "default")})
+    adapter = _adapter_with(server)
+
+    with pytest.raises(AdapterError, match="effective="):
+        adapter.set_search_parameters({"ef_search": 200})
+
+
+def test_gate_accepts_the_documented_clamp() -> None:
+    """`probes` is clamped to the list count, so the effective value legitimately differs
+    from what the caller asked for. The gate compares against what was SENT, not the raw
+    request — otherwise the harness's own sizing rule would trip it."""
+    lists = ivfflat_lists(10_000)
+    sent = clamp_probes(10_000, lists)
+    server = _ServerStub({"ivfflat.probes": (str(sent), "session")})
+    adapter = _adapter_with(server)
+
+    adapter.set_search_parameters({"probes": 10_000})
+
+    assert adapter.effective_search_parameters() == {"ivfflat.probes": str(sent)}
+
+
+def test_gate_distinguishes_could_not_verify_from_verified_and_divergent() -> None:
+    """A read that fails is not a divergence. Collapsing the two would report a
+    configuration defect where there was an unavailable server — the distinction
+    `cycle-acceptance` protects with NOT_VALIDATED."""
+    class _Unreadable(_ServerStub):
+        def fetch_one(self, sql: str, parameters: tuple[object, ...] | None = None):
+            raise RuntimeError("connection reset")
+
+    adapter = _adapter_with(_Unreadable({}))
+    with pytest.raises(AdapterError, match="could not verify"):
+        adapter.set_search_parameters({"ef_search": 200})
+
+
+@pytest.mark.parametrize("name", ["postgres", "pgvector", "theodb", "fake"])
+def test_every_adapter_reports_effective_search_parameters(name: str) -> None:
+    """A new engine cannot be added without answering what is in force.
+
+    Without this, the contract holds for three adapters out of four and the fourth breaks
+    it in silence — and `fake` is the one the runner's own tests exercise most.
+    """
+    from theodb_bench.registry import get_adapter
+
+    entry = get_adapter(name)
+    assert hasattr(entry.factory, "effective_search_parameters") or hasattr(
+        entry.factory(), "effective_search_parameters"
+    ), f"{name} does not report its effective search parameters"

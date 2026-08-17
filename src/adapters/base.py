@@ -487,8 +487,25 @@ class SystemAdapter(ABC):
         Optional by design, not by oversight: a system with no per-query
         knobs has nothing to set, and forcing it to implement a stub would
         add a method that lies about being meaningful.
+
+        A system that DOES have knobs must also answer
+        :meth:`effective_search_parameters` — applying without being able to say what is
+        in force is the gap B-060 closed.
         """
         return None
+
+    def effective_search_parameters(self) -> dict[str, str]:
+        """The tuning verified to be in force, as the system reports it.
+
+        Distinct from what was requested, and that distinction is the whole point: a bundle
+        that publishes the request as if it were the measurement describes an operating point
+        that may never have existed. Measured on PostgreSQL 18, a SET on an unregistered
+        namespace succeeds and applies nothing, and ``current_setting`` then echoes the value
+        back — so "we asked for it" is not evidence that it happened.
+
+        A system with no knobs returns an empty mapping, which is an honest answer.
+        """
+        return {}
 
     def drop_indexes(self, spec: VectorTableSpec) -> None:
         """Remove indexes left by other configurations.
