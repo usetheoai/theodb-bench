@@ -79,6 +79,7 @@ from theodb_bench.errors import (
     SystemUnavailableError,
     UnsupportedCapabilityError,
 )
+from theodb_bench.streaming import CorpusSource, chunk_source
 
 # S608 is annotated per site below. Table and column names cannot be bound as
 # parameters, so they are composed into the SQL -- but only after passing
@@ -330,6 +331,55 @@ class PostgresAdapter(SystemAdapter):
             for start in range(0, int(vectors.shape[0]), chunk):
                 copy.write(encode_vector_rows(vectors[start : start + chunk], start_id=start))
             copy.write(BINARY_TRAILER)
+
+    def load_dataset_streaming(
+        self, spec: VectorTableSpec, source: CorpusSource, *, chunk_rows: int = 50_000
+    ) -> LoadOutcome:
+        """Load a corpus that never has to be resident.
+
+        The array form takes 512 GB of RAM for a billion 128-dimension vectors.
+        This one holds one chunk at a time, so the ceiling becomes the disk rather
+        than the memory. The row ids come from the chunk rather than a counter, so a
+        resumed load does not renumber the rows the dataset's neighbour lists point
+        at.
+
+        Binary COPY only: the text path would put the per-value Python cost back,
+        and at this scale that cost is the whole load.
+        """
+        if not self._supports_binary_copy():
+            raise UnsupportedCapabilityError(
+                f"{self.system_id} has no binary encoder for its vector column, and "
+                f"streaming a corpus through the text path would reinstate the "
+                f"per-value encoding that makes this scale unreachable",
+                context=ErrorContext(phase=Phase.DATASET_LOAD, system=self.system_id),
+            )
+
+        table = _identifier(spec.table)
+        column = _identifier(spec.embedding_column)
+        started = time.perf_counter()
+        self._execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+        self._execute(
+            f"CREATE TABLE {table} (id integer PRIMARY KEY, "
+            f"{column} {self.column_type(spec.dimension)} NOT NULL)"
+        )
+        with (
+            self._cursor() as cursor,
+            cursor.copy(f"COPY {table} (id, {column}) FROM STDIN WITH (FORMAT BINARY)") as copy,
+        ):
+            copy.write(BINARY_HEADER)
+            for start, block in chunk_source(source, chunk_rows):
+                copy.write(encode_vector_rows(block, start_id=start))
+            copy.write(BINARY_TRAILER)
+
+        self._execute(f"ANALYZE {table}")
+        counted = self._fetch_one(f"SELECT count(*) FROM {table}")
+        loaded = int(counted[0]) if counted else 0
+        self._row_count = loaded
+        return LoadOutcome(
+            seconds=time.perf_counter() - started,
+            rows_loaded=loaded,
+            rows_expected=source.row_count,
+        )
 
     def load_dataset(self, spec: VectorTableSpec, vectors: VectorArray) -> LoadOutcome:
         table = _identifier(spec.table)

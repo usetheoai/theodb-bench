@@ -9,6 +9,31 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A corpus can be loaded without ever being resident** (billion-scale). `load_dataset` takes an array, so
+  the whole corpus had to fit in memory: 1e9 x 128 float32 is 512 GB of RAM. `load_dataset_streaming` reads a
+  `CorpusSource` chunk by chunk, so the ceiling becomes disk rather than memory. Binary COPY only — the text
+  path would reinstate the per-value Python encoding that is 96% of a load, and at this scale that cost *is*
+  the load. Row ids travel with the chunk rather than coming from a counter the caller keeps: a resumed load
+  would otherwise renumber every row after the break, and those ids are what a dataset's published neighbour
+  lists point at.
+- **Ground truth can be scored without reading the corpus** (billion-scale). Brute force is a Q x N product —
+  1e13 distance computations for a billion rows and ten thousand queries. `neighbour_vectors` fetches only the
+  k x Q vectors the published neighbour ids name, reads each distinct row once because queries share
+  neighbours, coalesces contiguous runs into single reads, and reports how many rows it actually read so a run
+  can state that instead of implying it read everything. Published *distances* are still never used; they carry
+  someone else's precision and metric convention.
+- A neighbour id outside the corpus is **refused** (billion-scale). It happens when a published dataset is
+  subsampled without remapping its neighbour lists, and dropping such ids quietly would *raise* recall by
+  removing exactly the neighbours a system failed to find.
+
+### Changed
+
+- What a billion vectors costs is now written down rather than assumed: **512 GB** of raw float32, **520 GB** in
+  a `vector(128)` table, roughly **780 GB** with an HNSW index, and **4.7 hours** of load at the binary-COPY
+  rate this harness reaches. The host this was measured on had **284 GB** free, so the capability is present
+  and the run needs a larger machine. A benchmark whose scale claims outrun its measurements is worse than one
+  whose limits are stated.
+
 - **The graph, hybrid and quantized pillars are reachable** (B-073), taking the count from six of fourteen
   capabilities to **eleven**. Verified against a real server: `theodb.graph_build` folds a CSR over 1 334 edges
   in 0.04 s (98 KB) and `graph_expand` grows correctly with hops (3 → 6 → 10 vertices); `ai.hybrid_search_rrf`
