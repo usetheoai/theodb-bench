@@ -20,6 +20,7 @@ from theodb_bench.adapters.fake import FakeAdapter
 from theodb_bench.bench.analytical import AnalyticalWorkload
 from theodb_bench.bench.protocol import Workload
 from theodb_bench.bench.vector import VectorWorkload
+from theodb_bench.load import LoadModel
 from theodb_bench.errors import AdapterError, ConfigError, ErrorContext, Phase
 
 AdapterFactory = Callable[..., SystemAdapter]
@@ -268,6 +269,57 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
             warmup_queries=50,
             indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
             search_sweep={"ef_search": (64, 256)},
+        ),
+        default_repetitions=3,
+    ),
+    # Throughput under contention, which is the regime a database actually runs
+    # in and the one nothing here could measure until the load engine existed.
+    #
+    # Two suites, because they answer different questions and conflating them is
+    # how throughput numbers become unfalsifiable:
+    #
+    #   `concurrency` sweeps the CLIENT COUNT in a closed loop. It answers "how
+    #   far does this scale before it stops getting faster", and its latency is
+    #   service time -- with no schedule there is nothing to be late for.
+    #
+    #   `saturation` fixes the clients and sweeps the ARRIVAL RATE. It answers
+    #   "where does the queue start", which a closed loop cannot ask: a stalled
+    #   system simply receives fewer requests and the stall never enters the
+    #   distribution. Its response time includes the queueing, and the gap
+    #   between the two latencies IS the queue.
+    "vector/sift1m/concurrency": BenchmarkEntry(
+        id="vector/sift1m/concurrency",
+        description=(
+            "SIFT1M against theodb_hnsw with a client population, closed loop. "
+            "Sweeps the client count to find where throughput stops scaling."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_000_000,
+            dimension=128,
+            query_count=2_000,
+            k=10,
+            warmup_queries=100,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (64,)},
+            load=LoadModel(clients=16),
+        ),
+        default_repetitions=3,
+    ),
+    "vector/sift1m/saturation": BenchmarkEntry(
+        id="vector/sift1m/saturation",
+        description=(
+            "SIFT1M against theodb_hnsw under Poisson arrivals at a fixed client "
+            "count. Finds where the queue starts, which a closed loop cannot see."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_000_000,
+            dimension=128,
+            query_count=4_000,
+            k=10,
+            warmup_queries=200,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (64,)},
+            load=LoadModel(clients=32, arrival_rate=2_000.0),
         ),
         default_repetitions=3,
     ),

@@ -22,8 +22,8 @@ the latency distribution (objective §23).
 from __future__ import annotations
 
 import itertools
-import time
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -47,6 +47,7 @@ from theodb_bench.errors import (
     SystemUnavailableError,
     UnsupportedCapabilityError,
 )
+from theodb_bench.load import LoadModel, run_load, summarise_load
 from theodb_bench.streaming import CorpusSource
 
 DEFAULT_TABLE: Final[str] = "bench_vectors"
@@ -72,6 +73,10 @@ class VectorWorkload:
     indexes: tuple[IndexSpec, ...] = (IndexSpec(kind="none"),)
     search_sweep: dict[str, tuple[Any, ...]] = field(default_factory=dict)
     warmup_queries: int = 0
+    load: LoadModel = field(default_factory=LoadModel)
+    """How the queries are issued. The default is one client, closed loop --
+    exactly what this workload did before the load engine existed, so adding the
+    capability does not move any existing number."""
     query_cap: int | None = None
     """Reduce the measured sample for an index that is O(N) per query. The cap
     lands in the point label; it is never applied silently."""
@@ -112,7 +117,12 @@ class VectorWorkload:
         return {
             "workload": {
                 "type": "ann",
-                "loop": "closed",
+                # Read from the load model rather than written as a literal: it
+                # was true of every workload when it was written, and becomes a
+                # false provenance claim the moment one declares an arrival rate.
+                "loop": "closed" if self.load.is_closed_loop else "open",
+                "clients": self.load.clients,
+                "arrival_rate_per_second": self.load.arrival_rate,
                 "k": [self.k],
                 "operation_count": self.query_count,
             },
@@ -160,6 +170,11 @@ class RepetitionResult:
     recall: float | None
     build_seconds: float | None = None
     index_size_bytes: int | None = None
+    load: dict[str, Any] | None = None
+    """The shape of the load that produced these numbers -- clients, arrival
+    rate, and the two latencies kept apart. `None` for a single-client closed
+    loop, where there is no queueing to report and a zero would read as a
+    measured absence rather than a regime where the question does not arise."""
 
     #: Latency in milliseconds per query id, for the queries that answered.
     #:
@@ -205,17 +220,30 @@ class PointResult:
         return series
 
 
-def build_label(index: IndexSpec, search: dict[str, Any], query_cap: int | None) -> str:
+def build_label(
+    index: IndexSpec,
+    search: dict[str, Any],
+    query_cap: int | None,
+    load: LoadModel | None = None,
+) -> str:
     """A label a reader can map back to a configuration.
 
     A reduced query sample is part of the label. Hiding it would let two points
     measured over different sample sizes sit in the same table as equals.
+
+    So is the load, for the same reason: a sweep over client counts whose points
+    all carry the same label is a sweep that flattens onto itself. A default
+    closed loop adds nothing, so every label written before this existed still
+    reads the same and every stored baseline still matches.
     """
     parts = [index.label()]
     if search:
         parts.append(" ".join(f"{key}={value}" for key, value in sorted(search.items())))
     if query_cap is not None:
         parts.append(f"[q={query_cap}]")
+    if load is not None and not (load.clients == 1 and load.is_closed_loop):
+        rate = "" if load.arrival_rate is None else f" @{load.arrival_rate:g}/s"
+        parts.append(f"[c={load.clients}{rate}]")
     return " ".join(parts)
 
 
@@ -321,49 +349,131 @@ class VectorBenchmark:
             adapter.execute(self._query(index))
         return count
 
-    def measure(self, adapter: SystemAdapter, repetition: int) -> RepetitionResult:
-        """One timed pass over the query set."""
-        sample = self._sample_size()
-        latencies: list[float] = []
-        latency_by_query: dict[int, float] = {}
-        returned: list[list[int]] = []
-        errors = 0
-        timeouts = 0
+    def measure(
+        self,
+        adapter: SystemAdapter,
+        repetition: int,
+        make_client: Callable[[], SystemAdapter] | None = None,
+    ) -> RepetitionResult:
+        """One timed pass over the query set, under the declared load.
 
-        started = time.perf_counter()
-        for index in range(sample):
+        Routed through one engine whatever the regime, so the single-client path
+        is not a second implementation that can drift from the concurrent one.
+        A default `LoadModel()` is one client issuing the next query when the
+        previous returns -- which is exactly what this method did before the
+        engine existed, and is why every existing number stays comparable.
+
+        `make_client` supplies a connection per client. Concurrency without it
+        is refused rather than silently serialised on a shared connection: that
+        would measure the lock and report it as the database.
+        """
+        sample = self._sample_size()
+        model = self.workload.load
+
+        answers: dict[int, Any] = {}
+        latency_ms: dict[int, float] = {}
+        outcome: dict[int, str] = {}
+        recorder = threading.Lock()
+
+        def issue(client: SystemAdapter, index: int) -> None:
             try:
-                result = adapter.execute(self._query(index))
+                result = client.execute(self._query(index))
             except SystemUnavailableError:
-                # The system is gone. This is not a query that failed, it is
-                # the end of the run: continuing would record a dead system as
-                # a stream of query errors and let the "did it crash" check
-                # pass while it lay dead.
+                # Re-raised before the BenchError clause below, because it is a
+                # subclass of it. Catching it there would record a dead system as
+                # a stream of query errors and let the "did it crash" check pass
+                # while it lay dead -- the ordering is load-bearing, exactly like
+                # psycopg's QueryCanceled being an OperationalError.
                 raise
             except MeasurementError:
                 # A timeout is a distinct outcome, not a slow success: it never
                 # enters the latency distribution.
-                timeouts += 1
-                continue
+                with recorder:
+                    outcome[index] = "timeout"
+                return
             except BenchError:
-                errors += 1
-                continue
-            elapsed_ms = result.latency_seconds * 1000.0
-            latencies.append(elapsed_ms)
-            latency_by_query[index] = elapsed_ms
-            returned.append(list(result.ids))
-        duration = time.perf_counter() - started
+                with recorder:
+                    outcome[index] = "error"
+                return
+            with recorder:
+                answers[index] = list(result.ids)
+                # The adapter's own timing, not the wall clock around it: under
+                # concurrency the wall clock includes the client's own queueing,
+                # which the load summary reports separately and by name.
+                latency_ms[index] = result.latency_seconds * 1000.0
+                outcome[index] = "ok"
+
+        clients, closer = self._client_pool(adapter, make_client, model)
+        load_result = run_load(
+            make_client=clients,
+            issue=issue,
+            count=sample,
+            model=model,
+            # `SystemUnavailableError` ends the run rather than becoming a data
+            # point: recording a dead system as a stream of query errors would
+            # let the "did it crash" check pass while it lay dead.
+            fatal=(SystemUnavailableError,),
+            close_client=closer,
+        )
+
+        returned = [answers[i] for i in sorted(answers)]
+        latencies = [latency_ms[i] for i in sorted(latency_ms)]
 
         return RepetitionResult(
             repetition=repetition,
             successes=len(latencies),
-            errors=errors,
-            timeouts=timeouts,
-            duration_seconds=duration,
+            errors=sum(1 for v in outcome.values() if v == "error"),
+            timeouts=sum(1 for v in outcome.values() if v == "timeout"),
+            duration_seconds=load_result.duration_seconds,
             latency=summarise_latency(latencies),
             recall=self._recall(returned, sample),
-            latency_by_query=latency_by_query,
+            latency_by_query=dict(latency_ms),
+            load=self._load_summary(load_result, model),
         )
+
+    def _client_pool(
+        self,
+        adapter: SystemAdapter,
+        make_client: Callable[[], SystemAdapter] | None,
+        model: LoadModel,
+    ) -> tuple[Callable[[], SystemAdapter], Callable[[SystemAdapter], None] | None]:
+        """The per-client connections, and how to dispose of them.
+
+        One client reuses the adapter the caller already opened -- opening a
+        second connection to do the same work it did before would change the
+        measurement to gain nothing.
+        """
+        if model.clients == 1:
+            return (lambda: adapter), None
+        if make_client is None:
+            raise ConfigError(
+                f"this workload declares {model.clients} clients and no way to open a "
+                f"connection per client. Serialising them on one connection would measure "
+                f"the lock and report it as the database.",
+                context=ErrorContext(phase=Phase.PREFLIGHT),
+            )
+
+        def build() -> SystemAdapter:
+            client = make_client()
+            client.prepare()
+            client.start()
+            client.wait_ready()
+            return client
+
+        return build, lambda client: client.stop()
+
+    @staticmethod
+    def _load_summary(load_result: Any, model: LoadModel) -> dict[str, Any] | None:
+        """The load's shape, when there is one worth reporting.
+
+        A single-client closed loop has no queueing, and a zero there would read
+        as a measured absence of queueing rather than as a regime in which the
+        question does not arise -- the same distinction the four absence kinds
+        exist to keep.
+        """
+        if model.clients == 1 and model.is_closed_loop:
+            return None
+        return summarise_load(load_result)
 
     # ------------------------------------------------------------------ recall
 
@@ -405,9 +515,10 @@ class VectorBenchmark:
         index: IndexSpec,
         search: dict[str, Any],
         repetitions: int,
+        make_client: Callable[[], SystemAdapter] | None = None,
     ) -> PointResult:
         """Build, warm up and measure one configuration."""
-        label = build_label(index, search, self.workload.query_cap)
+        label = build_label(index, search, self.workload.query_cap, self.workload.load)
         point = PointResult(label=label, parameters={**index.parameters, **search})
 
         spec = self.workload.table_spec()
@@ -437,16 +548,21 @@ class VectorBenchmark:
         self.warm_up(adapter)
 
         for repetition in range(1, repetitions + 1):
-            result = self.measure(adapter, repetition)
+            result = self.measure(adapter, repetition, make_client)
             result.build_seconds = build.seconds
             result.index_size_bytes = build.index_size_bytes
             point.repetitions.append(result)
         return point
 
-    def points(self, adapter: SystemAdapter, repetitions: int) -> list[PointResult]:
+    def points(
+        self,
+        adapter: SystemAdapter,
+        repetitions: int,
+        make_client: Callable[[], SystemAdapter] | None = None,
+    ) -> list[PointResult]:
         """Every configuration measured, in order."""
         return [
-            self.run_point(adapter, index, search, repetitions)
+            self.run_point(adapter, index, search, repetitions, make_client)
             for index, search in self.configurations()
         ]
 

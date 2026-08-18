@@ -262,7 +262,10 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
         collectors.start()
         # Phases 5 to 8 -- build, warm-up, measurement and repetition, per
         # configuration. Warm-up happens inside run_point and is untimed.
-        points.extend(benchmark.points(adapter, request.repetitions))
+        # The factory the runner already holds is exactly what a client
+        # population needs: one connection per client, opened the same way the
+        # measured one was.
+        points.extend(benchmark.points(adapter, request.repetitions, request.adapter_factory))
         collectors.stop()
 
         bundle.write_artifact("system", adapter.system_payload())
