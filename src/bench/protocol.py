@@ -17,6 +17,7 @@ a new family is a module rather than an edit to the runner
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -28,8 +29,16 @@ class Benchmark(Protocol):
         """Put the data in place. Seconds taken, or None when nothing was loaded."""
         ...
 
-    def points(self, adapter: Any, repetitions: int) -> list[Any]:
-        """Every configuration measured, as PointResults."""
+    def points(
+        self, adapter: Any, repetitions: int, make_client: Callable[[], Any] | None = None
+    ) -> list[Any]:
+        """Every configuration measured, as PointResults.
+
+        `make_client` opens one connection per client when the workload declares
+        a client population. A benchmark that only ever issues work serially may
+        ignore it, but it must accept it: the runner has no way to know which
+        kind it holds, and asking would put the regime back in the caller.
+        """
         ...
 
 
