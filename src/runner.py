@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final
 
-from theodb_bench.abort import AbortKind, classify_abort
+from theodb_bench.abort import AbortKind, classify_abort, describe_unavailability
 from theodb_bench.absent import Absent, unavailable
 from theodb_bench.adapters.base import SystemAdapter
 from theodb_bench.analysis.statistics import (
@@ -245,6 +245,9 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
 
     abort_kind: AbortKind | None = None
     oom = False
+    # Stamped before the system is touched, so a restart during the run is
+    # detectable by comparing against the server's own start time.
+    started_at = datetime.now(timezone.utc)
     points: list[PointResult] = []
     try:
         # Phase 3 -- bootstrap.
@@ -270,10 +273,19 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
         # died are three different facts, and this report is published.
         abort_kind = classify_abort(exc)
         oom = bool(getattr(exc, "context", None) and exc.context.details.get("oom"))  # type: ignore[attr-defined]
-        bundle.write_raw_text(
-            "system.log",
-            f"run aborted ({abort_kind.value}): {type(exc).__name__}: {exc}\n{abort_kind.detail}\n",
-        )
+        lines = [
+            f"run aborted ({abort_kind.value}): {type(exc).__name__}: {exc}",
+            abort_kind.detail,
+        ]
+        if abort_kind is AbortKind.CRASHED:
+            # "Went down and came back" and "was never reachable" arrive the same
+            # way and are different findings. Asking the system when it last
+            # started answers it in one query, and putting the answer here is
+            # what keeps the next reader out of `docker logs` and `dmesg`.
+            diagnosis = describe_unavailability(adapter, run_started_at=started_at)
+            if diagnosis:
+                lines.append(diagnosis)
+        bundle.write_raw_text("system.log", "\n".join(lines) + "\n")
     finally:
         try:
             adapter.stop()

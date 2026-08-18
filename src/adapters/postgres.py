@@ -46,6 +46,7 @@ import math
 import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, ClassVar, Final
 
 import numpy as np
@@ -381,6 +382,27 @@ class PostgresAdapter(SystemAdapter):
             rows_loaded=loaded,
             rows_expected=source.row_count,
         )
+
+    def postmaster_start_time(self) -> datetime | None:
+        """When the server last started, from the server's own clock.
+
+        Used only after a run has already failed as unreachable, to say whether
+        the system went down and came back or whether the path to it broke. The
+        two look identical from the client and are different findings.
+
+        Both timestamps come from the server so the answer does not depend on
+        drift between two machines, and a probe that cannot connect returns
+        `None` rather than a guess -- the system is known to be in trouble, and
+        an unanswered diagnostic is an honest outcome.
+        """
+        try:
+            row = self._fetch_one("SELECT pg_postmaster_start_time()")
+        except Exception:  # the system is already known to be unreachable
+            return None
+        if not row or row[0] is None:
+            return None
+        value = row[0]
+        return value if isinstance(value, datetime) else None
 
     @contextlib.contextmanager
     def _under_bulk_budget(self) -> Iterator[None]:

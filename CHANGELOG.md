@@ -8,6 +8,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- A run that fails as unreachable now records whether the system *restarted* — the bundle
+  says "went down and came back" or "stayed up while the connection broke", instead of
+  leaving the reader to open `docker logs` and `dmesg` (#B-076)
 - `theodb-bench capabilities` generates the capability x adapter matrix from the registry,
   and the README's table is now that output rather than a hand-typed one (#B-073)
 - `run --build-timeout SECONDS` raises the budget for bulk phases (index build, dataset
