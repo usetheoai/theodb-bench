@@ -20,8 +20,8 @@ from theodb_bench.adapters.fake import FakeAdapter
 from theodb_bench.bench.analytical import AnalyticalWorkload
 from theodb_bench.bench.protocol import Workload
 from theodb_bench.bench.vector import VectorWorkload
-from theodb_bench.load import LoadModel
 from theodb_bench.errors import AdapterError, ConfigError, ErrorContext, Phase
+from theodb_bench.load import LoadModel
 
 AdapterFactory = Callable[..., SystemAdapter]
 
