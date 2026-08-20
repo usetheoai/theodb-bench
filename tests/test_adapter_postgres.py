@@ -981,3 +981,57 @@ def test_every_row_reaches_the_copy_stream() -> None:
     body = b"".join(server.copied_bytes)[len(BINARY_HEADER) : -len(BINARY_TRAILER)]
     assert len(body) == 2_500 * row_bytes
     assert outcome.rows_expected == 2_500
+
+
+# ---------------------------------------------------------------------------
+# B-063 — `assert_index_used` era código morto E quebrado. Citado como "o padrão
+# certo" pelo B-060, nunca chamado, e com `ProgrammingError` garantido se fosse.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("adapter_cls", [PostgresAdapter, PgvectorAdapter])
+def test_assert_index_used_binds_one_parameter_per_placeholder(
+    adapter_cls: type, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A verificação do plano tem de ligar tantos parâmetros quantos o SQL declara.
+
+    `PgvectorAdapter` repete a expressão de distância no `ORDER BY` (dois `%s`); o
+    `PostgresAdapter` upstream não (um). `execute` deriva o tuple de `ORDER_REPEATS_DISTANCE`
+    e `assert_index_used` ligava **um** incondicionalmente — `psycopg.ProgrammingError: the
+    query has 2 placeholders but 1 parameters were passed`, reproduzido contra servidor real
+    em 2026-08-17.
+
+    O teste compara CONTAGEM DECLARADA com CONTAGEM LIGADA, em vez de fixar `2`: fixar o
+    número faria o teste passar por coincidência se a expressão do `ORDER BY` mudasse.
+    """
+    adapter = adapter_cls()
+    query = KnnQuery(table="bench_vectors", vector=np.zeros(8, dtype=np.float32), k=10)
+    visto: dict[str, object] = {}
+
+    def _spy(sql: str, params: tuple) -> tuple:
+        visto["sql"] = sql
+        visto["params"] = params
+        return ('[{"Plan": {"Index Name": "bench_idx"}}]',)
+
+    monkeypatch.setattr(adapter, "_fetch_one", _spy)
+    adapter.assert_index_used(query, "bench_idx")
+
+    declarados = str(visto["sql"]).count("%s")
+    ligados = len(visto["params"])  # type: ignore[arg-type]
+    assert ligados == declarados, (
+        f"{adapter_cls.__name__}: EXPLAIN declara {declarados} placeholders e "
+        f"{ligados} parâmetros foram ligados — psycopg recusa a consulta"
+    )
+
+
+def test_assert_index_used_still_refuses_a_plan_without_the_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Consertar o binding não pode afrouxar o que o método existe para afirmar."""
+    adapter = PgvectorAdapter()
+    query = KnnQuery(table="bench_vectors", vector=np.zeros(8, dtype=np.float32), k=10)
+    plano = ('[{"Plan": {"Node Type": "Seq Scan"}}]',)
+    monkeypatch.setattr(adapter, "_fetch_one", lambda sql, params: plano)
+    with pytest.raises(AdapterError) as excinfo:
+        adapter.assert_index_used(query, "bench_idx")
+    assert "bench_idx" in str(excinfo.value)

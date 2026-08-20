@@ -556,6 +556,23 @@ class SystemAdapter(ABC):
         """
         return {}
 
+    def verify_access_path(self, query: KnnQuery) -> None:
+        """Confirmar que a consulta medida usa MESMO o índice que esta corrida construiu.
+
+        Opcional por projeto, como :meth:`set_search_parameters`: um sistema sem planner não
+        tem caminho de acesso a conferir, e o default é silêncio honesto — nunca
+        `NotImplementedError`, que quebraria a substituibilidade num método que o arnês chama
+        para todo adapter registrado.
+
+        Por que existe (B-063): `PostgresAdapter.assert_index_used` era exatamente esta
+        verificação, escrita, correta na intenção, e **sem chamador nenhum** — enquanto o
+        docstring do módulo anunciava o invariante como em vigor. Um sistema podia reportar
+        um `Seq Scan` sob o nome de um índice, e nada no arnês notaria. O hook é o que dá ao
+        caminho de medição um jeito de pedir a verificação sem conhecer o dialeto de plano de
+        cada motor (`rules/architecture.md § 2`).
+        """
+        return None
+
     def drop_indexes(self, spec: VectorTableSpec) -> None:
         """Remove indexes left by other configurations.
 

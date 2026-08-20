@@ -19,6 +19,9 @@ dev = [
     "pytest>=7.4",
     "ruff>=0.4",
     "mypy>=1.8",
+    # B-063 — detector de código morto. O arnês não tinha nenhum, e foi assim que um
+    # método sem chamador sobreviveu sendo citado como exemplar por outro item.
+    "vulture>=2.11",
 ]
 # Kept separate: a plain `doctor` or schema validation must not require a
 # database driver or an HDF5 stack to be installed.
@@ -49,7 +52,9 @@ target-version = "py310"
 src = ["src", "tests"]
 # `theodb_bench` is a symlink to `src` (see [tool.mypy]); linting through it
 # would report every finding twice.
-extend-exclude = ["theodb_bench"]
+# O whitelist do vulture é, por construção, uma lista de nomes indefinidos — F821 em cada
+# linha. É entrada de ferramenta, não código do projeto (B-063).
+extend-exclude = ["theodb_bench", "ci/vulture-baseline.py"]
 
 [tool.ruff.lint]
 # S (flake8-bandit) is on deliberately: adapters spawn external processes and

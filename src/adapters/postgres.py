@@ -5,25 +5,40 @@ hierarchy rather than three copies. Upstream PostgreSQL has no vector type at
 all and can only do exact search over ``real[]``; pgvector adds the ``vector``
 type with HNSW and IVFFlat; TheoDB adds its own access methods on top.
 
-Measurement invariants live here. One of them is **not** enforced, and saying so
-is the point:
+Measurement invariants live here, and I5 says exactly half of what it used to.
 
-I5 -- the index forced *and* verified -- is **not in force**. Measured 2026-08-17:
-``assert_index_used`` below has no caller anywhere in the package, it raises
-``ProgrammingError`` if called (this class overrides ``_query_sql`` to repeat the
-distance expression, so the probe binds twice, and the inherited verifier binds
-once), and ``SET enable_seqscan = off`` appears in this docstring and nowhere
-else in executable code. The harness measures whatever plan the planner chooses.
-At the registered suite's size (10 000 x 64) the planner does choose the index on
-pgvector, Omni/hnsw and Omni/scann -- verified by EXPLAIN -- so no published
-number is retracted; at 200 rows it chose a sequential scan. Tracked as B-063.
-This paragraph replaces a claim that this file made for its whole life and that
-another item cited as exemplary discipline.
+I5 -- the index **verified**, not forced. Every index this run built must appear
+in the plan of the measured query; a run whose planner picked something else is
+refused rather than reported under the index's name. The check runs once per
+configuration, in the untimed window before warm-up
+(:meth:`PostgresAdapter.verify_access_path` -> :meth:`assert_index_used`, called
+from ``bench/vector.py``): an EXPLAIN inside the timed loop would add a round trip
+under the clock and the number would start describing the harness.
+
+The other half is deliberately NOT claimed. ``SET enable_seqscan = off`` is not
+emitted anywhere, so the harness does not *force* the index -- it measures the
+planner's own choice and refuses the point when that choice is not the index. The
+distinction matters because forcing and verifying fail differently: forcing hides
+a planner that would not have chosen the index, verifying reports it.
+
+Measured 2026-08-17, and this is why the invariant was rewritten rather than
+restored: ``assert_index_used`` had **no caller anywhere in the package**, and
+raised ``ProgrammingError`` if called (this class overrides ``_query_sql`` to
+repeat the distance expression, so the probe binds twice, and the verifier bound
+once). No published number was retracted -- at the registered suite's size
+(10 000 x 64) EXPLAIN confirms the index on pgvector, Omni/hnsw and Omni/scann --
+but at 200 rows the planner chose a sequential scan, and nothing would have said
+so. Closed by B-063, which also put a dead-code detector in CI, because the reason
+a written-and-correct method stayed dead for its whole life is that no tool here
+could ask whether anything called it.
+
+NOT YET EXERCISED AGAINST A LIVE SERVER: the droplet was destroyed and has no
+replacement (B-073, B-075). Both branches are covered by unit tests; the first
+real run is what closes the gap.
 
 A requested search knob is applied *and* proven in force before a point is
 measured -- and a knob the adapter cannot apply is refused rather than ignored.
-See :meth:`PostgresAdapter.set_search_parameters`; this one is real, and it is
-currently the only apply-then-verify that executes.
+See :meth:`PostgresAdapter.set_search_parameters`.
 
 Indexes from other configurations are dropped before a point is measured. Two
 indexes of the same family on the same column let the planner choose, and one
@@ -700,12 +715,20 @@ class PostgresAdapter(SystemAdapter):
             f"{where}ORDER BY {order}, id LIMIT {int(query.k)}"
         )
 
+    def _query_parameters(self, probe: object) -> tuple[object, ...]:
+        """Os parâmetros que o SQL de :meth:`_query_sql` declara, derivados da MESMA flag.
+
+        Existia como ternário repetido em três lugares e AUSENTE num quarto — o
+        `assert_index_used`, que ligava um parâmetro contra um SQL de dois e levantava
+        `psycopg.ProgrammingError` se alguém o chamasse (B-063). O defeito não foi de digitação:
+        SQL e parâmetros são uma decisão só, e mantê-los em métodos que podem divergir garante
+        que um dia divirjam. Um lugar, uma resposta.
+        """
+        return (probe, probe) if self.ORDER_REPEATS_DISTANCE else (probe,)
+
     def execute(self, query: KnnQuery) -> KnnResult:
         sql = self._query_sql(query)
-        probe = self._to_column(query.vector)
-        # Bound once or twice, from the same declaration that shaped the ORDER BY:
-        # deriving it keeps the two from drifting apart.
-        parameters = (probe, probe) if self.ORDER_REPEATS_DISTANCE else (probe,)
+        parameters = self._query_parameters(self._to_column(query.vector))
         started = time.perf_counter()
         rows = self._fetch_all(sql, parameters)
         elapsed = time.perf_counter() - started
@@ -744,9 +767,7 @@ class PostgresAdapter(SystemAdapter):
                 f"{where}ORDER BY {order}, id LIMIT {int(query.k)})"
             )
             column_value = self._to_column(vector)
-            parameters.extend(
-                (column_value, column_value) if self.ORDER_REPEATS_DISTANCE else (column_value,)
-            )
+            parameters.extend(self._query_parameters(column_value))
 
         sql = " UNION ALL ".join(branches) + " ORDER BY probe, distance, id"
         started = time.perf_counter()
@@ -762,6 +783,15 @@ class PostgresAdapter(SystemAdapter):
             latency_seconds=elapsed,
         )
 
+    def verify_access_path(self, query: KnnQuery) -> None:
+        """Cada índice que esta corrida construiu tem de aparecer no plano.
+
+        Sem índice construído não há o que conferir — uma corrida de busca exata é legítima,
+        e exigir um índice dela inventaria um defeito.
+        """
+        for name in sorted(self._built_indexes):
+            self.assert_index_used(query, name)
+
     def assert_index_used(self, query: KnnQuery, index_name: str) -> None:
         """Verify from EXPLAIN that the index was actually used.
 
@@ -769,7 +799,7 @@ class PostgresAdapter(SystemAdapter):
         hint, and the run would report a sequential scan under an index's name.
         """
         sql = "EXPLAIN (FORMAT JSON) " + self._query_sql(query)
-        row = self._fetch_one(sql, (self._to_column(query.vector),))
+        row = self._fetch_one(sql, self._query_parameters(self._to_column(query.vector)))
         if row is None:
             raise AdapterError(
                 "EXPLAIN returned no plan",

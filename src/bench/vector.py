@@ -499,7 +499,13 @@ class VectorBenchmark:
         Nothing here is recorded. Warm-up that contributed to the reported
         numbers would be a measurement of a half-warm cache.
         """
+        # B-063 — o plano é conferido AQUI, uma vez, antes de qualquer consulta: dentro do
+        # laço medido um EXPLAIN por consulta acrescentaria uma ida ao servidor sob o relógio,
+        # e o número passaria a descrever o arnês. Antes do warm-up e não depois porque a
+        # verificação também é a primeira coisa que falha quando o índice não foi usado — e
+        # falhar antes de aquecer o cache é falhar barato.
         count = min(self.workload.warmup_queries, self.queries.shape[0])
+        adapter.verify_access_path(self._query(0))
         for index in range(count):
             adapter.execute(self._query(index))
         return count
