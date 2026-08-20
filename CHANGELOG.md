@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-20
+
 ### Fixed
 - **O arnês verifica o caminho de acesso em vez de só nomeá-lo.** `assert_index_used` existia,
   estava escrito com a disciplina certa, era citado por outro item como exemplar — e **não tinha
