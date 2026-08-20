@@ -1,0 +1,105 @@
+# release — cria a GitHub Release quando uma tag `v*` é empurrada.
+#
+# ORIGEM (2026-08-20): trazido do `theo-db`, onde foi escrito e exercitado no mesmo dia — três
+# releases publicadas, incluindo duas retroativas por `workflow_dispatch`. Copiado e não
+# reimplementado (Regra 9), com os caminhos adaptados: este repositório usa `ci/` e não `scripts/`.
+#
+# Os dois repositórios são INDEPENDENTES, então a cópia é deliberada: um workflow compartilhado
+# exigiria que um repo público consumisse workflow de outro, que é exatamente o que quebrou a
+# publicação de imagem do `theo-db` por três semanas.
+#
+# O DEFEITO QUE ISTO PREVINE (medido 2026-08-20): NENHUM workflow deste repositório criava release.
+# Zero ocorrências de `gh release`, `action-gh-release`, `softprops` ou gatilho `release:` nos nove
+# arquivos existentes. A consequência estava visível: `main` em 0.158.0 desde 2026-07-29, com
+# 0.159.0 e 0.160.0 escritas no CHANGELOG e nunca cortadas — duas afirmações de versão sem nada
+# que as tornasse verificáveis.
+#
+# RUNNER: `ubuntu-latest`, não o self-hosted. Este repositório é PÚBLICO e runner padrão do GitHub é
+# grátis e ilimitado nesse caso; a máquina `theodb-do` é paga, é ÚNICA e é SERIAL. Um release não pode
+# esperar atrás da fila de compilação — foi o que aconteceu com o `lint-rust`, medido em 66 a 120
+# minutos para um `cargo fmt --check`.
+#
+# NOTAS vêm do CHANGELOG, não do log de commits. `--generate-notes` derivaria das mensagens; a Regra 6
+# deste projeto diz que o CHANGELOG é o contrato escrito para quem consome. Publicar notas que ninguém
+# revisou, ao lado de notas que alguém escreveu, é trocar o contrato pelo rascunho.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # Para tag já existente cuja release falhou ou nunca foi criada — o caso das retroativas.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "tag existente (ex.: v0.159.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write   # criar a release e anexar o corpo; nada além disso
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  # NUNCA cancela: um release em andamento interrompido deixa tag sem release, que é
+  # exatamente o estado que este workflow existe para eliminar.
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # A árvore vem da BRANCH, não da tag — e a distinção custou uma corrida vermelha.
+      # A primeira versão fazia `ref: <tag>`, o que confunde o ALVO do release com a FONTE da
+      # ferramenta. Medido em 2026-08-20: as releases retroativas `v0.159.0` e `v0.160.0` morreram
+      # em `exit 127` porque `ci/changelog-section.sh` foi escrito HOJE e não existe naquelas
+      # árvores. O CHANGELOG tem o mesmo problema e é pior: a seção de uma versão antiga descreve o
+      # que era conhecido ANTES dela, e pode ter sido corrigida depois.
+      #
+      # A tag continua sendo verificada (o passo seguinte exige que seja ancestral de `main`) e é o
+      # que a release aponta. Ela só deixa de ser de onde lemos o texto.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # histórico + tags, para a checagem de ancestralidade e o `--verify-tag`
+
+      - name: A tag aponta para um commit alcançável por `main`?
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          git fetch --quiet origin main
+          if git merge-base --is-ancestor "$TAG" origin/main; then
+            echo "OK: $TAG é ancestral de main"
+          else
+            echo "::error::$TAG NAO e alcancavel por main. Release so sai de codigo integrado" >&2
+            echo "(rules/git-safety.md § 1: main recebe apenas merges de release)" >&2
+            exit 1
+          fi
+
+      - name: Extrair as notas do CHANGELOG
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          # O script falha alto quando a versão não tem seção: uma release de corpo vazio
+          # afirmaria que não houve mudança, que é pior que release nenhuma.
+          ci/changelog-section.sh "$TAG" > /tmp/notes.md
+          echo "Notas extraidas: $(wc -l < /tmp/notes.md) linhas"
+
+      - name: Criar a release
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG ja existe — atualizando as notas em vez de duplicar"
+            gh release edit "$TAG" --notes-file /tmp/notes.md
+          else
+            # `--latest` DERIVADO, nunca implícito. O GitHub marca como "latest" a release criada por
+            # último, não a de maior versão — e em 2026-08-20 isso pôs a `v0.159.0` retroativa como
+            # latest, à frente da `v0.160.1` que acabara de sair. Uma release retroativa descreve o
+            # passado; anunciá-la como a atual manda todo mundo para a versão errada.
+            LATEST=$(git tag --sort=-v:refname | head -1)
+            if [ "$TAG" = "$LATEST" ]; then FLAG="--latest"; else FLAG="--latest=false"; fi
+            echo "maior tag do repo: $LATEST -> $TAG usa $FLAG"
+            gh release create "$TAG" --title "$TAG" --notes-file /tmp/notes.md --verify-tag "$FLAG"
+          fi
+          gh release view "$TAG" --json url --jq '"publicada: " + .url'
