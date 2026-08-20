@@ -75,6 +75,32 @@ jobs:
             exit 1
           fi
 
+      # B-087 — a versao que o PACOTE reporta tem de ser a da tag.
+      #
+      # Medido em 2026-08-20: `pyproject.toml` e `src/__init__.py` diziam ambos `0.1.0.dev0`, e
+      # nenhum foi tocado no corte da `v0.1.0`. Este workflow deriva tudo da tag e do CHANGELOG, e
+      # nunca lia nenhum dos dois — de modo que a discrepancia nao tinha como aparecer.
+      #
+      # Nao e cosmetico: `environment.py` grava `theodb-bench {__version__}` na captura de
+      # ambiente, que entra no bundle. Um bundle existe para ser reproduzivel por terceiros, e a
+      # versao da ferramenta que o produziu e parte disso.
+      #
+      # Roda ANTES de criar a release, que e o que o DoD pede por "no corte e nao depois": uma
+      # release ja publicada com a versao errada e uma correcao por acrescimo, nao por conserto.
+      - name: A versao do pacote casa com a tag?
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          DECLARADA=$(grep -m1 -E '^version *= *"' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          ESPERADA="${TAG#v}"
+          if [ "$DECLARADA" != "$ESPERADA" ]; then
+            echo "::error::pyproject.toml declara '$DECLARADA' e a tag e '$TAG' (esperado '$ESPERADA')." >&2
+            echo "Cada bundle produzido por esta versao gravaria '$DECLARADA' como a versao do arnes." >&2
+            exit 1
+          fi
+          echo "OK: pacote e tag dizem $DECLARADA"
+
       - name: Extrair as notas do CHANGELOG
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
