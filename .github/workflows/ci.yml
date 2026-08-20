@@ -44,6 +44,12 @@ jobs:
       - name: Typecheck
         run: mypy
 
+      # B-063 — código morto. Confiança 60 e não 80 por MEDIÇÃO: em 80 o portão passa limpo
+      # sobre a própria classe de defeito que o motivou (`unused method`, que o vulture pontua
+      # em 60). O baseline dos 71 achados pré-existentes tem sunset declarado no cabeçalho dele.
+      - name: Dead code
+        run: vulture src/ ci/vulture-baseline.py --min-confidence 60
+
       - name: Unit and integration tests
         run: pytest -q --durations=10
 

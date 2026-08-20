@@ -7,6 +7,27 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-20
+
+### Fixed
+- **O arnês verifica o caminho de acesso em vez de só nomeá-lo.** `assert_index_used` existia,
+  estava escrito com a disciplina certa, era citado por outro item como exemplar — e **não tinha
+  chamador nenhum**, além de levantar `ProgrammingError` se alguém o chamasse (dois placeholders,
+  um parâmetro). Uma corrida podia reportar `Seq Scan` sob o nome de um índice e nada notaria.
+  Agora todo índice construído tem de aparecer no plano, verificado uma vez na janela não
+  cronometrada. Nenhum número publicado é retratado: no tamanho da suíte registrada o planner
+  escolhe o índice nos três motores. (#B-063)
+
+### Added
+- **Um módulo de `analysis/` ou `bench/` não pode mais ficar sem chamador em silêncio.** Seis
+  estavam implementados e desconectados, incluindo o núcleo estatístico — código testado por
+  unidade que nenhuma corrida jamais executava. Três foram ligados; os três que restam estão
+  NOMEADOS num baseline que o teste obriga a encolher: ele falha tanto para um órfão novo quanto
+  para um do baseline que já ganhou importador. (#B-071)
+- **Detector de código morto na esteira.** O projeto não tinha nenhum, e é por isso que um método
+  sem chamador sobreviveu a toda a vida do arquivo. Roda em confiança 60 e não 80 por medição — em
+  80 o portão passaria limpo sobre a própria classe de defeito que o motivou. (#B-063)
+
 ## [0.1.0] - 2026-08-20
 
 ### Added
