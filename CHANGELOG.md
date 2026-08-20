@@ -17,6 +17,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   escolhe o índice nos três motores. (#B-063)
 
 ### Added
+- **Um módulo de `analysis/` ou `bench/` não pode mais ficar sem chamador em silêncio.** Seis
+  estavam implementados e desconectados, incluindo o núcleo estatístico — código testado por
+  unidade que nenhuma corrida jamais executava. Três foram ligados; os três que restam estão
+  NOMEADOS num baseline que o teste obriga a encolher: ele falha tanto para um órfão novo quanto
+  para um do baseline que já ganhou importador. (#B-071)
 - **Detector de código morto na esteira.** O projeto não tinha nenhum, e é por isso que um método
   sem chamador sobreviveu a toda a vida do arquivo. Roda em confiança 60 e não 80 por medição — em
   80 o portão passaria limpo sobre a própria classe de defeito que o motivou. (#B-063)
