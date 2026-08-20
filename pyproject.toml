@@ -17,7 +17,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4",
-    "ruff>=0.4",
+    # Piso subido de 0.4 para 0.16 depois de uma corrida de CI reprovada por FORMATACAO: a
+    # esteira instala o ruff mais novo e a maquina local tinha 0.11, que formata diferente e
+    # ainda emite UP038 (depreciada desde entao). Um piso largo num formatador nao da liberdade
+    # — da divergencia silenciosa entre quem escreve e quem valida.
+    "ruff>=0.16",
     "mypy>=1.8",
     # B-063 — detector de código morto. O arnês não tinha nenhum, e foi assim que um
     # método sem chamador sobreviveu sendo citado como exemplar por outro item.

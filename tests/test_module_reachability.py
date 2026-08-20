@@ -66,9 +66,7 @@ def _orfaos() -> set[str]:
     modulos = _modules_under("analysis", "bench")
     alcancados: set[str] = set()
     for path in SRC.rglob("*.py"):
-        alcancados |= _imported_modules(path) - {
-            name for name, p in modulos.items() if p == path
-        }
+        alcancados |= _imported_modules(path) - {name for name, p in modulos.items() if p == path}
     return set(modulos) - alcancados
 
 
