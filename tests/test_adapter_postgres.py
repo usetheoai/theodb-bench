@@ -1008,7 +1008,7 @@ def test_assert_index_used_binds_one_parameter_per_placeholder(
     query = KnnQuery(table="bench_vectors", vector=np.zeros(8, dtype=np.float32), k=10)
     visto: dict[str, object] = {}
 
-    def _spy(sql: str, params: tuple) -> tuple:
+    def _spy(sql: str, params: tuple[object, ...]) -> tuple[str]:
         visto["sql"] = sql
         visto["params"] = params
         return ('[{"Plan": {"Index Name": "bench_idx"}}]',)
