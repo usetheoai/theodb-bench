@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`PUBLICATION.md` passou a dizer que medição tomada fora do arnês não é publicável** — e por quê,
+  com o caso medido: três medições corretas de 2026-08-17 saíram de scripts avulsos e nenhuma era
+  reproduzível por terceiros. A segunda razão, que se subestima: um script que contorna o arnês também
+  contorna os **defeitos** dele, e três bugs reais daquele mesmo dia só apareceram porque o trabalho
+  foi forçado de volta pelo `theodb-bench run`. (#B-069)
+
 ## [0.2.0] - 2026-08-20
 
 ### Fixed
