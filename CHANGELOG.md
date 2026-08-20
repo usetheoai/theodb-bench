@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-20
+
 ### Fixed
 - **A versão que o pacote reporta deixou de poder divergir da tag da release.** `pyproject.toml` e
   `src/__init__.py` declaravam **dois** literais `0.1.0.dev0`, e nenhum foi tocado nos cortes da
