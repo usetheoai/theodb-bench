@@ -194,6 +194,35 @@ Outside those seams, the moderation in `~/.claude/CLAUDE.md` applies: an interfa
 
 ---
 
+## Branching flow
+
+```
+workspace ──PR──> develop ──PR + semver tag──> main
+ (work)          (integration)                (release)
+```
+
+- **`workspace`** is where work is born — single, permanent, never deleted per task. Every change commits here first.
+- **`develop`** integrates and never originates. It advances only through a `workspace → develop` PR.
+- **`main`** is release-only: a `develop → main` PR plus a semver tag on merge.
+
+**This was absent until 2026-08-20, and the absence was the finding.** The repository had exactly one branch
+(`workspace`), which was also the GitHub default — so every push went straight to the default with no PR gate,
+while `.github/workflows/ci.yml` already declared `branches: [main, develop, workspace]` plus a `pull_request`
+trigger. The flow was assumed by the CI and did not exist on the remote (`theo-db` BACKLOG, B-062).
+
+Now in place, and verified with `gh` on 2026-08-20: `main` created from `develop`; the default branch moved to
+`main`, because a default that is the working branch invites the accidental direct push; and branch protection
+on **both** `main` and `develop` requiring a pull request, with `enforce_admins` on and force-push and deletion
+denied.
+
+`required_approving_review_count` is **0**, deliberately. GitHub does not let an author approve their own pull
+request, so on a single-maintainer repository requiring one approval is a deadlock, not a gate. Zero still
+requires the PR — which is the guarantee that was missing — while leaving the merge possible.
+
+Two layers, two different guarantees, and they are not interchangeable (`rules/git-safety.md § 1`): the local
+hook governs where work is **born**; branch protection is what makes the PR **mandatory**. This repository had
+neither until now.
+
 ## Writing code here
 
 - **The runner is a measurement instrument.** It must minimize the probability that its own orchestration behavior alters what is being measured (TRD §1). An expensive collector runs between repetitions or has its overhead measured (TRD §18).
