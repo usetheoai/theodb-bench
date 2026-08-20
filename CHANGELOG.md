@@ -7,7 +7,29 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-20
+
 ### Added
+- Three shapes of vector query beyond "top-10, one vector at a time", which is what eleven
+  of the twelve registered suites asked: `vector/sift1m/k-sweep`, `vector/sift1m/filtered`
+  and `vector/sift1m/batch` (#B-073)
+- **Filtered retrieval is measurable end to end.** A corpus can be partitioned into tenants
+  and every query filtered to one, with recall scored against an oracle that filters too —
+  the only thing that tells "fast and right" apart from a graph index whose edges cross the
+  filter and answers fast and wrong (#B-073)
+- **A batch of probes is one round trip**, reported as one operation, so throughput is
+  batches per second. A system with no batch path is recorded as `unsupported` rather than
+  answered as N single queries, which would make every system look like it batches (#B-073)
+- `k` can be swept inside a run. The oracle is computed once at the largest k and sliced,
+  and the label carries the k, so two points measured at different k cannot be read as one
+  (#B-073)
+- A workload is refused at pre-flight when `k` exceeds the corpus, when a filter leaves
+  fewer rows per tenant than `k`, or when a batch is larger than the declared query set —
+  each of which would score the workload's own arithmetic as the system missing neighbours
+  (#B-073)
+- A run that fails as unreachable now records whether the system *restarted* — the bundle
+  says "went down and came back" or "stayed up while the connection broke", instead of
+  leaving the reader to open `docker logs` and `dmesg` (#B-076)
 - `theodb-bench capabilities` generates the capability x adapter matrix from the registry,
   and the README's table is now that output rather than a hand-typed one (#B-073)
 - `run --build-timeout SECONDS` raises the budget for bulk phases (index build, dataset
@@ -18,21 +40,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   in row ranges, and `--dataset` accepts one (#B-073)
 - Ground truth over a corpus that does not fit in memory, pinned equivalent to the
   resident oracle including its tie-break by ascending id (#B-073)
-
-### Fixed
-- A bulk dataset load no longer runs under the query time budget, which aborted a
-  20 000 000-vector load partway through the COPY. Index build and bulk load now share
-  one budget mechanism, because they are the same kind of unmeasured work (#B-073)
-
-### Changed
-- A vector benchmark takes its corpus through one abstraction with two implementations
-  (resident array, streamed source) instead of assuming an array at both call sites;
-  `head2head` now loads through it too, so it works at streamed scale (#B-073)
-- The metric arithmetic behind ground-truth distances is one implementation shared by
-  both corpus shapes, rather than one per shape (#B-073)
-
-### Added
-
 - **A corpus can be loaded without ever being resident** (billion-scale). `load_dataset` takes an array, so
   the whole corpus had to fit in memory: 1e9 x 128 float32 is 512 GB of RAM. `load_dataset_streaming` reads a
   `CorpusSource` chunk by chunk, so the ceiling becomes disk rather than memory. Binary COPY only — the text
@@ -51,7 +58,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
   removing exactly the neighbours a system failed to find.
 
 ### Changed
-
+- pgvector needing `ORDER BY` to repeat the distance expression (rather than name its alias)
+  is now a declared property of the adapter instead of a second copy of `_query_sql` and
+  `execute`. The two copies were how a filter added to one would silently miss the other
+  (#B-073)
+- A vector benchmark takes its corpus through one abstraction with two implementations
+  (resident array, streamed source) instead of assuming an array at both call sites;
+  `head2head` now loads through it too, so it works at streamed scale (#B-073)
+- The metric arithmetic behind ground-truth distances is one implementation shared by
+  both corpus shapes, rather than one per shape (#B-073)
 - What a billion vectors costs is now written down rather than assumed: **512 GB** of raw float32, **520 GB** in
   a `vector(128)` table, roughly **780 GB** with an HNSW index, and **4.7 hours** of load at the binary-COPY
   rate this harness reaches. The host this was measured on had **284 GB** free, so the capability is present
@@ -130,9 +145,133 @@ an omission: each reaches an external model, and without an endpoint there is no
   and `group_by_category` is **0.18× — five times slower than heap**, which is the `GROUP BY` pushdown gap
   measured earlier now carried by a validated bundle rather than by a script. Parquet reports `not measured`
   on every query, because no adapter implements that path.
+- **The TheoDB adapter now emits TheoDB's own access methods** (B-064). Measured against the image this
+  project's own Dockerfile builds — PostgreSQL 18.6, `theodb_rs` 1.5.0 — the harness emitted
+  `CREATE INDEX ... USING hnsw ("embedding" vector_l2_ops)` and the server answered
+  `access method "hnsw" does not exist`. `pg_am` holds `theodb_hnsw` and `theodb_ivfflat`, with
+  `theodb_hnsw_l2_ops` and friends. The bare `hnsw` name and the `vector_*_ops` classes do exist — in the
+  separate `vector` compatibility shim, which the image creates in `template1` rather than in the
+  `postgres` database a client reaches by default. So every indexed row of our own product's axis
+  returned `INVALID`, while the exact-search row measured and was published: the bundle was not empty,
+  it was partial. The engine's access-method name is now declared per adapter, while the bundle label
+  stays the index family. Verified: the same run is `VALID` with a real recall curve
+  (0.5928 → 0.7800 → 0.9650 across ef_search 16 / 64 / 256).
+- The TheoDB adapter loads `theodb_rs` into the session (B-064). Measured: a fresh session holds zero
+  `theodb%` rows in `pg_settings`, and no `hnsw.ef_search` either, until the LOAD runs — so every swept
+  `ef_search` was a placeholder and the search ran at the default of 64. The LOAD is now issued by the
+  base class for any adapter that declares a library, so a third engine cannot forget it.
+- The server version reaches the bundle alongside the extension version, for every adapter that has an
+  extension (B-064). One machine, one afternoon: TheoDB on PostgreSQL 18.6, pgvector on 17.11, AlloyDB
+  Omni on 17.9. The comparison crosses a major version, and the only bundle that hid which PostgreSQL it
+  ran on was our own product's, because its override replaced the base version instead of composing with
+  it. Three separate implementations became one.
+- Index parameters are rendered by type instead of forced through `int()` (B-059). Measured:
+  `scann` accepts `quantizer='sq8'`, a string, and the previous renderer raised a bare
+  `ValueError` with no phase, system or option name. Strings are now quoted and escaped through
+  the existing literal helper; a type the renderer does not know is refused with an
+  `AdapterError` rather than coerced, because a benchmark definition carrying a list where a
+  scalar belongs is broken, and stringifying it would put an unintended index configuration into
+  a published measurement.
+- Operator classes are declared per adapter instead of by one shared table (B-059). Measured:
+  the `scann` access method names its three classes `cosine`, `dot_product` and `l2` — none of
+  pgvector's `vector_*_ops`. The lookup reads the table off the concrete class, so an adapter
+  cannot inherit the wrong convention by accident.
+- The contract test asserting that every adapter reports its effective search parameters is now
+  parametrized off the registry instead of a written-out list (B-059). The list version was
+  measured passing while `alloydbomni` was already registered and uncovered: a test that
+  enumerates what it claims to cover universally excludes every adapter added after it was
+  written, and reports green for doing so.
+- A search parameter is now **verified in force before anything is measured** (B-060). The
+  harness already refused to report a number when the planner ignored the index
+  (`assert_index_used`); it did not refuse when the *knob* was ignored — the `SET` was issued
+  and nothing read the value back. Measured on PostgreSQL 18: `SET nao.existe = 999` succeeds,
+  `current_setting` hands back `999`, and `pg_settings` holds no such row. An unregistered
+  namespaced GUC is accepted as a placeholder, so `current_setting` cannot detect it and
+  `pg_settings` can. The gate reads `setting` and `source` from `pg_settings` and refuses when
+  the GUC is absent, when the value diverges from what was sent, or when `source` is still
+  `default`.
+- The bundle records the search parameters **in force** alongside those requested, keyed by GUC
+  name (B-060). The two are not always equal: `probes` is clamped to the list count, so a
+  request of 10000 on a 10k-row table is sent as the clamp — and `points[].parameters` was built
+  from the request, before the knobs were applied. No schema version changed: that field is
+  already declared as an open object of scalars.
+- `SystemAdapter.effective_search_parameters()` is part of the contract, and every registered
+  adapter answers it — including `FakeAdapter`, which is the double the runner's own tests
+  exercise most, so a contract that skipped it would be untested where it runs most (B-060).
+- Versioned JSON schemas for every machine-readable artifact: benchmark,
+  manifest, environment, dataset, system, validation, result, statistics,
+  regression, pareto and summary. Artifacts are validated before being written,
+  so an invalid file never lands in a bundle.
+- `theodb-bench doctor`: fifteen host checks reporting PASS, WARN, FAIL or
+  UNAVAILABLE. Which checks are mandatory depends on the profile, so a laptop
+  can run a smoke benchmark and cannot produce a release claim.
+- `theodb-bench env`: full environment capture from procfs and sysfs, with
+  every undeterminable field recorded as an explicit absence carrying its
+  reason.
+- Immutable run bundles: finalization freezes the manifest and every raw
+  measurement, while still allowing re-analysis to add new derived artifacts.
+- Resource isolation with escape detection: a subprocess that leaves the
+  declared CPU allocation is caught even on hosts where nothing could be
+  enforced.
+- Telemetry collectors (process, perf) that can be switched off and that
+  measure their own overhead. A counter that could not be collected is recorded
+  as absent, never as zero.
+- Dataset layer identifying datasets by checksum: `dataset list`, `verify` and
+  `fetch`, with atomic download and refusal to silently replace mismatched
+  bytes.
+- System adapter contract plus four adapters: a deterministic fake that
+  produces nine real failure modes on demand, upstream PostgreSQL, pgvector and
+  TheoDB.
+- Vector ANN workload with untimed warm-up, per-configuration index isolation,
+  query caps that appear in the label, and recall computed by the benchmark
+  from its own oracle.
+- Eleven-phase run orchestrator producing a complete, validated, immutable
+  bundle.
+- Analysis: recall by distance threshold following ANN-Benchmarks, nDCG, MRR,
+  recall@n, latency percentiles, best-of-N throughput, aggregation that keeps
+  every repetition, stability detection, Pareto frontiers and matched-quality
+  selection.
+- ANN dataset readers for ANN-Benchmarks HDF5 and the fvecs/ivecs family, and
+  `theodb-bench run --dataset` to measure a verified corpus. Published
+  distances are never read; recall recomputes them from the vectors.
+- Reciprocal rank fusion, as an offline twin of the system's own fusion so the
+  two can be compared rather than one trusted.
+- Retrieval suite: lexical, dense, hybrid RRF and hybrid plus rerank over one
+  corpus and one query set, reporting nDCG@10, Recall@k and MRR alongside
+  throughput, with model latency in its own stage.
+- Model endpoint abstraction (mock, local, remote) where only the deterministic
+  mock may back a regression gate, and the mock's latency is required to be
+  non-zero because an instant model changes the loop's concurrency regime.
+- Operations suite measuring the foreground write clock and the
+  time-to-freshness clock separately, across insert, update, backlog drain and
+  worker saturation.
+- Graph suite: 1/2/3-hop, BFS, fanout sweep, build and rebuild, with every
+  traversal validated against an oracle before its timing is accepted.
+- Analytical suite comparing row, columnar and Parquet execution on identical
+  data, with per-stage timings and answer validation.
+- Paired significance testing: randomisation test, bootstrap confidence
+  interval and t-test cross-check, with Monte-Carlo correction and a fixed
+  seed. Comparative significance claims are now possible rather than
+  forbidden.
+- Regression comparison that fails closed on an incomparable baseline and
+  reports ADVISORY for any threshold not derived from a measured noise floor.
+- Reports in both halves: a human report that leads with status and profile,
+  and a machine summary carrying provenance and limitations.
+- CI in two classes: shared correctness CI whose numbers are explicitly
+  discarded, and a dedicated benchmark workflow that never triggers on a pull
+  request.
+- Methodology documents covering the measurement-integrity invariants and the
+  agent workload surface.
+- Agent workload is now the primary benchmark surface; the seven capability
+  surfaces are components that explain an agent result rather than substitutes
+  for it.
+- Dataset manifests are JSON rather than YAML
+  (`docs/decisions/0002-json-dataset-manifests.md`).
 
 ### Fixed
-
+- A bulk dataset load no longer runs under the query time budget, which aborted a
+  20 000 000-vector load partway through the COPY. Index build and bulk load now share
+  one budget mechanism, because they are the same kind of unmeasured work (#B-073)
 - The `filtered_sum` SQL filtered `quantity < 24` while the benchmark's oracle filters `category = 'a'`
   (B-067). It was copied from a published TPC-H-shaped query without reading the oracle that already existed,
   and **the harness caught it**: the run came back INVALID on both storage paths rather than reporting a fast
@@ -328,134 +467,6 @@ an omission: each reaches an external model, and without an endpoint there is no
   were one operating point. Each adapter now declares the knobs it understands, and a request naming
   anything else fails the run instead of relabelling a default. The same command that produced the
   fictional rows now reports `INVALID`.
-
-### Changed
-
-- **The TheoDB adapter now emits TheoDB's own access methods** (B-064). Measured against the image this
-  project's own Dockerfile builds — PostgreSQL 18.6, `theodb_rs` 1.5.0 — the harness emitted
-  `CREATE INDEX ... USING hnsw ("embedding" vector_l2_ops)` and the server answered
-  `access method "hnsw" does not exist`. `pg_am` holds `theodb_hnsw` and `theodb_ivfflat`, with
-  `theodb_hnsw_l2_ops` and friends. The bare `hnsw` name and the `vector_*_ops` classes do exist — in the
-  separate `vector` compatibility shim, which the image creates in `template1` rather than in the
-  `postgres` database a client reaches by default. So every indexed row of our own product's axis
-  returned `INVALID`, while the exact-search row measured and was published: the bundle was not empty,
-  it was partial. The engine's access-method name is now declared per adapter, while the bundle label
-  stays the index family. Verified: the same run is `VALID` with a real recall curve
-  (0.5928 → 0.7800 → 0.9650 across ef_search 16 / 64 / 256).
-- The TheoDB adapter loads `theodb_rs` into the session (B-064). Measured: a fresh session holds zero
-  `theodb%` rows in `pg_settings`, and no `hnsw.ef_search` either, until the LOAD runs — so every swept
-  `ef_search` was a placeholder and the search ran at the default of 64. The LOAD is now issued by the
-  base class for any adapter that declares a library, so a third engine cannot forget it.
-- The server version reaches the bundle alongside the extension version, for every adapter that has an
-  extension (B-064). One machine, one afternoon: TheoDB on PostgreSQL 18.6, pgvector on 17.11, AlloyDB
-  Omni on 17.9. The comparison crosses a major version, and the only bundle that hid which PostgreSQL it
-  ran on was our own product's, because its override replaced the base version instead of composing with
-  it. Three separate implementations became one.
-- Index parameters are rendered by type instead of forced through `int()` (B-059). Measured:
-  `scann` accepts `quantizer='sq8'`, a string, and the previous renderer raised a bare
-  `ValueError` with no phase, system or option name. Strings are now quoted and escaped through
-  the existing literal helper; a type the renderer does not know is refused with an
-  `AdapterError` rather than coerced, because a benchmark definition carrying a list where a
-  scalar belongs is broken, and stringifying it would put an unintended index configuration into
-  a published measurement.
-- Operator classes are declared per adapter instead of by one shared table (B-059). Measured:
-  the `scann` access method names its three classes `cosine`, `dot_product` and `l2` — none of
-  pgvector's `vector_*_ops`. The lookup reads the table off the concrete class, so an adapter
-  cannot inherit the wrong convention by accident.
-- The contract test asserting that every adapter reports its effective search parameters is now
-  parametrized off the registry instead of a written-out list (B-059). The list version was
-  measured passing while `alloydbomni` was already registered and uncovered: a test that
-  enumerates what it claims to cover universally excludes every adapter added after it was
-  written, and reports green for doing so.
-- A search parameter is now **verified in force before anything is measured** (B-060). The
-  harness already refused to report a number when the planner ignored the index
-  (`assert_index_used`); it did not refuse when the *knob* was ignored — the `SET` was issued
-  and nothing read the value back. Measured on PostgreSQL 18: `SET nao.existe = 999` succeeds,
-  `current_setting` hands back `999`, and `pg_settings` holds no such row. An unregistered
-  namespaced GUC is accepted as a placeholder, so `current_setting` cannot detect it and
-  `pg_settings` can. The gate reads `setting` and `source` from `pg_settings` and refuses when
-  the GUC is absent, when the value diverges from what was sent, or when `source` is still
-  `default`.
-- The bundle records the search parameters **in force** alongside those requested, keyed by GUC
-  name (B-060). The two are not always equal: `probes` is clamped to the list count, so a
-  request of 10000 on a 10k-row table is sent as the clamp — and `points[].parameters` was built
-  from the request, before the knobs were applied. No schema version changed: that field is
-  already declared as an open object of scalars.
-- `SystemAdapter.effective_search_parameters()` is part of the contract, and every registered
-  adapter answers it — including `FakeAdapter`, which is the double the runner's own tests
-  exercise most, so a contract that skipped it would be untested where it runs most (B-060).
-- Versioned JSON schemas for every machine-readable artifact: benchmark,
-  manifest, environment, dataset, system, validation, result, statistics,
-  regression, pareto and summary. Artifacts are validated before being written,
-  so an invalid file never lands in a bundle.
-- `theodb-bench doctor`: fifteen host checks reporting PASS, WARN, FAIL or
-  UNAVAILABLE. Which checks are mandatory depends on the profile, so a laptop
-  can run a smoke benchmark and cannot produce a release claim.
-- `theodb-bench env`: full environment capture from procfs and sysfs, with
-  every undeterminable field recorded as an explicit absence carrying its
-  reason.
-- Immutable run bundles: finalization freezes the manifest and every raw
-  measurement, while still allowing re-analysis to add new derived artifacts.
-- Resource isolation with escape detection: a subprocess that leaves the
-  declared CPU allocation is caught even on hosts where nothing could be
-  enforced.
-- Telemetry collectors (process, perf) that can be switched off and that
-  measure their own overhead. A counter that could not be collected is recorded
-  as absent, never as zero.
-- Dataset layer identifying datasets by checksum: `dataset list`, `verify` and
-  `fetch`, with atomic download and refusal to silently replace mismatched
-  bytes.
-- System adapter contract plus four adapters: a deterministic fake that
-  produces nine real failure modes on demand, upstream PostgreSQL, pgvector and
-  TheoDB.
-- Vector ANN workload with untimed warm-up, per-configuration index isolation,
-  query caps that appear in the label, and recall computed by the benchmark
-  from its own oracle.
-- Eleven-phase run orchestrator producing a complete, validated, immutable
-  bundle.
-- Analysis: recall by distance threshold following ANN-Benchmarks, nDCG, MRR,
-  recall@n, latency percentiles, best-of-N throughput, aggregation that keeps
-  every repetition, stability detection, Pareto frontiers and matched-quality
-  selection.
-- ANN dataset readers for ANN-Benchmarks HDF5 and the fvecs/ivecs family, and
-  `theodb-bench run --dataset` to measure a verified corpus. Published
-  distances are never read; recall recomputes them from the vectors.
-- Reciprocal rank fusion, as an offline twin of the system's own fusion so the
-  two can be compared rather than one trusted.
-- Retrieval suite: lexical, dense, hybrid RRF and hybrid plus rerank over one
-  corpus and one query set, reporting nDCG@10, Recall@k and MRR alongside
-  throughput, with model latency in its own stage.
-- Model endpoint abstraction (mock, local, remote) where only the deterministic
-  mock may back a regression gate, and the mock's latency is required to be
-  non-zero because an instant model changes the loop's concurrency regime.
-- Operations suite measuring the foreground write clock and the
-  time-to-freshness clock separately, across insert, update, backlog drain and
-  worker saturation.
-- Graph suite: 1/2/3-hop, BFS, fanout sweep, build and rebuild, with every
-  traversal validated against an oracle before its timing is accepted.
-- Analytical suite comparing row, columnar and Parquet execution on identical
-  data, with per-stage timings and answer validation.
-- Paired significance testing: randomisation test, bootstrap confidence
-  interval and t-test cross-check, with Monte-Carlo correction and a fixed
-  seed. Comparative significance claims are now possible rather than
-  forbidden.
-- Regression comparison that fails closed on an incomparable baseline and
-  reports ADVISORY for any threshold not derived from a measured noise floor.
-- Reports in both halves: a human report that leads with status and profile,
-  and a machine summary carrying provenance and limitations.
-- CI in two classes: shared correctness CI whose numbers are explicitly
-  discarded, and a dedicated benchmark workflow that never triggers on a pull
-  request.
-- Methodology documents covering the measurement-integrity invariants and the
-  agent workload surface.
-- Agent workload is now the primary benchmark surface; the seven capability
-  surfaces are components that explain an agent result rather than substitutes
-  for it.
-- Dataset manifests are JSON rather than YAML
-  (`docs/decisions/0002-json-dataset-manifests.md`).
-
-### Fixed
-
 - **The recall oracle can no longer be OOM-killed by the corpus it is supposed to measure** (B-057).
   `brute_force_ground_truth` was measured being killed at **10.5 GB** of resident memory while building ground
   truth for a 512 MB corpus — one million 128-dimensional vectors against 500 queries, on a 16 GB host. The

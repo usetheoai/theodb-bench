@@ -21,6 +21,7 @@ from theodb_bench.bench.analytical import AnalyticalWorkload
 from theodb_bench.bench.protocol import Workload
 from theodb_bench.bench.vector import VectorWorkload
 from theodb_bench.errors import AdapterError, ConfigError, ErrorContext, Phase
+from theodb_bench.load import LoadModel
 
 AdapterFactory = Callable[..., SystemAdapter]
 
@@ -268,6 +269,123 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
             warmup_queries=50,
             indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
             search_sweep={"ef_search": (64, 256)},
+        ),
+        default_repetitions=3,
+    ),
+    # Query shapes beyond "top-10, one vector at a time", which is what eleven of
+    # the twelve suites asked before these existed.
+    #
+    # k, because the graph descent and the rescore pool both scale with it and
+    # not the same way: a system fast at k=10 can fall over at the k=100 a
+    # reranking pipeline asks for.
+    "vector/sift1m/k-sweep": BenchmarkEntry(
+        id="vector/sift1m/k-sweep",
+        description=(
+            "SIFT1M against theodb_hnsw at k in {1, 10, 100}. The oracle is "
+            "computed once at the largest k and sliced."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_000_000,
+            dimension=128,
+            query_count=500,
+            k=10,
+            k_sweep=(1, 10, 100),
+            warmup_queries=50,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (64, 256)},
+        ),
+        default_repetitions=3,
+    ),
+    # A filter, because it is the hardest case for a graph index -- the filter can
+    # disconnect it -- and the easiest to answer fast and wrongly. The oracle
+    # filters too, which is the only thing that tells "fast and right" apart from
+    # "fast and crossing the filter".
+    "vector/sift1m/filtered": BenchmarkEntry(
+        id="vector/sift1m/filtered",
+        description=(
+            "SIFT1M partitioned into 100 tenants, every query filtered to one, "
+            "and recall scored against a filtered oracle."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_000_000,
+            dimension=128,
+            query_count=500,
+            k=10,
+            filter_cardinality=100,
+            warmup_queries=50,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (64, 256)},
+        ),
+        default_repetitions=3,
+    ),
+    # A batch, because one trip carrying many probes is what an agent's step
+    # issues, and it is where per-query overhead stops dominating.
+    "vector/sift1m/batch": BenchmarkEntry(
+        id="vector/sift1m/batch",
+        description=(
+            "SIFT1M with 10 probes per round trip. Throughput is batches per "
+            "second; a batch that costs as much as ten singles has no batching."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_000_000,
+            dimension=128,
+            query_count=500,
+            k=10,
+            batch_size=10,
+            warmup_queries=50,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (64,)},
+        ),
+        default_repetitions=3,
+    ),
+    # Throughput under contention, which is the regime a database actually runs
+    # in and the one nothing here could measure until the load engine existed.
+    #
+    # Two suites, because they answer different questions and conflating them is
+    # how throughput numbers become unfalsifiable:
+    #
+    #   `concurrency` sweeps the CLIENT COUNT in a closed loop. It answers "how
+    #   far does this scale before it stops getting faster", and its latency is
+    #   service time -- with no schedule there is nothing to be late for.
+    #
+    #   `saturation` fixes the clients and sweeps the ARRIVAL RATE. It answers
+    #   "where does the queue start", which a closed loop cannot ask: a stalled
+    #   system simply receives fewer requests and the stall never enters the
+    #   distribution. Its response time includes the queueing, and the gap
+    #   between the two latencies IS the queue.
+    "vector/sift1m/concurrency": BenchmarkEntry(
+        id="vector/sift1m/concurrency",
+        description=(
+            "SIFT1M against theodb_hnsw with a client population, closed loop. "
+            "Sweeps the client count to find where throughput stops scaling."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_000_000,
+            dimension=128,
+            query_count=2_000,
+            k=10,
+            warmup_queries=100,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (64,)},
+            load=LoadModel(clients=16),
+        ),
+        default_repetitions=3,
+    ),
+    "vector/sift1m/saturation": BenchmarkEntry(
+        id="vector/sift1m/saturation",
+        description=(
+            "SIFT1M against theodb_hnsw under Poisson arrivals at a fixed client "
+            "count. Finds where the queue starts, which a closed loop cannot see."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_000_000,
+            dimension=128,
+            query_count=4_000,
+            k=10,
+            warmup_queries=200,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (64,)},
+            load=LoadModel(clients=32, arrival_rate=2_000.0),
         ),
         default_repetitions=3,
     ),

@@ -61,6 +61,15 @@ class CorpusBinding(Protocol):
         """Hand the corpus to the adapter by whichever path suits its shape."""
         ...
 
+    def subset(self, rows: npt.NDArray[np.integer[Any]]) -> CorpusBinding:
+        """A binding over just these rows, for a filtered oracle.
+
+        Returned as a binding rather than an array so a streamed corpus can
+        answer without materialising: the rows of one tenant out of a
+        20 000 000-vector corpus are still millions of vectors.
+        """
+        ...
+
 
 class ResidentCorpus:
     """A corpus held whole in an array."""
@@ -94,6 +103,9 @@ class ResidentCorpus:
     def load(self, adapter: Any, spec: Any) -> LoadOutcome:
         outcome: LoadOutcome = adapter.load_dataset(spec, self._vectors)
         return outcome
+
+    def subset(self, rows: npt.NDArray[np.integer[Any]]) -> CorpusBinding:
+        return ResidentCorpus(np.asarray(self._vectors)[rows])
 
 
 class StreamedCorpus:
@@ -134,6 +146,13 @@ class StreamedCorpus:
         selected = np.asarray(ids)[:, :k]
         gathered, _ = neighbour_vectors(self._source, selected)
         return distances_to_gathered(gathered, queries, metric)
+
+    def subset(self, rows: npt.NDArray[np.integer[Any]]) -> CorpusBinding:
+        # Gathered rather than streamed: a tenant's rows are scattered through
+        # the corpus, so a range read cannot express them. `neighbour_vectors`
+        # already reads exactly the rows named, distinct ones once.
+        gathered, _ = neighbour_vectors(self._source, np.asarray(rows).reshape(1, -1))
+        return ResidentCorpus(gathered[0])
 
     def load(self, adapter: Any, spec: Any) -> LoadOutcome:
         outcome: LoadOutcome = (

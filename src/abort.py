@@ -26,7 +26,9 @@ pointed the other way.
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
+from typing import Any
 
 from theodb_bench.errors import AdapterError, BenchError, SystemUnavailableError
 
@@ -149,3 +151,56 @@ def classify_abort(exc: BaseException) -> AbortKind:
         return AbortKind.REFUSED
     # Unrecognised: report the worst case. See the module docstring.
     return AbortKind.CRASHED
+
+
+def describe_unavailability(adapter: Any, run_started_at: datetime) -> str:
+    """Say whether the system went down and came back, or was merely unreachable.
+
+    Both arrive as `SystemUnavailableError` and both are `CRASHED`, but they are
+    different findings: one is a defect in the system under test, the other is
+    usually the path to it. Measured 2026-08-17 — a 20 000 000-vector index build
+    was OOM-killed and PostgreSQL recovered in 2.98 s, and separating the two took
+    reading `docker logs` and `dmesg` by hand, outside the bundle and unavailable
+    to anyone reading it later.
+
+    `pg_postmaster_start_time()` settles it in one query with no privileged
+    access: a start time later than the run's start means the server went down
+    and came back.
+
+    Deliberately not attempted: reading the server's own log, or the kernel's.
+    Both need access the harness has no claim to, and a benchmark that silently
+    requires root on the database host is one most people cannot run.
+
+    This describes a crash; it never reclassifies one. The abort stays `CRASHED`
+    and the run stays invalid.
+    """
+    probe = getattr(adapter, "postmaster_start_time", None)
+    if probe is None:
+        # Only the PostgreSQL family can answer this. Silence beats failing a
+        # run for a diagnostic it was never able to produce.
+        return ""
+
+    try:
+        started = probe()
+    except Exception as exc:  # the system is already known to be unreachable
+        return (
+            f"could not ask the system when it last started, so whether it "
+            f"restarted is unknown: {type(exc).__name__}"
+        )
+
+    if started is None:
+        return "could not ask the system when it last started; whether it restarted is unknown"
+
+    if started > run_started_at:
+        elapsed = started - run_started_at
+        return (
+            f"the system restarted {int(elapsed.total_seconds() // 60)} min into the run "
+            f"(postmaster start {started.isoformat()}, run start {run_started_at.isoformat()}). "
+            f"It went down and came back, which is a finding about the system under test."
+        )
+
+    return (
+        f"the system did not restart (postmaster up since {started.isoformat()}, before the "
+        f"run began). The connection to it failed while it stayed up, which usually points at "
+        f"the environment rather than the system under test."
+    )

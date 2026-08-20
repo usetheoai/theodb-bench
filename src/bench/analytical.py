@@ -20,7 +20,7 @@ presented as an audited TPC result.
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -351,7 +351,12 @@ class AnalyticalBenchmark:
                 loaded_any = True
         return total if loaded_any else None
 
-    def points(self, adapter: SystemAdapter, repetitions: int) -> list[PointResult]:
+    def points(
+        self,
+        adapter: SystemAdapter,
+        repetitions: int,
+        make_client: Callable[[], SystemAdapter] | None = None,
+    ) -> list[PointResult]:
         """Every query on every path, as one point each.
 
         The point is (query, path) rather than (query) because the paths are

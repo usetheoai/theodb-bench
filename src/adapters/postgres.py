@@ -46,6 +46,7 @@ import math
 import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, ClassVar, Final
 
 import numpy as np
@@ -54,6 +55,8 @@ from theodb_bench.adapters.base import (
     AnalyticalQuery,
     AnalyticalResult,
     AnalyticalTable,
+    BatchQuery,
+    BatchResult,
     BuildOutcome,
     Document,
     DocumentTableSpec,
@@ -360,7 +363,8 @@ class PostgresAdapter(SystemAdapter):
         self._execute(f"DROP TABLE IF EXISTS {table} CASCADE")
         self._execute(
             f"CREATE TABLE {table} (id integer PRIMARY KEY, "
-            f"{column} {self.column_type(spec.dimension)} NOT NULL)"
+            f"{column} {self.column_type(spec.dimension)} NOT NULL"
+            f"{self._filter_column(spec)})"
         )
         with (
             self._under_bulk_budget(),
@@ -381,6 +385,27 @@ class PostgresAdapter(SystemAdapter):
             rows_loaded=loaded,
             rows_expected=source.row_count,
         )
+
+    def postmaster_start_time(self) -> datetime | None:
+        """When the server last started, from the server's own clock.
+
+        Used only after a run has already failed as unreachable, to say whether
+        the system went down and came back or whether the path to it broke. The
+        two look identical from the client and are different findings.
+
+        Both timestamps come from the server so the answer does not depend on
+        drift between two machines, and a probe that cannot connect returns
+        `None` rather than a guess -- the system is known to be in trouble, and
+        an unanswered diagnostic is an honest outcome.
+        """
+        try:
+            row = self._fetch_one("SELECT pg_postmaster_start_time()")
+        except Exception:  # the system is already known to be unreachable
+            return None
+        if not row or row[0] is None:
+            return None
+        value = row[0]
+        return value if isinstance(value, datetime) else None
 
     @contextlib.contextmanager
     def _under_bulk_budget(self) -> Iterator[None]:
@@ -422,7 +447,8 @@ class PostgresAdapter(SystemAdapter):
         self._execute(f"DROP TABLE IF EXISTS {table} CASCADE")
         self._execute(
             f"CREATE TABLE {table} (id integer PRIMARY KEY, "
-            f"{column} {self.column_type(spec.dimension)} NOT NULL)"
+            f"{column} {self.column_type(spec.dimension)} NOT NULL"
+            f"{self._filter_column(spec)})"
         )
         # Streamed through COPY rather than batched INSERTs. Measured before the
         # change: one million SIFT-128 vectors took 122 s as a thousand
@@ -631,26 +657,108 @@ class PostgresAdapter(SystemAdapter):
             context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
         )
 
+    def _filter_column(self, spec: VectorTableSpec) -> str:
+        """The generated tenant column, when the workload filters.
+
+        Generated from the id rather than loaded as data: the partition is a
+        property of the row number, both sides agree on it by construction, and
+        the load path does not have to carry a second column through binary
+        COPY to say something the id already says.
+        """
+        if spec.filter_cardinality is None:
+            return ""
+        return (
+            f", tenant text GENERATED ALWAYS AS "
+            f"({_literal('t')} || (id % {int(spec.filter_cardinality)})::text) STORED"
+        )
+
+    def knn_sql(self, query: KnnQuery) -> str:
+        """The SQL a k-NN probe becomes. Public so a test can read it."""
+        return self._query_sql(query)
+
+    #: Whether `ORDER BY` repeats the distance expression instead of naming its
+    #: alias. pgvector's index is only chosen for the repeated form, and the
+    #: probe is then bound twice. Declared rather than reimplemented: the two
+    #: spellings existed as two `_query_sql` bodies, and a filter added to one
+    #: silently missed the other.
+    ORDER_REPEATS_DISTANCE: ClassVar[bool] = False
+
     def _query_sql(self, query: KnnQuery) -> str:
         table = _identifier(query.table)
         column = _identifier("embedding")
         distance = self.distance_expression(query.metric, column)
+        order = distance if self.ORDER_REPEATS_DISTANCE else "distance"
+        # A filtered probe restricts before ordering. The clause is what makes a
+        # graph index show whether its edges respect the filter: a system that
+        # descends across tenants answers fast and wrong, and only recall against
+        # a filtered oracle tells that apart from answering fast and right.
+        where = f"WHERE tenant = {_literal(query.tenant)} " if query.tenant is not None else ""
         # Deterministic tie-breaking by id: without it, equal distances resolve
         # by physical row order and the top-k boundary shifts between runs.
         return (
             f"SELECT id, {distance} AS distance FROM {table} "
-            f"ORDER BY distance, id LIMIT {int(query.k)}"
+            f"{where}ORDER BY {order}, id LIMIT {int(query.k)}"
         )
 
     def execute(self, query: KnnQuery) -> KnnResult:
         sql = self._query_sql(query)
         probe = self._to_column(query.vector)
+        # Bound once or twice, from the same declaration that shaped the ORDER BY:
+        # deriving it keeps the two from drifting apart.
+        parameters = (probe, probe) if self.ORDER_REPEATS_DISTANCE else (probe,)
         started = time.perf_counter()
-        rows = self._fetch_all(sql, (probe,))
+        rows = self._fetch_all(sql, parameters)
         elapsed = time.perf_counter() - started
         return KnnResult(
             ids=tuple(int(row[0]) for row in rows),
             distances=tuple(float(row[1]) for row in rows),
+            latency_seconds=elapsed,
+        )
+
+    def execute_batch(self, query: BatchQuery) -> BatchResult:
+        """Several probes in one round trip, as a single UNION ALL statement.
+
+        One statement, one round trip: that is the whole measurement. Looping
+        over `execute` here would report round-trip savings that never happened,
+        which is why the base class refuses rather than looping.
+
+        Each probe keeps its own `LIMIT k` inside a lateral subquery, because a
+        single ORDER BY over the union would return the k best *across* probes
+        rather than k for each.
+        """
+        if not query.vectors:
+            return BatchResult(ids=(), distances=(), latency_seconds=0.0)
+
+        table = _identifier(query.table)
+        column = _identifier("embedding")
+        distance = self.distance_expression(query.metric, column)
+        order = distance if self.ORDER_REPEATS_DISTANCE else "distance"
+
+        branches: list[str] = []
+        parameters: list[Any] = []
+        tenants = query.tenants or tuple(None for _ in query.vectors)
+        for probe_index, (vector, tenant) in enumerate(zip(query.vectors, tenants, strict=False)):
+            where = f"WHERE tenant = {_literal(tenant)} " if tenant is not None else ""
+            branches.append(
+                f"(SELECT {probe_index} AS probe, id, {distance} AS distance FROM {table} "
+                f"{where}ORDER BY {order}, id LIMIT {int(query.k)})"
+            )
+            column_value = self._to_column(vector)
+            parameters.extend(
+                (column_value, column_value) if self.ORDER_REPEATS_DISTANCE else (column_value,)
+            )
+
+        sql = " UNION ALL ".join(branches) + " ORDER BY probe, distance, id"
+        started = time.perf_counter()
+        rows = self._fetch_all(sql, tuple(parameters))
+        elapsed = time.perf_counter() - started
+
+        grouped: list[list[tuple[int, float]]] = [[] for _ in query.vectors]
+        for row in rows:
+            grouped[int(row[0])].append((int(row[1]), float(row[2])))
+        return BatchResult(
+            ids=tuple(tuple(i for i, _ in probe) for probe in grouped),
+            distances=tuple(tuple(d for _, d in probe) for probe in grouped),
             latency_seconds=elapsed,
         )
 
@@ -1152,27 +1260,9 @@ class PgvectorAdapter(PostgresAdapter):
                 mapping["ivfflat.probes"] = str(clamp_probes(int(value), lists))
         return mapping
 
-    def _query_sql(self, query: KnnQuery) -> str:
-        table = _identifier(query.table)
-        column = _identifier("embedding")
-        distance = self.distance_expression(query.metric, column)
-        return (
-            f"SELECT id, {distance} AS distance FROM {table} "
-            f"ORDER BY {distance}, id LIMIT {int(query.k)}"
-        )
-
-    def execute(self, query: KnnQuery) -> KnnResult:
-        sql = self._query_sql(query)
-        probe = self._to_column(query.vector)
-        started = time.perf_counter()
-        # The ORDER BY repeats the distance expression, so the probe is bound twice.
-        rows = self._fetch_all(sql, (probe, probe))
-        elapsed = time.perf_counter() - started
-        return KnnResult(
-            ids=tuple(int(row[0]) for row in rows),
-            distances=tuple(float(row[1]) for row in rows),
-            latency_seconds=elapsed,
-        )
+    #: pgvector's index is only chosen when `ORDER BY` repeats the distance
+    #: expression rather than naming the alias, so the probe is bound twice.
+    ORDER_REPEATS_DISTANCE: ClassVar[bool] = True
 
 
 class TheoDBAdapter(PgvectorAdapter):
