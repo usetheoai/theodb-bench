@@ -8,6 +8,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Three shapes of vector query beyond "top-10, one vector at a time", which is what eleven
+  of the twelve registered suites asked: `vector/sift1m/k-sweep`, `vector/sift1m/filtered`
+  and `vector/sift1m/batch` (#B-073)
+- **Filtered retrieval is measurable end to end.** A corpus can be partitioned into tenants
+  and every query filtered to one, with recall scored against an oracle that filters too —
+  the only thing that tells "fast and right" apart from a graph index whose edges cross the
+  filter and answers fast and wrong (#B-073)
+- **A batch of probes is one round trip**, reported as one operation, so throughput is
+  batches per second. A system with no batch path is recorded as `unsupported` rather than
+  answered as N single queries, which would make every system look like it batches (#B-073)
+- `k` can be swept inside a run. The oracle is computed once at the largest k and sliced,
+  and the label carries the k, so two points measured at different k cannot be read as one
+  (#B-073)
+- A workload is refused at pre-flight when `k` exceeds the corpus, when a filter leaves
+  fewer rows per tenant than `k`, or when a batch is larger than the declared query set —
+  each of which would score the workload's own arithmetic as the system missing neighbours
+  (#B-073)
 - A run that fails as unreachable now records whether the system *restarted* — the bundle
   says "went down and came back" or "stayed up while the connection broke", instead of
   leaving the reader to open `docker logs` and `dmesg` (#B-076)
@@ -28,6 +45,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   one budget mechanism, because they are the same kind of unmeasured work (#B-073)
 
 ### Changed
+- pgvector needing `ORDER BY` to repeat the distance expression (rather than name its alias)
+  is now a declared property of the adapter instead of a second copy of `_query_sql` and
+  `execute`. The two copies were how a filter added to one would silently miss the other
+  (#B-073)
 - A vector benchmark takes its corpus through one abstraction with two implementations
   (resident array, streamed source) instead of assuming an array at both call sites;
   `head2head` now loads through it too, so it works at streamed scale (#B-073)

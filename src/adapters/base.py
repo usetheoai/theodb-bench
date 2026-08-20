@@ -72,6 +72,10 @@ class VectorTableSpec:
     dimension: int
     metric: Metric = "l2"
     embedding_column: str = "embedding"
+    filter_cardinality: int | None = None
+    """When set, the table carries a `tenant` column partitioning the rows, so a
+    filtered query has something to filter on. `KnnQuery.tenant` existed in this
+    contract with no column behind it until this field did."""
 
 
 @dataclass(frozen=True)
@@ -107,6 +111,32 @@ class KnnQuery:
     search_parameters: dict[str, Any] = field(default_factory=dict)
     tenant: str | None = None
     """Filter value, when the workload exercises filtered retrieval."""
+
+
+@dataclass(frozen=True)
+class BatchQuery:
+    """Several nearest-neighbour probes in one round trip.
+
+    Kept apart from a list of `KnnQuery` because the point of a batch is that it
+    is *one* operation: throughput is batches per second, and a batch of ten that
+    costs as much as ten singles has no batching in it at all.
+    """
+
+    table: str
+    vectors: tuple[VectorArray, ...]
+    k: int
+    metric: Metric = "l2"
+    search_parameters: dict[str, Any] = field(default_factory=dict)
+    tenants: tuple[str | None, ...] = ()
+
+
+@dataclass(frozen=True)
+class BatchResult:
+    """What a batch returned: one id list per probe, and one timing for the trip."""
+
+    ids: tuple[tuple[int, ...], ...]
+    distances: tuple[tuple[float, ...], ...]
+    latency_seconds: float
 
 
 @dataclass(frozen=True)
@@ -346,6 +376,21 @@ class SystemAdapter(ABC):
 
     @abstractmethod
     def execute(self, query: KnnQuery) -> KnnResult: ...
+
+    def execute_batch(self, query: BatchQuery) -> BatchResult:
+        """Several probes in one round trip.
+
+        Not abstract, and the default *refuses* rather than looping over
+        `execute`: answering a batch as N singles and reporting it as a batch
+        would make every system look like it batches, which is the one thing a
+        batch measurement exists to distinguish.
+        """
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} has no batch probe path, and answering a batch as "
+            f"{len(query.vectors)} single queries would report round-trip savings "
+            f"that did not happen",
+            context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+        )
 
     @abstractmethod
     def collect_stats(self) -> dict[str, Any]:
