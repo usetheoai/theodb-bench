@@ -7,6 +7,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A versão que o pacote reporta deixou de poder divergir da tag da release.** `pyproject.toml` e
+  `src/__init__.py` declaravam **dois** literais `0.1.0.dev0`, e nenhum foi tocado nos cortes da
+  `v0.1.0` nem da `v0.2.0` — o `release.yml` deriva tudo da tag e do CHANGELOG, e nunca lia nenhum
+  dos dois. Não é cosmético: `environment.py` grava `theodb-bench {__version__}` na captura de
+  ambiente, que entra no bundle, e um bundle existe para ser reproduzível por terceiros. Agora há
+  uma fonte só (`importlib.metadata`) e um portão que reprova o corte quando pacote e tag divergem.
+  **Nenhum bundle publicado registrou a versão errada** — medido: nenhum artefato fora das fixtures
+  de teste carrega o campo. (#B-087)
+
 ### Added
 - **`PUBLICATION.md` passou a dizer que medição tomada fora do arnês não é publicável** — e por quê,
   com o caso medido: três medições corretas de 2026-08-17 saíram de scripts avulsos e nenhuma era
