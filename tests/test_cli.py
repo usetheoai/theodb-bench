@@ -229,3 +229,19 @@ def test_um_plano_sem_declaracao_permanece_vazio() -> None:
 
     assert plano.cpu_set is None
     assert plano.memory_bytes is None
+
+
+def test_sufixo_simples_segue_systemd_e_docker_base_1024() -> None:
+    """MEDIDO em 2026-08-21, e custou uma corrida: `systemd-run -p MemoryMax=48G` cria um cgroup de
+    48 GiB (systemd usa base 1024 para K/M/G/T), enquanto este parser usava base 1000. O cgroup
+    ficava em 51,5 GB, a declaracao em 48,0 GB, e o arnes reportava — corretamente — que o cgroup
+    permitia MAIS que o declarado.
+
+    O mesmo texto ia para os dois lugares e significava coisas diferentes. Alinhar com systemd e
+    docker e o que remove a armadilha; as formas explicitas continuam sem ambiguidade.
+    """
+    from theodb_bench.cli import parse_memory_size
+
+    assert parse_memory_size("48G") == 48 * 1024**3   # como systemd e docker leem
+    assert parse_memory_size("48GiB") == 48 * 1024**3
+    assert parse_memory_size("48GB") == 48 * 1000**3  # SI explicito continua SI

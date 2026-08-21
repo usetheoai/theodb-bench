@@ -687,12 +687,16 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# Sufixo SIMPLES (K/M/G/T) segue systemd e docker: base 1024. Nao e a convencao SI, e e deliberado —
+# o mesmo texto vai para `systemd-run -p MemoryMax=` e para `--memory`, e se cada lado o lesse numa
+# base o cgroup ficaria mais frouxo que a declaracao. Medido: `48G` virava 51,5 GB de um lado e
+# 48,0 GB do outro, e o portao reprovava com razao. As formas explicitas nao tem ambiguidade.
 _UNIDADES: dict[str, int] = {
     "": 1, "b": 1,
-    "k": 1000, "kb": 1000, "kib": 1024,
-    "m": 1000**2, "mb": 1000**2, "mib": 1024**2,
-    "g": 1000**3, "gb": 1000**3, "gib": 1024**3,
-    "t": 1000**4, "tb": 1000**4, "tib": 1024**4,
+    "k": 1024, "kb": 1000, "kib": 1024,
+    "m": 1024**2, "mb": 1000**2, "mib": 1024**2,
+    "g": 1024**3, "gb": 1000**3, "gib": 1024**3,
+    "t": 1024**4, "tb": 1000**4, "tib": 1024**4,
 }
 
 
