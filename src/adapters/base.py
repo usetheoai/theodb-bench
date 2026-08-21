@@ -589,6 +589,33 @@ class SystemAdapter(ABC):
         """
         return {}
 
+    def assert_analytical_path(
+        self, table: AnalyticalTable, query: AnalyticalQuery | None = None
+    ) -> None:
+        """Provar que a consulta analítica medida usou MESMO o caminho que ela declara.
+
+        Irmão de :meth:`verify_access_path`, declarado aqui pela mesma razão: sem ele na base,
+        o arnês não tem como PEDIR a prova a um adapter qualquer — e foi exatamente por isso
+        que ela nunca foi pedida. O `PostgresAdapter` implementa as duas provas (catálogo, via
+        `pg_class.relam`, e plano, via `ANALYTICAL_PLAN_MARKERS`), o `AlloyDbOmniAdapter`
+        estende com três fatos separados (engine ligado, store populado, planner preferindo
+        colunar) — e **o caminho de medição nunca chamou nenhuma das duas**. O único chamador
+        no repositório era um `super()` dentro do próprio override.
+
+        O que ele impede é preciso: **residência prova onde as linhas estão; só o plano prova
+        o que rodou.** Medido no próprio adapter a um milhão de linhas, a MESMA tabela colunar
+        leva 1407 ms com a pushdown desligada (plano `Seq Scan`) e 108 ms com ela ligada
+        (`Custom Scan theodb_columnar_agg`) — **13x, decidido por um GUC**, com o catálogo
+        reportando tabela colunar nos dois casos. Sem esta chamada, a corrida publica o número
+        do heap sob o rótulo do colunar, e o [[B-058]] registra um avaliador terceiro que
+        perdeu uma corrida inteira exatamente assim, sem erro e sem aviso.
+
+        Default é silêncio honesto, nunca `NotImplementedError`: um motor sem planner não tem
+        caminho a conferir, e quebrar a substituibilidade num método que o arnês chama para
+        todo adapter registrado seria pior que não verificar.
+        """
+        return None
+
     def verify_access_path(self, query: KnnQuery) -> None:
         """Confirmar que a consulta medida usa MESMO o índice que esta corrida construiu.
 

@@ -33,7 +33,7 @@ from theodb_bench.adapters.base import (
 )
 from theodb_bench.analysis.statistics import LatencySummary, summarise_latency
 from theodb_bench.bench.vector import PointResult, RepetitionResult
-from theodb_bench.errors import ConfigError, ErrorContext, Phase
+from theodb_bench.errors import BenchError, ConfigError, ErrorContext, Phase
 
 ROW: Final[str] = "row"
 COLUMNAR: Final[str] = "columnar"
@@ -278,6 +278,31 @@ class AnalyticalBenchmark:
             return measurement
 
         table = self.workload.table_for(path)
+
+        # ANTES de cronometrar: o plano usou o caminho que esta medida DECLARA?
+        #
+        # `assert_analytical_path` existia, provava residencia E plano, e tinha ZERO chamadas em
+        # `src/bench/` — o unico chamador no repositorio era um `super()` dentro do proprio
+        # override do AlloyDB. O adapter do Omni chegou a escrever uma prova de tres fatos
+        # (engine ligado, store populado, planner preferindo colunar) que nada nunca pedia.
+        #
+        # Residencia prova onde as linhas estao; so o plano prova o que rodou. Medido no adapter
+        # a um milhao de linhas: a MESMA tabela colunar leva 1407 ms com a pushdown desligada e
+        # 108 ms com ela ligada — 13x, decidido por um GUC, com o catalogo reportando colunar nos
+        # dois casos.
+        #
+        # `invalid` e nao excecao: um caminho que caiu para heap invalida ESSA medida, nao a
+        # corrida. Abortar tudo perderia heap e Parquet, que estao corretos — e e a mesma decisao
+        # que a resposta errada do oraculo ja toma logo abaixo.
+        try:
+            adapter.assert_analytical_path(table, query)
+        except BenchError as exc:
+            measurement.status = "invalid"
+            measurement.status_detail = (
+                f"{path} declara o caminho e a prova falhou para {query.id!r}: {exc}"
+            )
+            return measurement
+
         for _ in range(self.workload.warmup_queries):
             adapter.execute_analytical(table, query)
 

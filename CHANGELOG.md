@@ -7,6 +7,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A prova de que a consulta analítica usou o caminho que ela declara nunca era pedida.**
+  `assert_analytical_path` existia no `PostgresAdapter` — provando residência pelo `pg_class.relam`
+  **e** que o plano usou o caminho, pelo `ANALYTICAL_PLAN_MARKERS` — e o `AlloyDbOmniAdapter` chegou a
+  estendê-la com três fatos separados (engine ligado, store populado, planner preferindo colunar).
+  **Zero chamadas em `src/bench/`**: o único chamador no repositório era um `super()` dentro do próprio
+  override. É o defeito que o #B-063 documenta sobre o `assert_index_used`, repetido para a outra
+  família — e a base sequer declarava o método, então o arnês não tinha como pedi-lo a um adapter
+  qualquer.
+  .
+  O que isso permitia é o que o #B-058 registra ter custado uma corrida inteira a um avaliador
+  terceiro: **medir heap sob o rótulo do colunar**, sem erro e sem aviso. Medido no próprio adapter a
+  um milhão de linhas, a MESMA tabela colunar leva 1407 ms com a pushdown desligada e 108 ms com ela
+  ligada — 13×, decidido por um GUC, com o catálogo reportando colunar nos dois casos. Residência
+  prova onde as linhas estão; só o plano prova o que rodou.
+  .
+  A prova passa a ser pedida **antes de qualquer cronometragem**, e um caminho que não se prova produz
+  medida `invalid` com a razão — nunca um número. Quatro testes, um deles afirmando que **nada** foi
+  cronometrado quando a prova falha. (#B-058)
+
 ### Added
 - **A família de retrieval deixou de ser órfã, e o pilar lexical passou a ter corpus com julgamento
   humano.** O `bench/retrieval.py` trazia nDCG@10, Recall@k, MRR e quatro pipelines desde sempre, e
