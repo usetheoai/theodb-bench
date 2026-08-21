@@ -7,6 +7,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **O arnês não conseguia buscar o dataset que ele mesmo declara.** Medido num host limpo: a origem do
+  `sift-128-euclidean` responde **403 Forbidden** ao `User-Agent` default do `urllib`
+  (`Python-urllib/3.12`) e **200** ao do `curl` — o CDN filtra por agente. O defeito só não aparecia
+  porque toda corrida anterior encontrou o arquivo já em disco, que é o modo de falha que só um host
+  limpo revela. O agente passa a **identificar o cliente** em vez de fingir ser navegador: um arnês cuja
+  premissa é medir honestamente não começa mentindo na primeira requisição, e há teste fixando isso.
+- **A causa de um erro deixou de sumir na mensagem legível.** Uma corrida abortou com
+  `could not connect to theodb [phase=bootstrap system=theodb]` e nada mais; a causa real —
+  `FATAL: role "root" does not exist` — estava anexada em `cause` e ia para o `as_dict()`, mas o
+  `system.log` do bundle formata `{exc}`, ou seja, o `__str__`, que a descartava. **Diagnosticar custou
+  duas corridas de benchmark** com a resposta parada no log do servidor desde o primeiro segundo. Um
+  lugar consertado, toda renderização humana corrigida.
+
 ### Added
 - **`vector/sift1m/ef-default`** — SIFT1M contra o `theodb_hnsw` nos **dois defaults de `ef_search` em
   disputa**: 40 (do pgvector) e 64 (nosso). Existe porque o [[B-018]] mediu que o planner larga o índice
