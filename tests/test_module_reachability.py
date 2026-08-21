@@ -33,7 +33,10 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 #: é hipotético: todo número lexical que este projeto publicou saiu de script ad-hoc, e o `m186`
 #: chegou a atribuir ao PRODUTO um limite que era do script — o [[B-014]] depois mediu que
 #: `bm25_search` sempre aceitou consulta multi-termo.
-ORFAOS_CONHECIDOS = frozenset({"bench.graph", "bench.operations"})
+#: 2026-08-21 — `bench.graph` SAIU. Ligado por `graph/synthetic/vs-recursive-sql`, com o baseline de
+#: `WITH RECURSIVE` que o [[B-007]] pede. O custo de ele ter ficado orfao esta medido no proprio
+#: item: 23 funcoes de grafo expostas no binario e nenhum artefato comparando o pilar com nada.
+ORFAOS_CONHECIDOS = frozenset({"bench.operations"})
 
 
 def _modules_under(*packages: str) -> dict[str, Path]:

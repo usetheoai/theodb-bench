@@ -517,6 +517,28 @@ class SystemAdapter(ABC):
             context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
         )
 
+    def traverse_recursive_sql(self, query: TraversalQuery) -> TraversalResult:
+        """A mesma travessia por SQL recursivo — o que o usuario faria SEM nos.
+
+        O [[B-007]] pede exatamente esta comparacao, e a escolha do baseline e boa: *"SQL recursivo
+        no proprio Postgres serve, e e o que o usuario faria sem nos"*. Ela e mais honesta que
+        comparar contra um banco de grafo dedicado, porque responde a pergunta que o usuario tem —
+        *vale a pena instalar isto em vez de escrever um `WITH RECURSIVE`?* — e nao a pergunta de
+        quem ja decidiu usar grafo.
+
+        Distinto de `bench.graph.timed_reference_traversal`, que e um passeio em dicionario na
+        memoria: aquele e um PISO (sem durabilidade, sem concorrencia, sem armazenamento), este e
+        uma ALTERNATIVA REAL, no mesmo servidor, sobre os mesmos dados, pagando o mesmo MVCC.
+
+        Default recusa: um motor sem SQL nao tem `WITH RECURSIVE`, e fingir que tem produziria um
+        baseline que nao existe.
+        """
+        self.require("graph")
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} has no recursive-SQL traversal to compare against",
+            context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
+        )
+
     def graph_stats(self) -> dict[str, Any]:
         """Structure size, for bytes-per-edge accounting."""
         raise UnsupportedCapabilityError(
