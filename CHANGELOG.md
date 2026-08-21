@@ -7,6 +7,27 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`retrieval/scifact/concurrency`** — o pilar lexical sob **população de clientes**, laço fechado,
+  varrendo 1 a 80. O [[B-043]] mede que o QPS satura em ~20 clientes e que de 20 a 80 o throughput não
+  sobe 1% enquanto a p99 cresce 4× — e **a causa não está medida**, com o próprio cliente Python do
+  arnês entre as candidatas. Sem o arnês saber dirigir N clientes, essa hipótese não podia nem ser
+  posta ao lado de um gerador externo, que é o que o DoD do item exige.
+  .
+  O ponto reporta **dois relógios**: `response` (o que o cliente vê, com fila) e `service` (o que o
+  servidor levou). Se a resposta cresce e o serviço fica plano, o teto é fila contra capacidade fixa;
+  se o serviço também cresce, o servidor está ficando mais lento. Reportar só um deixaria o leitor
+  concluir o que quisesse.
+  .
+  Qualidade **não** é reportada sob concorrência: as consultas dão a volta, então um nDCG médio seria
+  sobre um conjunto repetido e não sobre o julgado. (#B-043)
+
+### Changed
+- **O pool de conexões por cliente passou a ter uma implementação, não duas.** `load.client_pool`,
+  extraído do `VectorBenchmark._client_pool` quando o retrieval precisou do mesmo. A regra que mais
+  importa — *serializar N clientes numa conexão mede a trava do cliente e reporta como sendo o
+  banco* — não pode divergir entre duas cópias. (#B-043)
+
 ## [0.5.0] - 2026-08-21
 
 ### Added
