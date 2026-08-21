@@ -6,6 +6,7 @@ Dois arquivos, com responsabilidades que não se misturam.
 |---|---|---|
 | `provision.sh` | **o que a máquina precisa ter** — fonte de verdade | host de bench, uma vez |
 | `bench-run.sh` | **como uma medição é executada** — portão, smoke, sweep | host de bench, por corrida |
+| `bench-droplet.sh` | **uma corrida ponta a ponta** — cria, mede, colhe, destrói | máquina de desenvolvimento |
 
 ## Por que um script e não só um snapshot
 
@@ -58,6 +59,26 @@ Ordem imposta pelo executor, e nenhuma etapa é opcional:
 A regra que organiza os dois arquivos: **o que MEDE aborta em erro; o que apenas REGISTRA nunca
 aborta.** Uma linha de proveniência com nome de extensão obsoleto, sob `set -e`, já matou uma corrida
 e custou 29 minutos de host pago.
+
+## Ponta a ponta, de um comando
+
+```bash
+SUITE=analytical/crossover/row-count TAGS="fix" ./bench-droplet.sh
+```
+
+Cria o droplet a partir do snapshot, roda o portão, mede, **colhe os bundles para `./resultados/`** e
+destrói. `MANTER=1` mantém o host de pé para depuração — e avisa, com o custo por hora, que ele está
+cobrando.
+
+**A destruição é `trap EXIT`, não uma linha no fim.** A diferença decidiu o desperdício desta sessão:
+o dinheiro não foi embora num droplet caro, foi num droplet **ocioso** — duas mortes de script
+deixaram a máquina de pé sem ninguém medindo, ~70 min a US$ 0,75/h. Um `delete` que depende do
+caminho feliz não roda justamente quando mais importa.
+
+O portão roda **antes** de qualquer trabalho: se o snapshot envelheceu, isso aparece em segundos, e o
+script provisiona e reverifica em vez de medir num host meio pronto.
+
+`theo-e2e-runner` e `theokit-website` estão numa lista de proibidos explícita — não são de medição.
 
 ## Teto de veredito
 

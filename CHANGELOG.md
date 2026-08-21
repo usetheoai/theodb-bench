@@ -15,6 +15,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   diretório de Parquet dentro do contêiner) → proveniência lida do servidor → **smoke barato** →
   sweep. Um pipeline quebrado é descoberto em 35 s, não depois de carregar 2 milhões de linhas seis
   vezes (B-098)
+- `ops/bench-droplet.sh` — uma corrida ponta a ponta da máquina de desenvolvimento: cria o host,
+  roda o portão, mede, colhe os bundles e **destrói por `trap EXIT`**. A garantia importa mais que
+  parece: o desperdício medido não veio de droplet caro, veio de droplet ocioso — um `delete` no fim
+  do caminho feliz não roda quando o script morre (B-098)
 - `ops/README.md` — por que o script é a verdade e o snapshot é cache, e por que código por tarball
   limita todo veredito a `EXPLORATORY` (B-098)
 
