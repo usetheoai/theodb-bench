@@ -55,10 +55,29 @@ if [ "${1:-}" = "--verify" ]; then verificar; exit $?; fi
 
 echo "=== provisionando $(date -Is) ==="
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
+
+# ESPERAR O BOOT TERMINAR antes de tocar no apt.
+#
+# MEDIDO em 2026-08-21, e so a execucao de verdade revelou: numa VM recem-criada o `cloud-init` e o
+# `unattended-upgrades` seguram o lock do dpkg nos primeiros minutos. O `apt-get install` falha, e o
+# provisionamento inteiro passou em 7 SEGUNDOS reportando sucesso parcial — docker ausente, e a causa
+# invisivel. Num droplet menor o mesmo script funcionou, porque o boot ja tinha terminado quando ele
+# chegou aqui: uma corrida de largada disfarcada de bug intermitente.
+command -v cloud-init >/dev/null 2>&1 && cloud-init status --wait >/dev/null 2>&1
+for _ in $(seq 1 60); do
+  fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
+  echo "    aguardando o lock do dpkg..."
+  sleep 5
+done
+
+# E FALHAR ALTO se o apt falhar. A versao anterior seguia adiante e deixava o portao reportar a
+# consequencia ("FALTA docker") em vez da causa ("apt nao rodou") — mandando quem diagnostica para o
+# lado errado, que e o mesmo defeito do `sut_alive` do arnes.
+apt-get update -qq || { echo "FALHA: apt-get update nao completou"; exit 1; }
 # docker-buildx e SEPARADO de docker.io no Ubuntu 24.04. Sem ele o `docker build` cai no builder
 # legado, que nao entende `COPY <<EOF` (heredoc) — e falha no PASSO 26 DE 28, depois de compilar.
-apt-get install -y -qq docker.io docker-buildx python3-venv python3-pip postgresql-client git >/dev/null
+apt-get install -y -qq docker.io docker-buildx python3-venv python3-pip postgresql-client git >/dev/null \
+  || { echo "FALHA: apt-get install nao completou"; exit 1; }
 
 # Higiene de medicao: paginacao e escalonamento de frequencia distorcem latencia de cauda.
 swapoff -a 2>/dev/null || true
@@ -71,7 +90,8 @@ if [ -d "$BENCH_SRC" ]; then
   python3 -m venv "$VENV"
   "$VENV/bin/pip" install -q --upgrade pip
   # EDITAVEL, de proposito: mantem o pacote enraizado em $BENCH_SRC, onde `schemas/` existe.
-  "$VENV/bin/pip" install -q -e "$BENCH_SRC[postgres,datasets]"
+  "$VENV/bin/pip" install -q -e "$BENCH_SRC[postgres,datasets]" \
+    || { echo "FALHA: pip install do arnes"; exit 1; }
 else
   echo "AVISO: $BENCH_SRC ausente — venv nao criado. Envie o arnes e rode de novo."
 fi

@@ -12,16 +12,22 @@ REGIAO="${REGIAO:-nyc1}"
 TAMANHO="${TAMANHO:-g-16vcpu-64gb}"
 SSH_KEY="${SSH_KEY:-58598100}"
 SUITE="${SUITE:-analytical/crossover/row-count}"
-TAGS="${TAGS:-fix}"
+# TAGS aceita `nome:ref` — o ref e um commit-ish do repo do theo-db, e a imagem `theodb:nome` e
+# construida a partir dele NO HOST. E assim que se compara dois commits: mesma maquina, mesmo dia,
+# mesmos parametros, diferindo so no codigo. `nome` sozinho assume que a imagem ja existe.
+TAGS="${TAGS:-fix:HEAD}"
+DB_REPO="${DB_REPO:-$(cd "$(dirname "$0")/../../theo-db" 2>/dev/null && pwd)}"
+BENCH_REPO="${BENCH_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 DESTINO="${DESTINO:-./resultados}"
 MANTER="${MANTER:-0}"                          # MANTER=1 nao destroi (depuracao); custa US$ 0,75/h
 
 # Droplets que NAO sao de medicao e nunca se toca. Guarda explicita, nao confianca no nome que passei.
 PROIBIDOS="theo-e2e-runner theokit-website"
 
-ID=""; IP=""
+ID=""; IP=""; TMP=""
 limpar() {
   local rc=$?
+  [ -n "$TMP" ] && [ -d "$TMP" ] && find "$TMP" -mindepth 0 -delete 2>/dev/null
   if [ -n "$ID" ]; then
     if [ "$MANTER" = "1" ]; then
       echo ">>> MANTER=1: droplet $ID ($IP) DE PE, cobrando US\$ 0,75/h. Destrua com:"
@@ -64,6 +70,16 @@ echo "=== enviando codigo e provisionando ==="
 scp -o StrictHostKeyChecking=no -q "$(dirname "$0")/provision.sh" "$(dirname "$0")/bench-run.sh" "root@$IP:/root/"
 ssh -o StrictHostKeyChecking=no "root@$IP" 'chmod +x /root/provision.sh /root/bench-run.sh'
 
+# O ARNES precisa chegar antes do provisionamento: `provision.sh` cria o venv A PARTIR de /root/bench,
+# em modo editavel, porque so assim `schemas/` fica ao lado do pacote. Medido: sem este envio, um host
+# limpo NUNCA passa no portao — foi o defeito que o primeiro teste ponta a ponta encontrou, e que
+# nenhuma checagem de sintaxe encontraria.
+TMP="$(mktemp -d)"
+git -C "$BENCH_REPO" archive HEAD -o "$TMP/bench.tar" || { echo "FALHA: git archive do arnes"; exit 1; }
+scp -o StrictHostKeyChecking=no -q "$TMP/bench.tar" "root@$IP:/root/"
+ssh -o StrictHostKeyChecking=no "root@$IP" 'mkdir -p /root/bench && tar -xf /root/bench.tar -C /root/bench' \
+  || { echo "FALHA: extrair o arnes"; exit 1; }
+
 # O portao PRIMEIRO. Se o snapshot envelheceu, descobre-se aqui — em segundos — e nao depois de
 # compilar. Se reprovar, provisiona e verifica de novo; se reprovar outra vez, para.
 if ! ssh -o StrictHostKeyChecking=no "root@$IP" 'bash /root/provision.sh --verify'; then
@@ -72,7 +88,32 @@ if ! ssh -o StrictHostKeyChecking=no "root@$IP" 'bash /root/provision.sh --verif
   ssh -o StrictHostKeyChecking=no "root@$IP" 'bash /root/provision.sh --verify' || { echo "FALHA: portao reprovou apos provisionar"; exit 1; }
 fi
 
-echo "=== medindo (suite=$SUITE tags='$TAGS') ==="
+# --- imagens: uma por tag, construida no host a partir do ref -------------------------------
+NOMES=""
+for spec in $TAGS; do
+  nome="${spec%%:*}"; ref="${spec#*:}"
+  NOMES="$NOMES $nome"
+  if [ "$nome" = "$ref" ]; then
+    echo "=== imagem theodb:$nome — assumida presente (nenhum ref dado) ==="
+    ssh -o StrictHostKeyChecking=no "root@$IP" "docker image inspect theodb:$nome >/dev/null 2>&1" \
+      || { echo "FALHA: theodb:$nome nao existe no host e nenhum ref foi dado"; exit 1; }
+    continue
+  fi
+  if ssh -o StrictHostKeyChecking=no "root@$IP" "docker image inspect theodb:$nome >/dev/null 2>&1"; then
+    echo "=== imagem theodb:$nome ja existe — reusando ==="
+    continue
+  fi
+  sha="$(git -C "$DB_REPO" rev-parse --short "$ref")" || { echo "FALHA: ref '$ref' nao resolve"; exit 1; }
+  echo "=== construindo theodb:$nome a partir de $ref ($sha) $(date -Is) ==="
+  git -C "$DB_REPO" archive "$ref" -o "$TMP/$nome.tar" || { echo "FALHA: git archive $ref"; exit 1; }
+  scp -o StrictHostKeyChecking=no -q "$TMP/$nome.tar" "root@$IP:/root/"
+  ssh -o StrictHostKeyChecking=no "root@$IP" "docker build -t theodb:$nome - < /root/$nome.tar" \
+    || { echo "FALHA: build de theodb:$nome"; exit 1; }
+  echo "=== theodb:$nome pronto (de $sha) $(date -Is) ==="
+done
+TAGS="${NOMES# }"
+
+echo "=== medindo (suite=$SUITE tags=$TAGS) ==="
 ssh -o StrictHostKeyChecking=no "root@$IP" "SUITE='$SUITE' TAGS='$TAGS' /root/bench-run.sh"
 RC=$?
 
