@@ -7,6 +7,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **A contenção escrita x scan passou a ser medível.** Não havia carga mista: existia motor
+  concorrente (`run_load`) e o pilar vetorial o usava, mas nada rodava um escritor ao mesmo tempo que
+  leitores — que é onde a avaliação independente do AlloyDB mediu uma **inversão** (ligar o colunar
+  **piorou** a contenção a SF100: 29% contra 16% do row store). O arnês mede cada lado sozinho e os
+  dois juntos **na mesma sessão**, reporta a degradação como **razão** contra a própria linha de
+  base, e **recusa** quando um lado não completou nenhuma operação — `null` sobre zero sucessos se lê
+  como "sem contenção" e significa "nada rodou". O regime (memória ou além do cache) é **declarado**,
+  nunca inferido. (#B-066)
+- **`append_analytical_row` no adapter Postgres** — a escrita de primeiro plano que a contenção
+  precisa. SQL e parâmetros vêm **juntos** do mesmo método: separá-los foi o que produziu o defeito
+  do #B-063. (#B-066)
+
 ## [0.3.0] - 2026-08-20
 
 ### Fixed
