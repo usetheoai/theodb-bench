@@ -73,3 +73,31 @@ def test_the_vector_family_and_the_retrieval_family_share_one_implementation() -
 
     fonte = inspect.getsource(VectorBenchmark._client_pool)
     assert "client_pool(" in fonte, "o vetorial tem de DELEGAR, nao reimplementar"
+
+
+def test_the_operation_count_scales_with_the_client_population() -> None:
+    """O defeito que produziu uma conclusao publicada ERRADA.
+
+    A primeira versao emitia um total FIXO de operacoes, independente do numero de clientes.
+    Medido, back-to-back no mesmo processo:
+
+        clientes | total FIXO em 300 | 300 POR cliente
+               5 |             598,6 |           646,1
+              20 |             570,2 |           801,8
+              80 |         **277,7** |       **827,0**
+
+    A 80 clientes, 300 operacoes sao **3,75 por cliente** — a abertura de conexao domina a janela
+    medida, e a curva COLAPSA. O colapso e do desenho da medicao, nao do sistema.
+
+    Isso me levou a publicar, no B-043, que "o teto de vazao e o cliente do arnes", com um numero
+    de 6,5x que era artefato do mesmo defeito. Com a contagem escalando, a curva sobe e satura.
+    """
+    w = _workload((1, 5, 20))
+    # 1 pipeline x 1 repeticao x (1+5+20) clientes x 8 consultas
+    assert w.expected_operations(measured_points=3, repetitions=1) == 26 * w.query_count
+
+
+def test_without_a_sweep_the_count_is_unchanged() -> None:
+    """A propriedade que as suites de um cliente so protegem."""
+    w = _workload(())
+    assert w.expected_operations(measured_points=1, repetitions=3) == 3 * w.query_count

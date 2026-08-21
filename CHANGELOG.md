@@ -7,6 +7,21 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A varredura de clientes emitia um total FIXO de operações, e isso fabricava um colapso.** A 80
+  clientes, 300 operações totais são **3,75 por cliente** — a abertura de conexão domina a janela
+  medida, e a curva desaba. Medido lado a lado no mesmo processo: com total fixo, 80 clientes dão
+  **277,7 QPS**; escalando por cliente, **827,0**.
+  .
+  **Isso me fez publicar uma conclusão errada** (#B-043: "o teto de vazão é o cliente do arnês", com
+  6,5× e colapso de 61%). Corrigido, a curva sobe e satura, e a razão contra o `pgbench` é ~1,27×.
+  O `expected_operations` acompanha, senão o próprio portão `operation_count` reprovaria a corrida
+  por uma conta errada dele mesmo.
+  .
+  Comparar o mesmo trabalho **total** entre populações de cliente diferentes é justamente o que não
+  se pode fazer em laço fechado — e a tentação de fazê-lo, para "comparar o mesmo trabalho", está
+  registrada no código para a próxima pessoa. (#B-043)
+
 ## [0.6.0] - 2026-08-21
 
 ### Added

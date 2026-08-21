@@ -184,7 +184,17 @@ class RetrievalWorkload:
         }
 
     def expected_operations(self, measured_points: int, repetitions: int) -> int:
-        return measured_points * repetitions * self.query_count
+        """Quantas operacoes uma corrida completa deveria ter produzido.
+
+        Com varredura de clientes, cada ponto emite `query_count` operacoes POR CLIENTE — ver
+        `RetrievalBenchmark.run_concurrent` para por que a contagem escala. Somar `query_count` por
+        ponto contaria o ponto de 80 clientes como se ele tivesse feito o trabalho do de 1, e o
+        portao `operation_count` reprovaria a corrida inteira por uma conta errada dele proprio.
+        """
+        if not self.client_sweep:
+            return measured_points * repetitions * self.query_count
+        por_pipeline = sum(self.client_sweep) * self.query_count
+        return len(self.pipelines) * repetitions * por_pipeline
 
     @property
     def warmup_operations(self) -> int:
@@ -426,16 +436,34 @@ class RetrievalBenchmark:
         abrir, fechar = client_pool(adapter, make_client, clients)
         total = len(self.queries.texts)
 
+        # OPERACOES POR CLIENTE, e nao um total fixo. MEDIDO em 2026-08-21, e a primeira versao
+        # desta funcao errou exatamente aqui:
+        #
+        #   clientes | total FIXO em 300 | 300 POR cliente
+        #          5 |             598,6 |           646,1
+        #         20 |             570,2 |           801,8
+        #         80 |         **277,7** |       **827,0**
+        #
+        # Com total fixo, 80 clientes dividem 300 operacoes — **3,75 cada** — e a abertura de
+        # conexao domina a janela medida. A curva COLAPSA, e o colapso e do desenho da medicao, nao
+        # do sistema. Com a contagem escalando, ela sobe e satura, que e o que se quer observar.
+        #
+        # Isso me fez publicar uma conclusao errada no [[B-043]] antes de medir de novo. Fica aqui
+        # porque a proxima pessoa a mexer nisto vai sentir a mesma tentacao de fixar o total para
+        # "comparar o mesmo trabalho" — e comparar o mesmo trabalho entre populacoes diferentes de
+        # cliente e justamente o que nao se pode fazer em laco fechado.
+        por_cliente = total
+        operacoes = por_cliente * clients
+
         def emitir(cliente: SystemAdapter, indice: int) -> None:
-            # `indice % total` porque o laco fechado emite `count` operacoes e o conjunto de
-            # consultas tem tamanho proprio: dar a volta mede a mesma carga, e truncar mediria
-            # menos consulta com mais cliente.
+            # `indice % total` porque o conjunto de consultas tem tamanho proprio: dar a volta mede
+            # a mesma carga, e truncar mediria menos consulta com mais cliente.
             self._run_one(cliente, pipeline, indice % total)
 
         carga = run_load(
             abrir,
             emitir,
-            count=total,
+            count=operacoes,
             model=modelo,
             fatal=(SystemUnavailableError,),
             close_client=fechar,
