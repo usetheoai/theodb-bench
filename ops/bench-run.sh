@@ -7,6 +7,7 @@
 set -uo pipefail
 
 SUITE="${SUITE:-analytical/crossover/row-count}"
+PROFILE="${PROFILE:-research}"
 SMOKE="${SMOKE:-analytical/synthetic/paths}"
 TAGS="${TAGS:-base fix}"
 PARQUET_DIR=/var/lib/postgresql/theodb-bench-parquet
@@ -71,7 +72,7 @@ medir() {
   local tag="$1" suite="$2" saida="$3"
   echo "=== $tag :: $suite inicio $(date -Is) ==="
   PGUSER=postgres /root/venv/bin/theodb-bench run "$suite" \
-    --system theodb --profile research --output "$saida"
+    --system theodb --profile "$PROFILE" --output "$saida"
   local rc=$?
   echo "=== $tag :: $suite fim rc=$rc $(date -Is) ==="
   return $rc

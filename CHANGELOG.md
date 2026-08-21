@@ -28,6 +28,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - `provision.sh` instala uma regra `tmpfiles.d` para `/var/run/postgresql`. Medido: `/var/run` é
   tmpfs, foi a única das nove capacidades que não sobreviveu ao snapshot, e o mecanismo nativo do
   systemd resolve sem reprovisionar (B-098)
+- O arnês chega ao host como **repositório git** (`git bundle` + `git clone`), não tarball. Medido: o
+  portão `clean_source_tree` roda `git status` na árvore DO ARNÊS, e um tarball não leva `.git` — com
+  bundle o portão passa (`rc=0`, HEAD conhecido, árvore limpa), **sem credencial e sem rede**. A ideia
+  de que isso exigia deploy key do GitHub estava errada (B-098)
+- `PROFILE` parametrizável em `bench-run.sh` e `bench-droplet.sh` (default `research`) (B-098)
+- A guarda que preserva o droplet quando a coleta falha passou a distinguir "há resultado que não
+  consegui copiar" de "a corrida falhou antes de produzir qualquer coisa". No segundo caso não há o
+  que perder, e manter a máquina de pé só queima dinheiro — medido, aconteceu (B-098)
 - `ops/README.md` — por que o script é a verdade e o snapshot é cache, e por que código por tarball
   limita todo veredito a `EXPLORATORY` (B-098)
 

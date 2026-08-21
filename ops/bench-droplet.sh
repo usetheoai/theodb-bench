@@ -12,6 +12,7 @@ REGIAO="${REGIAO:-nyc1}"
 TAMANHO="${TAMANHO:-g-16vcpu-64gb}"
 SSH_KEY="${SSH_KEY:-58598100}"
 SUITE="${SUITE:-analytical/crossover/row-count}"
+PROFILE="${PROFILE:-research}"
 # TAGS aceita `nome:ref` — o ref e um commit-ish do repo do theo-db, e a imagem `theodb:nome` e
 # construida a partir dele NO HOST. E assim que se compara dois commits: mesma maquina, mesmo dia,
 # mesmos parametros, diferindo so no codigo. `nome` sozinho assume que a imagem ja existe.
@@ -24,7 +25,7 @@ MANTER="${MANTER:-0}"                          # MANTER=1 nao destroi (depuracao
 # Droplets que NAO sao de medicao e nunca se toca. Guarda explicita, nao confianca no nome que passei.
 PROIBIDOS="theo-e2e-runner theokit-website"
 
-ID=""; IP=""; TMP=""; COLHIDO=0
+ID=""; IP=""; TMP=""; COLHIDO=0; SEM_RESULTADO=0
 limpar() {
   local rc=$?
   [ -n "$TMP" ] && [ -d "$TMP" ] && find "$TMP" -mindepth 0 -delete 2>/dev/null
@@ -40,8 +41,9 @@ limpar() {
     mkdir -p "$DESTINO"
     # So a corrida DESTA execucao. `res-*` varreria tambem o que veio dentro do snapshot.
     ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "root@$IP" \
-      'st=$(cat /root/ULTIMA_CORRIDA 2>/dev/null); [ -n "$st" ] || exit 1
+      'st=$(cat /root/ULTIMA_CORRIDA 2>/dev/null); [ -n "$st" ] || exit 42
        tar -czf /root/resultados.tgz "/root/res-$st" /root/bench-run.log 2>/dev/null' 2>/dev/null
+    [ $? -eq 42 ] && SEM_RESULTADO=1
     if scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q "root@$IP:/root/resultados.tgz" "$DESTINO/$NOME.tgz" 2>/dev/null \
        && [ -s "$DESTINO/$NOME.tgz" ] && tar -tzf "$DESTINO/$NOME.tgz" >/dev/null 2>&1; then
       COLHIDO=1; echo "    $DESTINO/$NOME.tgz ($(du -h "$DESTINO/$NOME.tgz" | cut -f1))"
@@ -55,7 +57,14 @@ limpar() {
 
   # Um droplet cujos resultados nao foram colhidos NAO e destruido automaticamente. Ficar de pe
   # cobrando e ruim; destruir dado que custou uma hora de host e pior, e irreversivel.
-  if [ -n "$ID" ] && [ "$COLHIDO" = "0" ] && [ "$MANTER" != "1" ]; then
+  #
+  # MAS: quando a corrida falhou ANTES de produzir qualquer resultado, nao ha o que perder, e manter
+  # a maquina de pe seria so queimar dinheiro. Medido em 2026-08-21: o smoke reprovou, nao havia
+  # nenhum `res-*` desta execucao, e a guarda manteve um droplet cobrando por nada. A guarda existe
+  # para proteger DADO, nao para reagir a qualquer falha.
+  if [ -n "$ID" ] && [ "$COLHIDO" = "0" ] && [ "$SEM_RESULTADO" = "1" ] && [ "$MANTER" != "1" ]; then
+    echo ">>> nenhum resultado foi produzido nesta corrida — nada a perder; destruindo"
+  elif [ -n "$ID" ] && [ "$COLHIDO" = "0" ] && [ "$MANTER" != "1" ]; then
     echo ">>> droplet $ID ($IP) MANTIDO DE PE: a coleta falhou e destruir perderia o resultado."
     echo "    colha a mao, depois: doctl compute droplet delete $ID --force"
     exit $rc
@@ -107,11 +116,24 @@ ssh -o StrictHostKeyChecking=no "root@$IP" 'chmod +x /root/provision.sh /root/be
 # em modo editavel, porque so assim `schemas/` fica ao lado do pacote. Medido: sem este envio, um host
 # limpo NUNCA passa no portao — foi o defeito que o primeiro teste ponta a ponta encontrou, e que
 # nenhuma checagem de sintaxe encontraria.
+# BUNDLE, e nao tarball. MEDIDO: o arnes valida `clean_source_tree` rodando `git status --porcelain`
+# na arvore DO PROPRIO ARNES (o campo e `benchmark_dirty`, e a descricao do portao diz "Benchmark
+# source tree was committed"). Um tarball nao carrega `.git`, entao `git status` falha, o portao fica
+# UNAVAILABLE e — no perfil `release`, onde ele e obrigatorio — invalida a corrida.
+#
+# Um bundle resolve sem credencial e sem rede: e um repositorio git completo num arquivo. O host
+# clona dele e fica com arvore limpa num SHA conhecido, que e exatamente o que o portao pede.
 TMP="$(mktemp -d)"
-git -C "$BENCH_REPO" archive HEAD -o "$TMP/bench.tar" || { echo "FALHA: git archive do arnes"; exit 1; }
-scp -o StrictHostKeyChecking=no -q "$TMP/bench.tar" "root@$IP:/root/"
-ssh -o StrictHostKeyChecking=no "root@$IP" 'mkdir -p /root/bench && tar -xf /root/bench.tar -C /root/bench' \
-  || { echo "FALHA: extrair o arnes"; exit 1; }
+git -C "$BENCH_REPO" bundle create "$TMP/bench.bundle" HEAD --branches 2>/dev/null \
+  || git -C "$BENCH_REPO" bundle create "$TMP/bench.bundle" HEAD \
+  || { echo "FALHA: git bundle do arnes"; exit 1; }
+BENCH_SHA="$(git -C "$BENCH_REPO" rev-parse --short HEAD)"
+scp -o StrictHostKeyChecking=no -q "$TMP/bench.bundle" "root@$IP:/root/"
+ssh -o StrictHostKeyChecking=no "root@$IP" \
+  'rm -rf /root/bench 2>/dev/null; git clone -q /root/bench.bundle /root/bench 2>&1 | tail -2
+   git -C /root/bench status --porcelain | head -3' \
+  || { echo "FALHA: clonar o arnes do bundle"; exit 1; }
+echo "    arnes clonado em $BENCH_SHA (arvore git de verdade, nao tarball)"
 
 # O portao PRIMEIRO. Se o snapshot envelheceu, descobre-se aqui — em segundos — e nao depois de
 # compilar. Se reprovar, provisiona e verifica de novo; se reprovar outra vez, para.
@@ -147,7 +169,7 @@ done
 TAGS="${NOMES# }"
 
 echo "=== medindo (suite=$SUITE tags=$TAGS) ==="
-ssh -o StrictHostKeyChecking=no "root@$IP" "SUITE='$SUITE' TAGS='$TAGS' /root/bench-run.sh"
+ssh -o StrictHostKeyChecking=no "root@$IP" "SUITE='$SUITE' TAGS='$TAGS' PROFILE='$PROFILE' /root/bench-run.sh"
 RC=$?
 
 echo "=== fim rc=$RC $(date -Is) ==="
