@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-21
+
 ### Added
 - **`analytical/crossover/row-count`** — as mesmas agregações sobre heap, colunar e Parquet ao longo
   de uma varredura de 10K a 2M linhas, para achar **abaixo de quantas linhas o colunar perde para o
@@ -14,6 +16,39 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `row_count_sweep`; vazio mantém o comportamento de um N só, que é o que as suítes existentes usam.
   Cada N **recarrega** os dados — não é um GUC de sessão como o `ef_search` —, e o oráculo é refeito
   junto, porque ele é a resposta certa **para aquele corpus**. (#B-058)
+
+- **A família de retrieval deixou de ser órfã, e o pilar lexical passou a ter corpus com julgamento
+  humano.** O `bench/retrieval.py` trazia nDCG@10, Recall@k, MRR e quatro pipelines desde sempre, e
+  **nenhum benchmark registrado o alcançava** — ele estava na lista de órfãos do próprio arnês, e o
+  único corpus era o semeado, cuja docstring diz que exercita a pipeline sem ser alegação de
+  qualidade. A consequência foi concreta: todo número lexical publicado saiu de script ad-hoc, e o
+  `m186` atribuiu ao PRODUTO um limite que era do script.
+  .
+  Entram: o `RetrievalWorkload` satisfazendo o protocolo `Workload` (os cinco membros faltavam), o
+  `points()` no benchmark, o carregador `bench/beir.py`, o manifesto `beir-scifact` verificado por
+  sha256, e o benchmark registrado `retrieval/scifact/lexical`. O `bench.retrieval` **saiu do
+  baseline de órfãos** — que existe para encolher. (#B-093)
+- **Medido de ponta a ponta: nDCG@10 de 0,6864 no SciFact** (recall@10 0,8227, QPS 213,5, CV 2,1%),
+  contra os **0,6269** que o `m186` publicou somando scores por termo do lado de fora. **+9,5%
+  relativo** — o número antigo era um piso, como o [[B-014]] havia previsto ao medir que
+  `bm25_search` sempre aceitou consulta multi-termo. É o primeiro número lexical deste projeto
+  produzido **dentro do arnês**. (#B-093)
+
+- **`vector/sift1m/frontier`** — varredura de `ef_search` em {40, 64, 128, 256} num único build, para
+  ler **dois motores a recall casado** em vez de a `ef` casado. Comparar QPS no mesmo `ef` compara a
+  coisa errada: `ef` não é a mesma unidade em dois grafos diferentes — no mesmo 64 o [[B-046]] mede
+  recall 0,9600 nosso contra 0,9835 do pgvector, e um "déficit" lido nesse par compara quem buscou
+  menos com quem buscou mais. Os quatro pontos saem do mesmo índice (`ef_search` é GUC de sessão), e
+  o artefato já registra `build_seconds` e `index_size_bytes`, o que responde o [[B-042]] sem uma
+  segunda corrida. (#B-046, #B-042)
+
+- **`vector/sift1m/ef-default`** — SIFT1M contra o `theodb_hnsw` nos **dois defaults de `ef_search` em
+  disputa**: 40 (do pgvector) e 64 (nosso). Existe porque o [[B-018]] mediu que o planner larga o índice
+  numa junção com filtro seletivo em `ef=64`, e que o pgvector no MESMO 64 produz plano e custos
+  idênticos aos nossos — logo a diferença é a escolha do default, não a implementação. Baixá-lo é uma
+  linha e **troca recall por plano**; este benchmark é o que torna essa troca medida em vez de suposta.
+  A varredura {40, 64} responde "o que o default custa"; a {64, 256} das outras suítes responde "onde
+  fica a fronteira", que é outra pergunta. (#B-018)
 
 ### Fixed
 - **O runner formatava `None` e culpava o sistema sob teste pelo próprio defeito.**
@@ -28,7 +63,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   maior parte do custo, gasto para reescrever a mesma tabela. `run()` ganhou `load_first`, e o default
   continua `True` porque carregar faz parte do contrato de quem o chama sozinho. (#B-058)
 
-### Fixed
 - **A prova de que a consulta analítica usou o caminho que ela declara nunca era pedida.**
   `assert_analytical_path` existia no `PostgresAdapter` — provando residência pelo `pg_class.relam`
   **e** que o plano usou o caminho, pelo `ANALYTICAL_PLAN_MARKERS` — e o `AlloyDbOmniAdapter` chegou a
@@ -48,34 +82,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   medida `invalid` com a razão — nunca um número. Quatro testes, um deles afirmando que **nada** foi
   cronometrado quando a prova falha. (#B-058)
 
-### Added
-- **A família de retrieval deixou de ser órfã, e o pilar lexical passou a ter corpus com julgamento
-  humano.** O `bench/retrieval.py` trazia nDCG@10, Recall@k, MRR e quatro pipelines desde sempre, e
-  **nenhum benchmark registrado o alcançava** — ele estava na lista de órfãos do próprio arnês, e o
-  único corpus era o semeado, cuja docstring diz que exercita a pipeline sem ser alegação de
-  qualidade. A consequência foi concreta: todo número lexical publicado saiu de script ad-hoc, e o
-  `m186` atribuiu ao PRODUTO um limite que era do script.
-  .
-  Entram: o `RetrievalWorkload` satisfazendo o protocolo `Workload` (os cinco membros faltavam), o
-  `points()` no benchmark, o carregador `bench/beir.py`, o manifesto `beir-scifact` verificado por
-  sha256, e o benchmark registrado `retrieval/scifact/lexical`. O `bench.retrieval` **saiu do
-  baseline de órfãos** — que existe para encolher. (#B-093)
-- **Medido de ponta a ponta: nDCG@10 de 0,6864 no SciFact** (recall@10 0,8227, QPS 213,5, CV 2,1%),
-  contra os **0,6269** que o `m186` publicou somando scores por termo do lado de fora. **+9,5%
-  relativo** — o número antigo era um piso, como o [[B-014]] havia previsto ao medir que
-  `bm25_search` sempre aceitou consulta multi-termo. É o primeiro número lexical deste projeto
-  produzido **dentro do arnês**. (#B-093)
-
-### Added
-- **`vector/sift1m/frontier`** — varredura de `ef_search` em {40, 64, 128, 256} num único build, para
-  ler **dois motores a recall casado** em vez de a `ef` casado. Comparar QPS no mesmo `ef` compara a
-  coisa errada: `ef` não é a mesma unidade em dois grafos diferentes — no mesmo 64 o [[B-046]] mede
-  recall 0,9600 nosso contra 0,9835 do pgvector, e um "déficit" lido nesse par compara quem buscou
-  menos com quem buscou mais. Os quatro pontos saem do mesmo índice (`ef_search` é GUC de sessão), e
-  o artefato já registra `build_seconds` e `index_size_bytes`, o que responde o [[B-042]] sem uma
-  segunda corrida. (#B-046, #B-042)
-
-### Fixed
 - **O arnês não conseguia buscar o dataset que ele mesmo declara.** Medido num host limpo: a origem do
   `sift-128-euclidean` responde **403 Forbidden** ao `User-Agent` default do `urllib`
   (`Python-urllib/3.12`) e **200** ao do `curl` — o CDN filtra por agente. O defeito só não aparecia
@@ -88,16 +94,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `system.log` do bundle formata `{exc}`, ou seja, o `__str__`, que a descartava. **Diagnosticar custou
   duas corridas de benchmark** com a resposta parada no log do servidor desde o primeiro segundo. Um
   lugar consertado, toda renderização humana corrigida.
-
-### Added
-- **`vector/sift1m/ef-default`** — SIFT1M contra o `theodb_hnsw` nos **dois defaults de `ef_search` em
-  disputa**: 40 (do pgvector) e 64 (nosso). Existe porque o [[B-018]] mediu que o planner larga o índice
-  numa junção com filtro seletivo em `ef=64`, e que o pgvector no MESMO 64 produz plano e custos
-  idênticos aos nossos — logo a diferença é a escolha do default, não a implementação. Baixá-lo é uma
-  linha e **troca recall por plano**; este benchmark é o que torna essa troca medida em vez de suposta.
-  A varredura {40, 64} responde "o que o default custa"; a {64, 256} das outras suítes responde "onde
-  fica a fronteira", que é outra pergunta. (#B-018)
-
 ## [0.4.0] - 2026-08-21
 
 ### Added
