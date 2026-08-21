@@ -887,7 +887,19 @@ class PostgresAdapter(SystemAdapter):
         "filtered_sum": ("SELECT sum(amount) FROM {table} WHERE category = 'a' AND amount > 0"),
     }
 
-    def _analytical_column_types(self) -> str:
+    def _analytical_column_types(self, table: AnalyticalTable | None = None) -> str:
+        """O DDL das colunas: da tabela quando ela o declara, senão o esquema fixo de sempre.
+
+        O default preserva byte a byte o comportamento anterior — a suíte de tabela única não
+        declara tipos e continua recebendo `id/amount/category/quantity`. O parâmetro existe porque
+        uma tabela TPC-H declara os seus, e criar o esquema fixo para depois copiar em colunas de
+        outro nome falha na primeira linha (B-065).
+        """
+        if table is not None and table.column_types:
+            return ", ".join(
+                f"{_identifier(c)} {t}"
+                for c, t in zip(table.columns, table.column_types, strict=True)
+            )
         return "id integer, amount double precision, category text, quantity integer"
 
     def _require_analytical_path(self, path: str) -> str | None:
@@ -918,7 +930,7 @@ class PostgresAdapter(SystemAdapter):
 
         started = time.perf_counter()
         self._execute(f"DROP TABLE IF EXISTS {name} CASCADE")
-        self._execute(f"CREATE TABLE {name} ({self._analytical_column_types()}){using}")
+        self._execute(f"CREATE TABLE {name} ({self._analytical_column_types(table)}){using}")
         columns = ", ".join(_identifier(column) for column in table.columns)
         with (
             self._cursor() as cursor,
@@ -965,6 +977,53 @@ class PostgresAdapter(SystemAdapter):
             self._execute(f"SET {guc} = {literal}")
         # Same verification the search knobs get, and for the same reason.
         self._verified_search_settings(mapping)
+
+    def append_analytical_row_sql(
+        self, table: AnalyticalTable, row: Sequence[Any]
+    ) -> tuple[str, tuple[Any, ...]]:
+        """O `INSERT` de UMA linha na tabela analítica, e os parâmetros dele.
+
+        Escrita de primeiro plano, uma linha por operação: é o lado "escrita" da contenção que o
+        [[B-066]] mede. A carga em massa (`load_analytical`) é outra coisa — ela existe para POR o
+        dado lá, e mede-se pelo tempo total; esta existe para competir com um scan e mede-se pela
+        latência da transação.
+
+        Devolve o SQL e os parâmetros JUNTOS, e não em dois métodos. Foi exatamente a separação
+        deles que produziu o defeito do [[B-063]]: o `assert_index_used` ligava um parâmetro contra
+        um SQL de dois, porque a forma e as ligações viviam em lugares que podiam divergir.
+
+        Identificadores são citados por `_identifier`, que valida o formato — o nome da tabela vem
+        de uma suíte registrada, não de entrada de usuário, mas um validador que só protege quando o
+        autor lembra não protege.
+        """
+        if len(row) != len(table.columns):
+            raise ValueError(
+                f"a linha tem {len(row)} valores e a tabela declara {len(table.columns)} colunas "
+                f"({', '.join(table.columns)}) — escrever mesmo assim faria o servidor recusar com "
+                "uma mensagem pior que esta"
+            )
+        alvo = _identifier(table.name)
+        colunas = ", ".join(_identifier(c) for c in table.columns)
+        marcadores = ", ".join(["%s"] * len(row))
+        return f"INSERT INTO {alvo} ({colunas}) VALUES ({marcadores})", tuple(row)
+
+    def append_analytical_row(self, table: AnalyticalTable, row: Sequence[Any]) -> None:
+        """Executa a escrita de uma linha. Separado do SQL para que a FORMA seja testável sem
+        servidor."""
+        sql, params = self.append_analytical_row_sql(table, row)
+        with self._cursor() as cursor:
+            cursor.execute(sql, params)
+
+    def execute_analytical_sql(self, sql: str) -> tuple[tuple[Any, ...], ...]:
+        """Executa um statement analítico já montado e devolve as linhas.
+
+        O SQL vem da suíte, que o constrói a partir do esquema e cita cada identificador antes de
+        interpolá-lo (`bench/tpch.py::_safe_identifier`). Aqui não há parâmetro a ligar: uma query
+        TPC-H registrada não recebe entrada de usuário — os filtros são constantes da definição.
+        """
+        with self._cursor() as cursor:
+            cursor.execute(sql)
+            return tuple(tuple(linha) for linha in cursor.fetchall())
 
     def _analytical_query_sql(self, table: AnalyticalTable, query: AnalyticalQuery) -> str:
         template = type(self).ANALYTICAL_SQL.get(query.id)

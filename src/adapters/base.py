@@ -290,6 +290,22 @@ class AnalyticalTable:
     path: str = "row"
     """``row``, ``columnar`` or ``parquet``. The same data, stored three ways."""
 
+    column_types: tuple[str, ...] = ()
+    """SQL type per column, when the table declares its own schema.
+
+    Empty means the adapter uses the built-in single-table analytical schema, which is what every
+    caller did before multi-table existed. A TPC-H table declares its own, because `c_custkey` and
+    `l_extendedprice` are not `id` and `amount` (B-065) — and an adapter that creates the fixed
+    schema and then COPYs into different column names fails at the first row, which is exactly what
+    the first real run of the suite did."""
+
+    def __post_init__(self) -> None:
+        if self.column_types and len(self.column_types) != len(self.columns):
+            raise ValueError(
+                f"{self.name}: {len(self.columns)} colunas e {len(self.column_types)} tipos — "
+                "declarar os tipos pela metade produz uma tabela que nem o autor sabe descrever"
+            )
+
 
 @dataclass(frozen=True)
 class AnalyticalQuery:
@@ -517,6 +533,23 @@ class SystemAdapter(ABC):
         raise UnsupportedCapabilityError(
             f"{self.system_id} has no analytical execution path",
             context=ErrorContext(phase=Phase.DATASET_LOAD, system=self.system_id),
+        )
+
+    def execute_analytical_sql(self, sql: str) -> tuple[tuple[Any, ...], ...]:
+        """Run a prepared analytical statement and return its rows.
+
+        Optional by design, like `set_search_parameters`: a system that cannot take SQL directly has
+        nothing to implement here, and a stub that lied about it would be worse.
+
+        WHY IT EXISTS SEPARATELY FROM `execute_analytical` (B-065). That one takes ONE table, so a
+        join over three is not expressible through it — and the competitor's published comparison is
+        TPC-H, whose Q18 joins customer, orders and lineitem. The multi-table suite builds its own
+        SQL from the schema and needs a way to hand it over; widening `execute_analytical` to accept
+        a schema would change a signature every adapter implements, to serve one caller.
+        """
+        raise UnsupportedCapabilityError(
+            f"{self.system_id} cannot execute prepared analytical SQL",
+            context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
         )
 
     def execute_analytical(

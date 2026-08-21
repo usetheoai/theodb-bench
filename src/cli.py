@@ -20,6 +20,7 @@ from typing import Any, Final
 
 from theodb_bench import __version__
 from theodb_bench.adapters.base import IndexSpec
+from theodb_bench.bench.contention import Regime
 from theodb_bench.bench.vector import (
     FloatArray,
     VectorBenchmark,
@@ -28,7 +29,7 @@ from theodb_bench.bench.vector import (
     generate_corpus,
 )
 from theodb_bench.bundle import RunBundle
-from theodb_bench.compare import render_paired_verdict
+from theodb_bench.compare import render_paired_verdict, render_throughput_verdict
 from theodb_bench.datasets import (
     DatasetManifest,
     DatasetRegistry,
@@ -710,6 +711,52 @@ def build_parser() -> argparse.ArgumentParser:
     dataset_fetch.add_argument("--force", action="store_true", help="re-download mismatched files")
     dataset_fetch.set_defaults(func=cmd_dataset_fetch)
 
+    contention = subparsers.add_parser(
+        "contention",
+        help="measure write x scan contention: each side alone and both together, same session",
+    )
+    contention.add_argument("--system", default="fake", choices=sorted(ADAPTERS))
+    contention.add_argument("--table", default="bench_analytical")
+    contention.add_argument("--path", default="columnar", choices=["row", "columnar", "parquet"])
+    contention.add_argument("--readers", type=int, default=4)
+    contention.add_argument("--writers", type=int, default=1)
+    contention.add_argument("--read-ops", type=int, required=True)
+    contention.add_argument("--write-ops", type=int, required=True)
+    # Sem default silencioso: o arnes NAO tem como saber se o dado cabe no cache — depende do host,
+    # do `shared_buffers` e do tamanho da tabela. Quem monta a corrida sabe, e o artefato carrega a
+    # declaracao. Inferir seria adivinhar e publicar o palpite (B-066, bullet 3).
+    contention.add_argument(
+        "--regime",
+        default=Regime.MEMORY_RESIDENT.value,
+        # As escolhas vem do ENUM e nao de literais: uma lista aqui divergiria dele no dia em que um
+        # terceiro regime aparecesse, e o portao de codigo morto acusou exatamente essa duplicacao —
+        # dentro de `src/` os membros nunca eram referenciados por nome, so reconstruidos de string.
+        choices=[r.value for r in Regime],
+    )
+    contention.set_defaults(func=cmd_contention)
+
+    tpch = subparsers.add_parser(
+        "tpch", help="run the multi-table TPC-H shaped suite, checked against its own oracle"
+    )
+    tpch.add_argument("--system", default="fake", choices=sorted(ADAPTERS))
+    tpch.add_argument("--scale-factor", type=float, default=0.001)
+    tpch.add_argument("--seed", type=int, default=20260821)
+    tpch.add_argument("--prefix", default="tpch_")
+    # Sem `--dsn` o comando so alcança o sistema fake, e um arnês que só mede o próprio fake mede a
+    # si mesmo. É a mesma razão pela qual o `run` o aceita.
+    tpch.add_argument("--dsn", default=None, help="connection string for the system under test")
+    tpch.set_defaults(func=cmd_tpch)
+
+    throughput = subparsers.add_parser(
+        "throughput",
+        help="compare speed between two configurations from N runs each (unpaired, Welch)",
+    )
+    throughput.add_argument("--a", required=True, help="name of the first configuration")
+    throughput.add_argument("--a-runs", required=True, nargs="+", type=float)
+    throughput.add_argument("--b", required=True, help="name of the second configuration")
+    throughput.add_argument("--b-runs", required=True, nargs="+", type=float)
+    throughput.set_defaults(func=cmd_throughput)
+
     run = subparsers.add_parser("run", help="execute a benchmark against a system")
     run.add_argument("benchmark", choices=sorted(BENCHMARKS))
     run.add_argument("--system", default="fake", choices=sorted(ADAPTERS))
@@ -786,6 +833,135 @@ def build_parser() -> argparse.ArgumentParser:
     validate_cmd.set_defaults(func=cmd_validate)
 
     return parser
+
+
+def cmd_contention(args: argparse.Namespace) -> int:
+    """Mede a contenção escrita x scan: cada lado sozinho e os dois juntos, na mesma sessão.
+
+    POR QUE ESTE COMANDO EXISTE (B-066). A avaliação independente do AlloyDB mediu uma
+    **inversão** —
+    ligar o colunar PIOROU a contenção a SF100 (29% contra 16% do row store), contra empate a SF10.
+    É o único número em que o colunar do concorrente sai pior, e era o que não tínhamos instrumento
+    para responder.
+
+    A linha de base sai daqui, e de lugar nenhum: `measure_contention` a mede dentro da mesma
+    chamada, e não há parâmetro para injetá-la. Comparar contra outra corrida é a classe de erro que
+    o B-060 e o B-063 documentam.
+    """
+    from theodb_bench.adapters.base import AnalyticalTable
+    from theodb_bench.bench.contention import ContentionSpec, Regime, measure_contention
+    from theodb_bench.load import LoadModel
+
+    tabela = AnalyticalTable(name=args.table, columns=("id", "value"), path=args.path)
+    espec = ContentionSpec(
+        readers=LoadModel(clients=args.readers),
+        writers=LoadModel(clients=args.writers),
+        read_ops=args.read_ops,
+        write_ops=args.write_ops,
+        regime=Regime(args.regime),
+    )
+
+    def novo_cliente() -> Any:
+        # `.build()` constroi o adapter; `get_adapter` devolve a ENTRADA do registro. Confundir os
+        # dois produz `AttributeError` no primeiro uso, e foi o que aconteceu.
+        return get_adapter(args.system).build()
+
+    def ler(cliente: Any, index: int) -> None:
+        cliente.execute_analytical(tabela, _contention_probe(index))
+
+    def escrever(cliente: Any, index: int) -> None:
+        cliente.append_analytical_row(tabela, (index, index))
+
+    resultado = measure_contention(
+        espec,
+        make_reader=novo_cliente,
+        issue_read=ler,
+        make_writer=novo_cliente,
+        issue_write=escrever,
+    )
+    print(json.dumps(resultado.as_dict(), indent=2, default=str))
+    return EXIT_OK
+
+
+def _contention_probe(index: int) -> Any:
+    """A consulta que o lado de leitura emite, um agregado — que é o que um scan analítico faz.
+
+    `expected` fica `None` de propósito: aqui o que se mede é CONTENÇÃO, não correção, e um oráculo
+    exigiria conhecer o conteúdo da tabela no meio de uma carga que está escrevendo nela. A
+    correção do resultado analítico é medida pela suíte analítica, que roda sem escritor.
+    """
+    from theodb_bench.adapters.base import AnalyticalQuery
+
+    return AnalyticalQuery(id=f"contention-{index}", description="scan sob contenção")
+
+
+def cmd_tpch(args: argparse.Namespace) -> int:
+    """Roda a suíte TPC-H multi-tabela contra um sistema, conferindo cada resposta contra o oráculo.
+
+    POR QUE ESTE COMANDO EXISTE (B-065). O contrato analítico anterior era de UMA tabela, e a
+    avaliação independente do AlloyDB publicou Q1/Q5/Q6/Q18 — a Q18 junta três. Sem esquema
+    multi-tabela, os números do concorrente não tinham onde ser respondidos com o mesmo shape, e
+    responder com shape nosso mede outra coisa e chama de comparação.
+
+    O oráculo é consultado SEMPRE: uma query rápida e errada não é uma query rápida.
+    """
+    from theodb_bench.bench.tpch import run_tpch_suite
+
+    # Ciclo de vida completo, como o `compare` faz: construir NAO e preparar, preparar nao e
+    # iniciar, e iniciar nao e estar pronto. Pular qualquer um rende `system is not ready` no
+    # primeiro `load` — que foi o que a primeira execucao deste comando devolveu, com a mensagem
+    # certa apontando para o passo que faltava.
+    entrada = get_adapter(args.system)
+    adapter = entrada.build(dsn=args.dsn) if args.dsn else entrada.build()
+    adapter.prepare()
+    adapter.start()
+    adapter.wait_ready()
+    try:
+        medidas = run_tpch_suite(
+            adapter,
+            scale_factor=args.scale_factor,
+            seed=args.seed,
+            prefix=args.prefix,
+        )
+    finally:
+        adapter.stop()
+    print(
+        json.dumps(
+            {
+                "scale_factor": args.scale_factor,
+                "seed": args.seed,
+                "queries": {
+                    qid: {
+                        "seconds": m.seconds,
+                        "matches_oracle": m.matches_oracle,
+                        "rows_returned": m.rows_returned,
+                    }
+                    for qid, m in medidas.items()
+                },
+            },
+            indent=2,
+        )
+    )
+    # Sai não-zero quando alguma resposta discorda do oráculo: um motor rápido e errado não passa.
+    return EXIT_OK if all(m.matches_oracle for m in medidas.values()) else EXIT_ERROR
+
+
+def cmd_throughput(args: argparse.Namespace) -> int:
+    """Compara VELOCIDADE entre duas configurações, a partir de N corridas por lado.
+
+    POR QUE SEPARADO DO `compare` (B-049). O `compare` faz o teste PAREADO sobre latência por
+    consulta, e o pareado não serve para taxa agregada: QPS é um número por corrida, não por
+    consulta. Aplicá-lo a taxas inventaria uma correlação inexistente e estreitaria o intervalo sem
+    razão — e as duas maiores diferenças que este projeto publica são justamente de velocidade.
+
+    Os valores vêm na linha de comando porque é isso que um operador tem hoje: N bundles, cada um
+    com o seu `throughput_per_second`. Ler os bundles direto é a integração que o bullet 1 pede do
+    runner, e ela é trabalho próprio.
+    """
+    print(
+        render_throughput_verdict(args.a, list(args.a_runs), args.b, list(args.b_runs)),
+    )
+    return EXIT_OK
 
 
 def main(argv: Sequence[str] | None = None) -> int:
