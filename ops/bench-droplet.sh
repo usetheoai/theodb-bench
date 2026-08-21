@@ -24,10 +24,37 @@ MANTER="${MANTER:-0}"                          # MANTER=1 nao destroi (depuracao
 # Droplets que NAO sao de medicao e nunca se toca. Guarda explicita, nao confianca no nome que passei.
 PROIBIDOS="theo-e2e-runner theokit-website"
 
-ID=""; IP=""; TMP=""
+ID=""; IP=""; TMP=""; COLHIDO=0
 limpar() {
   local rc=$?
   [ -n "$TMP" ] && [ -d "$TMP" ] && find "$TMP" -mindepth 0 -delete 2>/dev/null
+
+  # COLHER ANTES DE DESTRUIR, em QUALQUER caminho de saida — sucesso, falha, Ctrl-C, ou o script
+  # quebrando no meio. MEDIDO em 2026-08-21: a coleta ficava DEPOIS da medicao, o script quebrou
+  # entre as duas, e o trap destruiu o droplet com os resultados dentro. A medicao tinha rodado e
+  # terminado com rc=0; o que se perdeu foi so a copia. Numa corrida de verdade seria perda
+  # permanente de dado pago, e a mensagem "NAO destrua ate copiar" nao adianta quando quem destroi
+  # e o proprio trap.
+  if [ -n "$IP" ] && [ "$COLHIDO" = "0" ]; then
+    echo ">>> colhendo resultados antes de destruir"
+    mkdir -p "$DESTINO"
+    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "root@$IP" \
+      'tar -czf /root/resultados.tgz /root/res-* /root/bench-run.log 2>/dev/null; true' 2>/dev/null
+    if scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q "root@$IP:/root/resultados.tgz" "$DESTINO/$NOME.tgz" 2>/dev/null; then
+      COLHIDO=1; echo "    $DESTINO/$NOME.tgz"
+    else
+      echo "!!! NAO consegui colher de $IP"
+    fi
+  fi
+
+  # Um droplet cujos resultados nao foram colhidos NAO e destruido automaticamente. Ficar de pe
+  # cobrando e ruim; destruir dado que custou uma hora de host e pior, e irreversivel.
+  if [ -n "$ID" ] && [ "$COLHIDO" = "0" ] && [ "$MANTER" != "1" ]; then
+    echo ">>> droplet $ID ($IP) MANTIDO DE PE: a coleta falhou e destruir perderia o resultado."
+    echo "    colha a mao, depois: doctl compute droplet delete $ID --force"
+    exit $rc
+  fi
+
   if [ -n "$ID" ]; then
     if [ "$MANTER" = "1" ]; then
       echo ">>> MANTER=1: droplet $ID ($IP) DE PE, cobrando US\$ 0,75/h. Destrua com:"
@@ -116,12 +143,6 @@ TAGS="${NOMES# }"
 echo "=== medindo (suite=$SUITE tags=$TAGS) ==="
 ssh -o StrictHostKeyChecking=no "root@$IP" "SUITE='$SUITE' TAGS='$TAGS' /root/bench-run.sh"
 RC=$?
-
-echo "=== colhendo resultados ==="
-mkdir -p "$DESTINO"
-ssh -o StrictHostKeyChecking=no "root@$IP" 'tar -czf /root/resultados.tgz /root/res-* /root/bench-run.log 2>/dev/null; true'
-scp -o StrictHostKeyChecking=no -q "root@$IP:/root/resultados.tgz" "$DESTINO/$NOME.tgz" \
-  && echo "    $DESTINO/$NOME.tgz" || echo "!!! nao consegui colher — NAO destrua ate copiar"
 
 echo "=== fim rc=$RC $(date -Is) ==="
 exit $RC
