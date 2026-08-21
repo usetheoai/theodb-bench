@@ -272,6 +272,38 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
         ),
         default_repetitions=3,
     ),
+    # B-046 / B-042 — a fronteira larga, para comparar DOIS motores a RECALL CASADO.
+    #
+    # Comparar QPS a `ef_search` igual compara a coisa errada: `ef` não é a mesma unidade em dois
+    # grafos diferentes. O [[B-046]] mede que, no mesmo `ef=64`, o TheoDB entrega recall 0,9600 e o
+    # pgvector 0,9835 — logo um "déficit de QPS" lido nesse par está comparando um sistema que
+    # buscou menos com um que buscou mais. A comparação honesta lê os dois na MESMA altura de
+    # recall, e para isso é preciso ter pontos suficientes dos dois lados para interpolar.
+    #
+    # {40, 64, 128, 256} num único build: `ef_search` é GUC de sessão, então os quatro pontos saem
+    # do mesmo índice e o build é pago uma vez. O 128 está aqui porque é onde o [[B-046]] mediu que
+    # o TheoDB alcança o recall do pgvector em 64.
+    #
+    # E o build é medido junto, o que responde o [[B-042]] sem uma segunda corrida: o artefato já
+    # registra `build_seconds` e `index_size_bytes` por ponto.
+    "vector/sift1m/frontier": BenchmarkEntry(
+        id="vector/sift1m/frontier",
+        description=(
+            "SIFT1M across a wide ef_search sweep, so two engines can be read at "
+            "MATCHED RECALL instead of at matched ef -- which is not the same "
+            "knob in two different graphs. Build time and index size come with it."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_000_000,
+            dimension=128,
+            query_count=500,
+            k=10,
+            warmup_queries=50,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (40, 64, 128, 256)},
+        ),
+        default_repetitions=3,
+    ),
     # B-018 — a pergunta é sobre o DEFAULT, e por isso a varredura é {40, 64} e não {64, 256}.
     #
     # Medido em 2026-08-21: o `theodb_hnsw` usa `ef_search = 64` por default (herdado do

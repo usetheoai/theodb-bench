@@ -7,6 +7,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`vector/sift1m/frontier`** — varredura de `ef_search` em {40, 64, 128, 256} num único build, para
+  ler **dois motores a recall casado** em vez de a `ef` casado. Comparar QPS no mesmo `ef` compara a
+  coisa errada: `ef` não é a mesma unidade em dois grafos diferentes — no mesmo 64 o [[B-046]] mede
+  recall 0,9600 nosso contra 0,9835 do pgvector, e um "déficit" lido nesse par compara quem buscou
+  menos com quem buscou mais. Os quatro pontos saem do mesmo índice (`ef_search` é GUC de sessão), e
+  o artefato já registra `build_seconds` e `index_size_bytes`, o que responde o [[B-042]] sem uma
+  segunda corrida. (#B-046, #B-042)
+
 ### Fixed
 - **O arnês não conseguia buscar o dataset que ele mesmo declara.** Medido num host limpo: a origem do
   `sift-128-euclidean` responde **403 Forbidden** ao `User-Agent` default do `urllib`
