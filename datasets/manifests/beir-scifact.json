@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "beir-scifact",
+  "version": "beir-2021-03-19",
+  "description": "SciFact do BEIR: 5183 documentos cientificos, 1109 consultas e 300 delas com julgamento humano no split `test`. E o corpus que o m186 usou para publicar nDCG@10 0,6269 — por script ad-hoc, fora do arnes. Traz texto e qrels; NAO traz embeddings, entao serve a perna lexical e nao a densa.",
+  "source": {
+    "url": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip"
+  },
+  "license": {
+    "name": "CC BY-SA 4.0 - BEIR (Thakur et al. 2021), corpus SciFact (Wadden et al. 2020)",
+    "redistributable": false
+  },
+  "files": [
+    {
+      "path": "scifact.zip",
+      "sha256": "536e14446a0ba56ed1398ab1055f39fe852686ecad24a6306c80c490fa8e0165",
+      "size_bytes": 2816079,
+      "url": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip",
+      "role": "corpus"
+    }
+  ],
+  "preprocess": {
+    "version": 1,
+    "description": "Nenhum. O zip publicado e lido como esta, direto pela `zipfile` da stdlib — nao ha copia extraida, e o sha256 verificado e o do arquivo PUBLICADO. Titulo e corpo sao concatenados para formar o texto do documento, que e o que a literatura do BEIR indexa; separa-los mediria um indice que ninguem constroi."
+  }
+}

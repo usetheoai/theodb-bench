@@ -20,9 +20,10 @@ from typing import Any, Final
 
 from theodb_bench import __version__
 from theodb_bench.adapters.base import IndexSpec
+from theodb_bench.bench.beir import load_beir
 from theodb_bench.bench.contention import Regime
+from theodb_bench.bench.retrieval import RetrievalWorkload
 from theodb_bench.bench.vector import (
-    FloatArray,
     VectorBenchmark,
     VectorCorpus,
     VectorWorkload,
@@ -331,11 +332,54 @@ def cmd_run(args: argparse.Namespace) -> int:
     repetitions = args.repetitions if args.repetitions is not None else entry.default_repetitions
 
     workload = entry.workload
-    corpus: VectorCorpus | None = None
-    queries: FloatArray | None = None
+    # `Any` e deliberado, e a razao esta no protocolo `Workload`: `build(corpus, queries)` recebe o
+    # que a FAMILIA entende. A vetorial recebe dois arrays; a de retrieval recebe documentos e um
+    # QuerySet com julgamentos. Uniao dos dois tipos aqui seria uma lista que cresce a cada familia
+    # nova — exatamente o acoplamento que o protocolo existe para nao ter.
+    corpus: Any = None
+    queries: Any = None
     dataset_id = dataset_version = dataset_sha256 = None
 
-    if args.dataset:
+    if args.dataset and isinstance(workload, RetrievalWorkload):
+        # B-093 — corpus com JULGAMENTO HUMANO. O despacho é por família e não por sufixo: a família
+        # de retrieval recebe `(documentos, QuerySet)` e a vetorial recebe dois arrays de vetores.
+        # São formas diferentes, e tratar as duas pelo mesmo carregador faria uma delas ser lida
+        # como a outra.
+        manifest = _dataset_registry(args).load(args.dataset)
+        verificacao = require_verified(manifest, args.dataset_root)
+        entrada = manifest.files[0]
+        caminho = manifest.resolve(args.dataset_root, entrada)
+        documentos, consultas = load_beir(caminho)
+        nao_lexicais = tuple(p for p in workload.pipelines if p != "lexical")
+        if nao_lexicais:
+            raise ConfigError(
+                f"`{entry.id}` declara {nao_lexicais} e `--dataset {args.dataset}` e um corpus "
+                f"BEIR, que publica texto e julgamentos mas NAO embeddings. Rodar uma perna densa "
+                f"sobre vetores que o corpus nao tem produziria um numero com a aparencia de "
+                f"medicao e sem a propriedade.",
+                context=ErrorContext(phase=Phase.PREFLIGHT),
+            )
+        workload = replace(
+            workload,
+            corpus_size=len(documentos),
+            query_count=len(consultas.texts),
+            # Largura 1 porque `vector(0)` e ilegal, medido:
+            # `dimensions for type vector must be at least 1`. A coluna existe porque a forma da
+            # tabela a exige e carrega um zero; a perna densa foi RECUSADA acima, entao ninguem a
+            # consome. Preencher com ruido a faria rodar e o numero parecer medido.
+            dimension=1,
+        )
+        corpus, queries = documentos, consultas
+        dataset_id, dataset_version = manifest.id, manifest.version
+        dataset_sha256 = next(
+            (f.expected_sha256 for f in verificacao.files if f.path == entrada.path), ""
+        )
+        print(
+            f"dataset   {manifest.id} v{manifest.version}: verified, "
+            f"{len(documentos)} documents, {len(consultas.texts)} judged queries "
+            f"(lexical only -- BEIR publishes no embeddings)"
+        )
+    elif args.dataset:
         if not isinstance(workload, VectorWorkload):
             raise ConfigError(
                 f"`{entry.id}` generates its own data from its seed, and "
