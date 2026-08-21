@@ -59,6 +59,7 @@ from __future__ import annotations
 import contextlib
 import math
 import time
+import zlib
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1572,9 +1573,33 @@ class TheoDBAdapter(PgvectorAdapter):
             rows_expected=len(documents),
         )
 
+    @staticmethod
+    def lexical_index_id(table: str) -> int:
+        """O id que `bm25_build` usa como chave — DETERMINISTICO entre processos.
+
+        MEDIDO em 2026-08-21 (B-043): a versao anterior derivava o id do `hash()` embutido do
+        Python, que para string e **aleatorizado por processo** (PEP 456). Tres execucoes, tres
+        ids diferentes para a mesma tabela.
+
+        O id chaveia um objeto PERSISTENTE do banco (`theodb.lexical_index_meta`), entao derivar
+        de um valor que muda a cada processo significa que:
+
+        - um indice construido numa corrida nao e encontravel na seguinte;
+        - um gerador de carga EXTERNO — o `pgbench` que o DoD do B-043 exige — nao tem como
+          computar o mesmo id, e teria de le-lo do catalogo;
+        - dentro de UM processo tudo funciona, que e por que ninguem viu.
+
+        `crc32` e da stdlib e deterministica. O espaco e de um milhao e as tabelas de benchmark
+        sao dezenas; uma colisao poria dois corpora sob um id e o `bm25_build` sobrescreveria um
+        com o outro — improvavel nesta escala, e detectavel porque o oraculo confere a resposta.
+
+        Publico e `@staticmethod` de proposito: quem escreve um gerador externo precisa do mesmo
+        id sem instanciar um adapter.
+        """
+        return zlib.crc32(table.encode("utf-8")) % 1_000_000
+
     def _lexical_index_id(self, spec: DocumentTableSpec) -> int:
-        """A stable id per table, since bm25_build is keyed by integer."""
-        return abs(hash(spec.table)) % 1_000_000
+        return type(self).lexical_index_id(spec.table)
 
     def _lexical_index_exists(self, table: str) -> bool:
         """O indice existe NO BANCO? — nao "esta instancia o construiu?".
@@ -1599,7 +1624,7 @@ class TheoDBAdapter(PgvectorAdapter):
             return True
         linha = self._fetch_one(
             "SELECT 1 FROM theodb.lexical_index_meta WHERE index_id = %s",
-            (abs(hash(table)) % 1_000_000,),
+            (type(self).lexical_index_id(table),),
         )
         if linha:
             self._lexical_built.add(table)
@@ -1614,7 +1639,7 @@ class TheoDBAdapter(PgvectorAdapter):
                 f"indistinguishable from nothing matching",
                 context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
             )
-        spec_id = abs(hash(query.table)) % 1_000_000
+        spec_id = type(self).lexical_index_id(query.table)
         started = time.perf_counter()
         rows = self._fetch_all(
             "SELECT id, score FROM bm25_search(%s, %s, %s)",

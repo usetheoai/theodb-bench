@@ -22,6 +22,7 @@ is nothing to measure, and a stub would put a number where an absence belongs.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -366,4 +367,46 @@ def test_the_positive_answer_is_remembered_and_the_negative_is_not() -> None:
             vazio.execute_lexical(LexicalQuery(table="bench_docs", text="lazy", n=5))
     assert vazio._lexical_built == set(), (
         "um negativo memorizado quebraria o indice construido depois"
+    )
+
+
+def test_the_lexical_index_id_is_stable_across_processes() -> None:
+    """O id chaveia um objeto PERSISTENTE do banco, e vinha do `hash()` embutido.
+
+    MEDIDO em 2026-08-21: o `hash()` de string em Python e aleatorizado por processo (PEP 456) —
+    tres execucoes, tres ids diferentes para a mesma tabela. As consequencias:
+
+    - um indice construido numa corrida NAO e encontravel na seguinte;
+    - um gerador de carga externo (o `pgbench` que o DoD do B-043 exige) nao tem como computar o
+      mesmo id;
+    - dentro de UM processo tudo funciona, que e por que ninguem viu.
+
+    Este teste roda o calculo num SUBPROCESSO com semente de hash diferente. Compara-lo consigo
+    mesmo no processo atual nao provaria nada — o `hash()` tambem e estavel dentro de um processo.
+    """
+    import subprocess
+    import sys
+
+    from theodb_bench.adapters.postgres import TheoDBAdapter
+
+    aqui = TheoDBAdapter.lexical_index_id("bench_documents")
+    programa = (
+        "import sys; sys.path.insert(0, 'src');"
+        "from theodb_bench.adapters.postgres import TheoDBAdapter;"
+        "print(TheoDBAdapter.lexical_index_id('bench_documents'))"
+    )
+    vistos = set()
+    for semente in ("0", "1", "12345"):
+        saida = subprocess.run(
+            [sys.executable, "-c", programa],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+            env={"PYTHONHASHSEED": semente, "PATH": "/usr/bin:/bin"},
+            check=True,
+        )
+        vistos.add(int(saida.stdout.strip()))
+    assert vistos == {aqui}, (
+        f"o id mudou entre processos: {vistos} contra {aqui} — um indice construido numa corrida "
+        f"nao seria encontravel na seguinte"
     )

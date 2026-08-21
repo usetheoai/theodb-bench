@@ -8,6 +8,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **O `index_id` do índice lexical mudava a cada processo.** Ele vinha de `abs(hash(tabela))`, e o
+  `hash()` de string em Python é **aleatorizado por processo** (PEP 456) — três execuções, três ids
+  para a mesma tabela. Como o id chaveia um objeto **persistente** do banco
+  (`theodb.lexical_index_meta`), um índice construído numa corrida **não era encontrável na
+  seguinte**, e um gerador de carga externo — o `pgbench` que o DoD do #B-043 exige — não teria como
+  computá-lo. Dentro de **um** processo tudo funcionava, que é por que ninguém viu. Passa a ser
+  `crc32`, determinística, pinada num teste que roda em subprocessos com sementes de hash diferentes.
+  (#B-043)
 - **A guarda do índice lexical perguntava à INSTÂNCIA, não ao banco — e isso tornava impossível
   qualquer curva de concorrência.** Medido no droplet: com 1 cliente, **349,4 QPS**; com 5 ou mais,
   **0,0 QPS, 300 erros, zero sucessos**. O adapter guardava `_lexical_built` como estado por
