@@ -599,7 +599,11 @@ class FakeAdapter(SystemAdapter):
         started = time.perf_counter()
         seen = {query.source}
         frontier = [query.source]
-        reached: list[int] = []
+        # A fonte entra no conjunto: a semantica modelada e *reachable set* dentro de <=H saltos
+        # (`theodb_rs/src/graph.rs:429`), e a semente e alcancavel em zero saltos. Enquanto o fake
+        # a excluia, os testes ficavam verdes e o sistema real discordava do oraculo em 100% das
+        # travessias — medido em 2026-08-21.
+        reached: list[int] = [query.source]
         edges_visited = 0
 
         for _ in range(query.hops):
