@@ -7,27 +7,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Fixed
-- **O `index_id` do índice lexical mudava a cada processo.** Ele vinha de `abs(hash(tabela))`, e o
-  `hash()` de string em Python é **aleatorizado por processo** (PEP 456) — três execuções, três ids
-  para a mesma tabela. Como o id chaveia um objeto **persistente** do banco
-  (`theodb.lexical_index_meta`), um índice construído numa corrida **não era encontrável na
-  seguinte**, e um gerador de carga externo — o `pgbench` que o DoD do #B-043 exige — não teria como
-  computá-lo. Dentro de **um** processo tudo funcionava, que é por que ninguém viu. Passa a ser
-  `crc32`, determinística, pinada num teste que roda em subprocessos com sementes de hash diferentes.
-  (#B-043)
-- **A guarda do índice lexical perguntava à INSTÂNCIA, não ao banco — e isso tornava impossível
-  qualquer curva de concorrência.** Medido no droplet: com 1 cliente, **349,4 QPS**; com 5 ou mais,
-  **0,0 QPS, 300 erros, zero sucessos**. O adapter guardava `_lexical_built` como estado por
-  instância, então cada cliente novo nascia com o conjunto vazio e toda consulta era recusada com
-  *"never built in this **session**"* — mas o índice vive no **banco**, não na sessão. A guarda
-  afirmava algo sobre a memória do adapter e reportava como fato sobre o servidor.
-  .
-  Invisível até agora porque **nada no arnês jamais abriu uma segunda conexão**. As duas guardas
-  (lexical e híbrida) passam a consultar o catálogo, memorizando só o **positivo**: um índice
-  construído não deixa de existir no meio da corrida, e re-perguntar por consulta poria um
-  round-trip no caminho que a corrida mede. O negativo não se memoriza — a corrida pode construir o
-  índice depois. (#B-043)
+## [0.6.0] - 2026-08-21
 
 ### Added
 - **`retrieval/scifact/concurrency`** — o pilar lexical sob **população de clientes**, laço fechado,
@@ -50,6 +30,27 @@ project adheres to [Semantic Versioning](https://semver.org/).
   importa — *serializar N clientes numa conexão mede a trava do cliente e reporta como sendo o
   banco* — não pode divergir entre duas cópias. (#B-043)
 
+### Fixed
+- **O `index_id` do índice lexical mudava a cada processo.** Ele vinha de `abs(hash(tabela))`, e o
+  `hash()` de string em Python é **aleatorizado por processo** (PEP 456) — três execuções, três ids
+  para a mesma tabela. Como o id chaveia um objeto **persistente** do banco
+  (`theodb.lexical_index_meta`), um índice construído numa corrida **não era encontrável na
+  seguinte**, e um gerador de carga externo — o `pgbench` que o DoD do #B-043 exige — não teria como
+  computá-lo. Dentro de **um** processo tudo funcionava, que é por que ninguém viu. Passa a ser
+  `crc32`, determinística, pinada num teste que roda em subprocessos com sementes de hash diferentes.
+  (#B-043)
+- **A guarda do índice lexical perguntava à INSTÂNCIA, não ao banco — e isso tornava impossível
+  qualquer curva de concorrência.** Medido no droplet: com 1 cliente, **349,4 QPS**; com 5 ou mais,
+  **0,0 QPS, 300 erros, zero sucessos**. O adapter guardava `_lexical_built` como estado por
+  instância, então cada cliente novo nascia com o conjunto vazio e toda consulta era recusada com
+  *"never built in this **session**"* — mas o índice vive no **banco**, não na sessão. A guarda
+  afirmava algo sobre a memória do adapter e reportava como fato sobre o servidor.
+  .
+  Invisível até agora porque **nada no arnês jamais abriu uma segunda conexão**. As duas guardas
+  (lexical e híbrida) passam a consultar o catálogo, memorizando só o **positivo**: um índice
+  construído não deixa de existir no meio da corrida, e re-perguntar por consulta poria um
+  round-trip no caminho que a corrida mede. O negativo não se memoriza — a corrida pode construir o
+  índice depois. (#B-043)
 ## [0.5.0] - 2026-08-21
 
 ### Added
