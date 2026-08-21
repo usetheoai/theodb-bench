@@ -8,6 +8,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **O contrato analítico deixou de ser de uma tabela só.** A avaliação independente do AlloyDB
+  publicou Q1/Q5/Q6/Q18 do TPC-H, e a **Q18 junta três tabelas** — nenhuma junção era expressável, e
+  responder com shape nosso mede outra coisa e chama de comparação. Entra o esquema multi-tabela com
+  chaves, um gerador semeado e reprodutível, o **oráculo da junção calculado em Python** (se os três
+  caminhos concordassem no mesmo erro, compará-los entre si não acharia nada), o SQL construído a
+  partir do esquema, e o comando `theodb-bench tpch`. Verificado contra um PostgreSQL real: as três
+  queries batem com o oráculo. A **Q5 fica fora de escopo com a razão escrita** — seis junções, duas
+  dimensões que nenhuma outra query toca. (#B-065)
+- **`execute_analytical_sql` e tipos de coluna por tabela.** `execute_analytical` recebe UMA tabela,
+  então uma junção de três não passa por ela; e o carregador criava um esquema fixo e depois copiava
+  em colunas de outro nome, o que falha na primeira linha. (#B-065)
+
+### Added
 - **A contenção escrita x scan passou a ser medível.** Não havia carga mista: existia motor
   concorrente (`run_load`) e o pilar vetorial o usava, mas nada rodava um escritor ao mesmo tempo que
   leitores — que é onde a avaliação independente do AlloyDB mediu uma **inversão** (ligar o colunar

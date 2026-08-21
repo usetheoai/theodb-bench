@@ -74,6 +74,11 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "PTH", "RUF", "S
 # nothing but alphanumerics and underscores and raises otherwise. Every value is
 # bound. The check is enforced by test_identifiers_that_are_not_identifiers_are_refused.
 "src/adapters/postgres.py" = ["S608"]
+# Mesma razão, mesmo precedente: `bench/tpch.py` monta o SQL das queries registradas a partir do
+# ESQUEMA, e nome de tabela não pode ser parâmetro de query. Os identificadores passam por
+# `_safe_identifier` antes de entrar no texto — a mesma regra do `_identifier` do adapter. A isenção
+# vale porque a precondição é ENFORÇADA, não argumentada.
+"src/bench/tpch.py" = ["S608"]
 
 [tool.mypy]
 python_version = "3.10"
