@@ -42,6 +42,7 @@ from theodb_bench.datasets import (
 from theodb_bench.doctor import render_report, run_doctor
 from theodb_bench.environment import capture_environment
 from theodb_bench.errors import BenchError, ConfigError, ErrorContext, Phase
+from theodb_bench.isolation import IsolationPlan, parse_cpu_set
 from theodb_bench.formats import (
     AnnDataset,
     StreamedAnnDataset,
@@ -425,6 +426,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             dataset_id=dataset_id,
             dataset_version=dataset_version,
             dataset_sha256=dataset_sha256,
+            isolation=build_isolation_plan(args.cpu_set, args.memory, args.numa_node),
         )
     )
     write_report(outcome.bundle)
@@ -685,6 +687,60 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+_UNIDADES: dict[str, int] = {
+    "": 1, "b": 1,
+    "k": 1000, "kb": 1000, "kib": 1024,
+    "m": 1000**2, "mb": 1000**2, "mib": 1024**2,
+    "g": 1000**3, "gb": 1000**3, "gib": 1024**3,
+    "t": 1000**4, "tb": 1000**4, "tib": 1024**4,
+}
+
+
+def parse_memory_size(texto: str) -> int:
+    """Converte '8GiB', '16G' ou '1024' em bytes.
+
+    Distingue GiB de GB de proposito: um limite de memoria declarado errado por 7% e um
+    limite errado, e o arnes compara o uso observado contra o valor DECLARADO.
+    """
+    limpo = texto.strip().lower().replace(" ", "")
+    i = 0
+    while i < len(limpo) and (limpo[i].isdigit() or limpo[i] == "."):
+        i += 1
+    numero, sufixo = limpo[:i], limpo[i:]
+    if not numero:
+        raise ConfigError(
+            f"tamanho de memoria invalido: {texto!r}; use algo como '8GiB' ou '16G'",
+            context=ErrorContext(phase=Phase.PREFLIGHT),
+        )
+    if sufixo not in _UNIDADES:
+        raise ConfigError(
+            f"unidade de memoria desconhecida em {texto!r}: {sufixo!r}; "
+            f"conhecidas: {', '.join(sorted(u for u in _UNIDADES if u))}",
+            context=ErrorContext(phase=Phase.PREFLIGHT),
+        )
+    return int(float(numero) * _UNIDADES[sufixo])
+
+
+def build_isolation_plan(
+    cpu_set: str | None, memory: str | None, numa_node: int | None
+) -> IsolationPlan:
+    """Traduz o que o usuario DECLAROU num plano de isolamento.
+
+    Existe como funcao propria, e nao inline no `run`, porque o defeito que ela conserta era
+    justamente um plano que nunca era construido: a CLI aceitava a corrida, o
+    `RunRequest.isolation` ficava no default vazio, e `cpu_limit`/`memory_limit` saiam
+    UNAVAILABLE — tornando `nightly` e `release` inalcancaveis em QUALQUER hardware.
+
+    Nao declarar continua legitimo: `research` nao exige isolamento, e inventar um default
+    esconderia do usuario que nada foi declarado.
+    """
+    return IsolationPlan(
+        cpu_set=parse_cpu_set(cpu_set) if cpu_set else None,
+        memory_bytes=parse_memory_size(memory) if memory else None,
+        numa_node=numa_node,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="theodb-bench",
@@ -821,6 +877,28 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="an accepted run bundle to detect regression against. Profiles that "
         "declare regression_gate record that no detection happened without one.",
+    )
+    run.add_argument(
+        "--cpu-set",
+        default=None,
+        metavar="LIST",
+        help="CPUs the measurement is confined to, as a Linux CPU list (e.g. '2-5' or "
+        "'0,2,4'). Os perfis `nightly` e `release` exigem isolamento declarado: sem esta "
+        "flag o check `cpu_limit` fica UNAVAILABLE e a corrida e INVALID nesses perfis.",
+    )
+    run.add_argument(
+        "--memory",
+        default=None,
+        metavar="SIZE",
+        help="upper bound on memory for the measurement (e.g. '8GiB', '16G', ou bytes). "
+        "Mesma razao do --cpu-set: sem declaracao o check `memory_limit` fica UNAVAILABLE.",
+    )
+    run.add_argument(
+        "--numa-node",
+        type=int,
+        default=None,
+        metavar="N",
+        help="NUMA node the measurement is pinned to. Irrelevante num host de no unico.",
     )
     run.add_argument(
         "--build-timeout",

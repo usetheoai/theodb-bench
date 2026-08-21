@@ -8,6 +8,11 @@ set -uo pipefail
 
 SUITE="${SUITE:-analytical/crossover/row-count}"
 PROFILE="${PROFILE:-research}"
+# Isolamento DECLARADO. Os perfis `nightly` e `release` exigem `cpu_limit` e `memory_limit`, e sem
+# declaracao eles saem UNAVAILABLE e invalidam a corrida — em qualquer hardware. Vazio = nao declara,
+# que e legitimo em `research` e honesto: inventar um default esconderia que nada foi declarado.
+CPU_SET="${CPU_SET:-}"
+MEM_MAX="${MEM_MAX:-}"
 SMOKE="${SMOKE:-analytical/synthetic/paths}"
 TAGS="${TAGS:-base fix}"
 PARQUET_DIR=/var/lib/postgresql/theodb-bench-parquet
@@ -72,7 +77,8 @@ medir() {
   local tag="$1" suite="$2" saida="$3"
   echo "=== $tag :: $suite inicio $(date -Is) ==="
   PGUSER=postgres /root/venv/bin/theodb-bench run "$suite" \
-    --system theodb --profile "$PROFILE" --output "$saida"
+    --system theodb --profile "$PROFILE" --output "$saida" \
+    ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"}
   local rc=$?
   echo "=== $tag :: $suite fim rc=$rc $(date -Is) ==="
   return $rc

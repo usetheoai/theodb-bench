@@ -13,6 +13,8 @@ TAMANHO="${TAMANHO:-g-16vcpu-64gb}"
 SSH_KEY="${SSH_KEY:-58598100}"
 SUITE="${SUITE:-analytical/crossover/row-count}"
 PROFILE="${PROFILE:-research}"
+CPU_SET="${CPU_SET:-}"
+MEM_MAX="${MEM_MAX:-}"
 # TAGS aceita `nome:ref` — o ref e um commit-ish do repo do theo-db, e a imagem `theodb:nome` e
 # construida a partir dele NO HOST. E assim que se compara dois commits: mesma maquina, mesmo dia,
 # mesmos parametros, diferindo so no codigo. `nome` sozinho assume que a imagem ja existe.
@@ -169,7 +171,7 @@ done
 TAGS="${NOMES# }"
 
 echo "=== medindo (suite=$SUITE tags=$TAGS) ==="
-ssh -o StrictHostKeyChecking=no "root@$IP" "SUITE='$SUITE' TAGS='$TAGS' PROFILE='$PROFILE' /root/bench-run.sh"
+ssh -o StrictHostKeyChecking=no "root@$IP" "SUITE='$SUITE' TAGS='$TAGS' PROFILE='$PROFILE' CPU_SET='$CPU_SET' MEM_MAX='$MEM_MAX' /root/bench-run.sh"
 RC=$?
 
 echo "=== fim rc=$RC $(date -Is) ==="

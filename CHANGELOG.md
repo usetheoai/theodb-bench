@@ -8,6 +8,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`run --cpu-set` / `--memory` / `--numa-node`: os perfis `nightly` e `release` deixam de ser
+  inalcançáveis pelo próprio ponto de entrada do arnês.** Eles declaram `isolation_required`, o que
+  torna `cpu_limit` e `memory_limit` obrigatórios — e a CLI **nunca construía um `IsolationPlan`**,
+  então `RunRequest.isolation` ficava no default vazio, os dois checks saíam `UNAVAILABLE` e a corrida
+  era `INVALID` **em qualquer hardware**. Dois dos cinco perfis não eram limitação de máquina: era
+  superfície faltando (B-098)
+- `parse_memory_size` distingue `GiB` de `GB` deliberadamente — um limite declarado errado por 7% é um
+  limite errado, e o arnês compara o uso observado contra o valor **declarado** (B-098)
 - `ops/provision.sh` — provisiona um host de bench e, com `--verify`, **reprova em ~2 s** se faltar
   qualquer capacidade, antes de qualquer trabalho caro. É a fonte de verdade do que a máquina precisa
   ter; o snapshot da nuvem passa a ser cache derivado dele (B-098)
