@@ -7,6 +7,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`vector/sift1m/ef-default`** — SIFT1M contra o `theodb_hnsw` nos **dois defaults de `ef_search` em
+  disputa**: 40 (do pgvector) e 64 (nosso). Existe porque o [[B-018]] mediu que o planner larga o índice
+  numa junção com filtro seletivo em `ef=64`, e que o pgvector no MESMO 64 produz plano e custos
+  idênticos aos nossos — logo a diferença é a escolha do default, não a implementação. Baixá-lo é uma
+  linha e **troca recall por plano**; este benchmark é o que torna essa troca medida em vez de suposta.
+  A varredura {40, 64} responde "o que o default custa"; a {64, 256} das outras suítes responde "onde
+  fica a fronteira", que é outra pergunta. (#B-018)
+
 ## [0.4.0] - 2026-08-21
 
 ### Added

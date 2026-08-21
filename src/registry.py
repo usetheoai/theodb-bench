@@ -272,6 +272,36 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
         ),
         default_repetitions=3,
     ),
+    # B-018 — a pergunta é sobre o DEFAULT, e por isso a varredura é {40, 64} e não {64, 256}.
+    #
+    # Medido em 2026-08-21: o `theodb_hnsw` usa `ef_search = 64` por default (herdado do
+    # `SCAN_EF` fixo pré-M35) e o pgvector usa 40. Em 64 o planner larga o índice numa junção
+    # com filtro seletivo — e o pgvector, no MESMO 64, produz plano e custos idênticos aos
+    # nossos. Não é defeito de implementação; é a escolha do default. Baixá-lo para 40 é uma
+    # linha, e **troca recall por plano**.
+    #
+    # Este benchmark existe para que essa troca seja MEDIDA antes de decidida. Os dois valores
+    # da varredura não são arbitrários: são exatamente os dois defaults em disputa. Um sweep
+    # {64, 256} — o das outras suítes — responde outra pergunta (onde fica a fronteira) e não
+    # esta (o que o default custa). `wiki/benchmarks/b018-planner-hnsw-juncao.md`.
+    "vector/sift1m/ef-default": BenchmarkEntry(
+        id="vector/sift1m/ef-default",
+        description=(
+            "SIFT1M against theodb_hnsw at the two ef_search DEFAULTS in dispute "
+            "-- 40 (pgvector's) and 64 (ours). Measures what lowering the default "
+            "costs in recall, which is the trade the B-018 fix pays."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_000_000,
+            dimension=128,
+            query_count=500,
+            k=10,
+            warmup_queries=50,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (40, 64)},
+        ),
+        default_repetitions=3,
+    ),
     # Query shapes beyond "top-10, one vector at a time", which is what eleven of
     # the twelve suites asked before these existed.
     #
