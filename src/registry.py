@@ -688,6 +688,38 @@ BENCHMARKS["analytical/synthetic/paths"] = BenchmarkEntry(
 #
 # Cada N RECARREGA os dados nos tres caminhos, entao esta corrida e cara por construcao. E o preco
 # de uma CURVA; um ponto so nao responde "abaixo de quantas".
+# B-043 — ONDE a vazao lexical para de subir, e por que.
+#
+# Medido em 2026-08-13: o QPS satura em ~20 clientes numa maquina de 16 vCPU — de 20 a 80 o
+# throughput nao cresce 1% e a p99 cresce 4x. A causa NAO esta medida, e uma das tres candidatas e o
+# proprio cliente Python do arnes.
+#
+# Este benchmark existe para que a curva saia do arnes. O DoD do item exige, alem dela, um gerador
+# EXTERNO (`pgbench`) na mesma maquina e corpus — se os dois saturarem no mesmo ponto, o
+# cliente esta
+# absolvido e o teto e do servidor; se o pgbench continuar subindo, o teto e nosso. Uma curva so, de
+# um gerador so, nao separa as duas.
+BENCHMARKS["retrieval/scifact/concurrency"] = BenchmarkEntry(
+    id="retrieval/scifact/concurrency",
+    description=(
+        "SciFact lexical under a client population, closed loop, sweeping the client "
+        "count to find where throughput stops scaling. Quality is not reported under "
+        "concurrency: the queries wrap around, so an average nDCG would be over a "
+        "repeated set rather than over the judged one."
+    ),
+    workload=RetrievalWorkload(
+        corpus_size=5183,
+        query_count=300,
+        k=10,
+        n=50,
+        warmup_queries=20,
+        pipelines=("lexical",),
+        client_sweep=(1, 5, 10, 20, 40, 80),
+    ),
+    default_repetitions=3,
+)
+
+
 BENCHMARKS["analytical/crossover/row-count"] = BenchmarkEntry(
     id="analytical/crossover/row-count",
     description=(

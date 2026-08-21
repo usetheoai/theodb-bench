@@ -59,6 +59,7 @@ from __future__ import annotations
 import contextlib
 import math
 import time
+import zlib
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1572,19 +1573,73 @@ class TheoDBAdapter(PgvectorAdapter):
             rows_expected=len(documents),
         )
 
+    @staticmethod
+    def lexical_index_id(table: str) -> int:
+        """O id que `bm25_build` usa como chave — DETERMINISTICO entre processos.
+
+        MEDIDO em 2026-08-21 (B-043): a versao anterior derivava o id do `hash()` embutido do
+        Python, que para string e **aleatorizado por processo** (PEP 456). Tres execucoes, tres
+        ids diferentes para a mesma tabela.
+
+        O id chaveia um objeto PERSISTENTE do banco (`theodb.lexical_index_meta`), entao derivar
+        de um valor que muda a cada processo significa que:
+
+        - um indice construido numa corrida nao e encontravel na seguinte;
+        - um gerador de carga EXTERNO — o `pgbench` que o DoD do B-043 exige — nao tem como
+          computar o mesmo id, e teria de le-lo do catalogo;
+        - dentro de UM processo tudo funciona, que e por que ninguem viu.
+
+        `crc32` e da stdlib e deterministica. O espaco e de um milhao e as tabelas de benchmark
+        sao dezenas; uma colisao poria dois corpora sob um id e o `bm25_build` sobrescreveria um
+        com o outro — improvavel nesta escala, e detectavel porque o oraculo confere a resposta.
+
+        Publico e `@staticmethod` de proposito: quem escreve um gerador externo precisa do mesmo
+        id sem instanciar um adapter.
+        """
+        return zlib.crc32(table.encode("utf-8")) % 1_000_000
+
     def _lexical_index_id(self, spec: DocumentTableSpec) -> int:
-        """A stable id per table, since bm25_build is keyed by integer."""
-        return abs(hash(spec.table)) % 1_000_000
+        return type(self).lexical_index_id(spec.table)
+
+    def _lexical_index_exists(self, table: str) -> bool:
+        """O indice existe NO BANCO? — nao "esta instancia o construiu?".
+
+        MEDIDO em 2026-08-21 (B-043): a guarda anterior consultava `self._lexical_built`, um
+        conjunto POR INSTANCIA. Sob populacao de clientes, cada cliente novo nasce com ele vazio e
+        **toda** consulta era recusada: 300 erros e zero sucessos ja a partir de dois clientes. A
+        curva de concorrencia era impossivel de produzir, e o defeito ficou invisivel porque nada
+        no arnes nunca abriu uma segunda conexao.
+
+        A mensagem antiga dizia "never built in this SESSION" — mas o indice vive no BANCO, nao na
+        sessao. A guarda afirmava algo sobre a memoria do adapter e o reportava como fato sobre o
+        servidor. E o servidor JA recusa corretamente: foi o que o B-041 entregou, consultando
+        `lexical_index_meta`.
+
+        Consulta o catalogo, e memoriza o resultado POSITIVO: um indice construido nao deixa de
+        existir no meio de uma corrida, e re-perguntar por consulta poria um round-trip a mais no
+        caminho que a corrida esta medindo. O negativo NAO e memorizado — a corrida pode construir
+        o indice depois.
+        """
+        if table in self._lexical_built:
+            return True
+        linha = self._fetch_one(
+            "SELECT 1 FROM theodb.lexical_index_meta WHERE index_id = %s",
+            (type(self).lexical_index_id(table),),
+        )
+        if linha:
+            self._lexical_built.add(table)
+            return True
+        return False
 
     def execute_lexical(self, query: LexicalQuery) -> RankedResult:
-        if query.table not in self._lexical_built:
+        if not self._lexical_index_exists(query.table):
             raise UnsupportedCapabilityError(
-                f"the BM25 index over {query.table} was never built in this session, "
+                f"the BM25 index over {query.table} does not exist in the database, "
                 f"and searching one that does not exist returns zero rows -- "
                 f"indistinguishable from nothing matching",
                 context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
             )
-        spec_id = abs(hash(query.table)) % 1_000_000
+        spec_id = type(self).lexical_index_id(query.table)
         started = time.perf_counter()
         rows = self._fetch_all(
             "SELECT id, score FROM bm25_search(%s, %s, %s)",
@@ -1611,10 +1666,10 @@ class TheoDBAdapter(PgvectorAdapter):
         BM25 index that `load_documents` builds, and a report must not imply it
         does.
         """
-        if query.table not in self._lexical_built:
+        if not self._lexical_index_exists(query.table):
             raise UnsupportedCapabilityError(
-                f"the lexical leg over {query.table} was never built, and fusing one "
-                f"leg with nothing returns the dense ranking under a hybrid label",
+                f"the lexical leg over {query.table} does not exist in the database, and "
+                f"fusing one leg with nothing returns the dense ranking under a hybrid label",
                 context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
             )
         started = time.perf_counter()

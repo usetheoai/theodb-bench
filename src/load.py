@@ -45,6 +45,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
+from theodb_bench.errors import ConfigError, ErrorContext, Phase
+
 Client = TypeVar("Client")
 
 #: Default seed for the arrival process. Fixed on purpose: an unseeded schedule
@@ -142,6 +144,43 @@ def arrival_schedule(count: int, rate: float, seed: int = DEFAULT_LOAD_SEED) -> 
         at += rng.expovariate(rate)
         schedule.append(at)
     return schedule
+
+
+def client_pool(
+    adapter: Any,
+    make_client: Callable[[], Any] | None,
+    clients: int,
+) -> tuple[Callable[[], Any], Callable[[Any], None] | None]:
+    """As conexoes por cliente, e como descarta-las.
+
+    Extraido do `VectorBenchmark._client_pool` quando a familia de retrieval passou a precisar do
+    mesmo (B-043): a regra e identica nas duas, e duplicar a decisao de "um cliente reusa a conexao
+    aberta" convidaria as duas copias a divergirem no ponto que mais importa.
+
+    UM cliente reusa o adapter que quem chamou ja abriu — abrir uma segunda conexao para fazer o
+    trabalho que ele ja fazia mudaria a medida sem ganhar nada.
+
+    Sem `make_client` e com mais de um cliente, RECUSA: serializar N clientes numa conexao mediria a
+    trava do cliente e reportaria como sendo o banco.
+    """
+    if clients == 1:
+        return (lambda: adapter), None
+    if make_client is None:
+        raise ConfigError(
+            f"this workload declares {clients} clients and no way to open a connection per "
+            f"client. Serialising them on one connection would measure the lock and report it "
+            f"as the database.",
+            context=ErrorContext(phase=Phase.PREFLIGHT),
+        )
+
+    def build() -> Any:
+        client = make_client()
+        client.prepare()
+        client.start()
+        client.wait_ready()
+        return client
+
+    return build, lambda client: client.stop()
 
 
 def run_load(

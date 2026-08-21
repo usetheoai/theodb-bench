@@ -48,7 +48,7 @@ from theodb_bench.errors import (
     SystemUnavailableError,
     UnsupportedCapabilityError,
 )
-from theodb_bench.load import LoadModel, run_load, summarise_load
+from theodb_bench.load import LoadModel, client_pool, run_load, summarise_load
 from theodb_bench.streaming import CorpusSource
 
 DEFAULT_TABLE: Final[str] = "bench_vectors"
@@ -634,30 +634,13 @@ class VectorBenchmark:
         make_client: Callable[[], SystemAdapter] | None,
         model: LoadModel,
     ) -> tuple[Callable[[], SystemAdapter], Callable[[SystemAdapter], None] | None]:
-        """The per-client connections, and how to dispose of them.
+        """Delega ao `load.client_pool`, que e a unica implementacao desta regra.
 
-        One client reuses the adapter the caller already opened -- opening a
-        second connection to do the same work it did before would change the
-        measurement to gain nothing.
+        A familia de retrieval passou a precisar do mesmo (B-043), e duplicar a decisao de "um
+        cliente reusa a conexao aberta" convidaria as duas copias a divergirem no ponto que mais
+        importa — serializar N clientes numa conexao mede a trava do cliente e reporta como banco.
         """
-        if model.clients == 1:
-            return (lambda: adapter), None
-        if make_client is None:
-            raise ConfigError(
-                f"this workload declares {model.clients} clients and no way to open a "
-                f"connection per client. Serialising them on one connection would measure "
-                f"the lock and report it as the database.",
-                context=ErrorContext(phase=Phase.PREFLIGHT),
-            )
-
-        def build() -> SystemAdapter:
-            client = make_client()
-            client.prepare()
-            client.start()
-            client.wait_ready()
-            return client
-
-        return build, lambda client: client.stop()
+        return client_pool(adapter, make_client, model.clients)
 
     @staticmethod
     def _load_summary(load_result: Any, model: LoadModel) -> dict[str, Any] | None:

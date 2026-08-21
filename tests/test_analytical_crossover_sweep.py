@@ -178,3 +178,34 @@ def test_a_sweep_run_does_not_crash_the_runner_when_load_returns_none(tmp_path) 
     assert "load_seconds=none" in carga, (
         "o `None` tem de ser REGISTRADO: um `load.log` ausente se leria como carga de custo zero"
     )
+
+
+def test_an_invalid_measurement_reaches_the_artifact_as_failed() -> None:
+    """`invalid` e vocabulario INTERNO; o artefato conhece `measured|unsupported|skipped|failed`.
+
+    MEDIDO no droplet: a corrida completou as 72 medidas e **o artefato foi recusado na validacao**
+    — `$.points.6.status: 'invalid' is not one of [...]`, seis vezes, uma por contagem de linhas.
+
+    O defeito e ANTERIOR ao portao de caminho: a resposta errada do oraculo ja produzia `invalid`
+    desde sempre. Nunca disparou porque o oraculo nunca falhou nas suites — o que e outro caso de
+    portao que so passa porque nunca foi exercitado.
+
+    Nao se acrescenta um quinto termo: ele sobreporia `failed`, e a distincao que importa (recusada
+    contra caiu) vive no `status_detail`.
+    """
+    from theodb_bench.adapters.base import AnalyticalResult
+
+    class _RespostaErrada(_Contador):
+        def execute_analytical(
+            self, table: AnalyticalTable, query: AnalyticalQuery
+        ) -> AnalyticalResult:
+            self.consultas.append(self.linhas_atuais)
+            return AnalyticalResult(rows=((-1,),), wall_seconds=0.001)
+
+    bench = AnalyticalBenchmark(_workload(()))
+    pontos = bench.points(_RespostaErrada(), repetitions=1)
+
+    assert [p.status for p in pontos] == ["failed"]
+    assert "oracle" in (pontos[0].status_detail or "").lower(), (
+        "a razao tem de sobreviver ao mapeamento — e ela que distingue recusada de caida"
+    )

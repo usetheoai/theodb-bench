@@ -43,6 +43,7 @@ from theodb_bench.errors import (
     SystemUnavailableError,
     UnsupportedCapabilityError,
 )
+from theodb_bench.load import LoadModel, client_pool, run_load
 
 DEFAULT_TABLE: Final[str] = "bench_documents"
 
@@ -110,6 +111,15 @@ class RetrievalWorkload:
     rrf_k: int = 60
     warmup_queries: int = 0
 
+    #: Contagens de clientes a varrer, em laco fechado. Vazio = um cliente, que e o que as suites
+    #: existentes usam.
+    #:
+    #: Existe para o [[B-043]]: o QPS lexical satura em ~20 clientes numa maquina de 16 vCPU e nao
+    #: sobe mais — de 20 a 80 o throughput nao cresce 1% e a p99 cresce 4x. **A causa nao esta
+    #: medida**, e uma das tres candidatas e o proprio cliente Python do arnes. Sem o arnes saber
+    #: dirigir N clientes, essa hipotese nao pode nem ser posta ao lado de um gerador externo.
+    client_sweep: tuple[int, ...] = ()
+
     def __post_init__(self) -> None:
         unknown = set(self.pipelines) - set(PIPELINES)
         if unknown:
@@ -151,7 +161,7 @@ class RetrievalWorkload:
             "workload": {
                 "type": "retrieval",
                 "loop": "closed",
-                "clients": 1,
+                "clients": max(self.client_sweep) if self.client_sweep else 1,
                 "arrival_rate_per_second": None,
                 "k": [self.k],
                 "operation_count": self.query_count,
@@ -165,7 +175,12 @@ class RetrievalWorkload:
             # essa distincao — a primeira versao disto inventou `judged`, o schema recusou, e
             # estava certo: a palavra que faltava ja existia, e com melhor nome.
             "quality": {"metric": "ndcg", "ground_truth": "dataset"},
-            "parameters": {"pipelines": list(self.pipelines), "n": [self.n], "rrf_k": [self.rrf_k]},
+            "parameters": {
+                "pipelines": list(self.pipelines),
+                "n": [self.n],
+                "rrf_k": [self.rrf_k],
+                **({"clients": list(self.client_sweep)} if self.client_sweep else {}),
+            },
         }
 
     def expected_operations(self, measured_points: int, repetitions: int) -> int:
@@ -382,6 +397,73 @@ class RetrievalBenchmark:
                 # will surface the same problem where it can be counted.
                 return
 
+    def run_concurrent(
+        self,
+        adapter: SystemAdapter,
+        pipeline: str,
+        repetition: int,
+        clients: int,
+        make_client: Callable[[], SystemAdapter] | None,
+    ) -> PipelineResult:
+        """Uma passada da pipeline com POPULACAO de clientes, em laco fechado.
+
+        B-043. O que ela mede que a serial nao mede: onde a vazao para de subir. Uma curva de
+        cliente contra QPS e o unico jeito de distinguir "o trabalho por consulta e caro" de "ha
+        fila contra capacidade fixa" — e a segunda so aparece com mais de um cliente.
+
+        Reusa o `run_load`, que ja registra os dois relogios por requisicao e conta a falha em vez
+        de descarta-la; um erro que encolhe a amostra em silencio transforma sistema quebrado em
+        sistema rapido.
+        """
+        result = PipelineResult(pipeline=pipeline, repetition=repetition)
+        capability = _CAPABILITY[pipeline]
+        if not adapter.supports(capability):
+            result.status = "unsupported"
+            result.status_detail = f"{adapter.system_id} does not support {capability}"
+            return result
+
+        modelo = LoadModel(clients=clients)
+        abrir, fechar = client_pool(adapter, make_client, clients)
+        total = len(self.queries.texts)
+
+        def emitir(cliente: SystemAdapter, indice: int) -> None:
+            # `indice % total` porque o laco fechado emite `count` operacoes e o conjunto de
+            # consultas tem tamanho proprio: dar a volta mede a mesma carga, e truncar mediria
+            # menos consulta com mais cliente.
+            self._run_one(cliente, pipeline, indice % total)
+
+        carga = run_load(
+            abrir,
+            emitir,
+            count=total,
+            model=modelo,
+            fatal=(SystemUnavailableError,),
+            close_client=fechar,
+        )
+        result.successes = carga.successes
+        result.errors = carga.errors
+        result.duration_seconds = carga.duration_seconds
+
+        # DOIS RELOGIOS, e a distincao e o achado que o B-043 persegue.
+        #
+        # `response_seconds` e o que o cliente ve — inclui a espera na fila. `service_seconds` e o
+        # que o servidor levou. Se a resposta cresce e o servico fica PLANO, o teto e fila contra
+        # capacidade fixa; se o servico tambem cresce, o servidor esta ficando mais lento. Reportar
+        # so um dos dois deixaria o leitor concluir o que quiser, que e o que o item recusa.
+        respostas = [r.response_seconds * 1000.0 for r in carga.requests if r.ok]
+        servicos = [r.service_seconds * 1000.0 for r in carga.requests if r.ok]
+        result.latency = summarise_latency(respostas)
+        for i, valor in enumerate(respostas):
+            result.latency_by_query[i] = valor
+        if servicos:
+            # `stage_seconds` e o canal que o artefato ja tem para tempo decomposto, e o
+            # `metric_series` do `PipelineResult` ja o emite como `stage_<nome>_seconds`.
+            result.stage_seconds["service_p50_ms"] = sorted(servicos)[len(servicos) // 2]
+            result.stage_seconds["response_p50_ms"] = sorted(respostas)[len(respostas) // 2]
+        # Qualidade NAO e reportada sob concorrencia: as consultas dao a volta, entao um nDCG medio
+        # seria sobre um conjunto repetido e nao sobre o conjunto julgado. A pergunta aqui e vazao.
+        return result
+
     def run_pipeline(
         self, adapter: SystemAdapter, pipeline: str, repetition: int
     ) -> PipelineResult:
@@ -511,34 +593,50 @@ class RetrievalBenchmark:
         repetitions: int,
         make_client: Callable[[], Any] | None = None,
     ) -> list[RetrievalPoint]:
-        """Um ponto por pipeline, com uma repetição por passada.
+        """Um ponto por (pipeline, clientes), com uma repeticao por passada.
 
-        `make_client` é aceito e ignorado: esta família emite trabalho em série, e o protocolo diz
-        que um benchmark serial deve ACEITAR o argumento em vez de o runner ter de saber qual tipo
-        segura. Recusá-lo poria o regime de volta em quem chama.
+        Sem `client_sweep` e um cliente so, em serie — que e o que as suites existentes usam.
+
+        Com varredura (B-043), cada contagem de clientes vira um ponto proprio, em laco fechado.
+        E isso que distingue "o trabalho por consulta e caro" de "ha fila contra capacidade fixa":
+        a segunda so aparece com mais de um cliente, e era justamente o que o arnes nao sabia
+        produzir.
         """
-        del make_client
         pontos: list[RetrievalPoint] = []
+        contagens = self.workload.client_sweep or (1,)
         for pipeline in self.workload.pipelines:
             self.warm_up(adapter, pipeline)
-            # 1-based: o schema do artefato exige `repetition >= 1`. `range(repetitions)` daria
-            # zero na primeira, e o validador recusa — corretamente, porque "repeticao 0" nao
-            # significa nada para quem le o artefato depois.
-            passadas = [self.run_pipeline(adapter, pipeline, r) for r in range(1, repetitions + 1)]
-            # O status do ponto é o da primeira passada: `unsupported` é propriedade do adapter e
-            # não
-            # varia entre repetições. Um pipeline sem suporte reporta isso UMA vez, em vez de somar
-            # três repetições vazias que pareceriam medição.
-            estado = passadas[0].status if passadas else "unsupported"
-            pontos.append(
-                RetrievalPoint(
-                    label=f"pipeline={pipeline}",
-                    parameters={"pipeline": pipeline, "k": self.workload.k, "n": self.workload.n},
-                    status=estado,
-                    status_detail=passadas[0].status_detail if passadas else None,
-                    repetitions=passadas,
+            for n_clientes in contagens:
+                # 1-based: o schema do artefato exige `repetition >= 1`. `range(repetitions)` daria
+                # zero na primeira, e o validador recusa — corretamente, porque "repeticao 0" nao
+                # significa nada para quem le o artefato depois.
+                faixa = range(1, repetitions + 1)
+                if n_clientes == 1:
+                    passadas = [self.run_pipeline(adapter, pipeline, r) for r in faixa]
+                else:
+                    passadas = [
+                        self.run_concurrent(adapter, pipeline, r, n_clientes, make_client)
+                        for r in faixa
+                    ]
+                # O status do ponto e o da primeira passada: `unsupported` e propriedade do adapter
+                # e nao varia entre repeticoes. Um pipeline sem suporte reporta isso UMA vez, em vez
+                # de somar tres repeticoes vazias que pareceriam medicao.
+                estado = passadas[0].status if passadas else "unsupported"
+                sufixo = f" @ {n_clientes} clientes" if self.workload.client_sweep else ""
+                pontos.append(
+                    RetrievalPoint(
+                        label=f"pipeline={pipeline}{sufixo}",
+                        parameters={
+                            "pipeline": pipeline,
+                            "k": self.workload.k,
+                            "n": self.workload.n,
+                            "clients": n_clientes,
+                        },
+                        status=estado,
+                        status_detail=passadas[0].status_detail if passadas else None,
+                        repetitions=passadas,
+                    )
                 )
-            )
         return pontos
 
     def summary(self, results: Sequence[PipelineResult]) -> dict[str, Any]:
