@@ -18,6 +18,7 @@ from typing import Any, Final
 from theodb_bench.adapters.base import IndexSpec, SystemAdapter
 from theodb_bench.adapters.fake import FakeAdapter
 from theodb_bench.bench.analytical import AnalyticalWorkload
+from theodb_bench.bench.graph import GraphWorkload
 from theodb_bench.bench.protocol import Workload
 from theodb_bench.bench.retrieval import RetrievalWorkload
 from theodb_bench.bench.vector import VectorWorkload
@@ -688,6 +689,37 @@ BENCHMARKS["analytical/synthetic/paths"] = BenchmarkEntry(
 #
 # Cada N RECARREGA os dados nos tres caminhos, entao esta corrida e cara por construcao. E o preco
 # de uma CURVA; um ponto so nao responde "abaixo de quantas".
+# B-007 — o pilar de grafo contra o que o usuario faria SEM nos.
+#
+# Medido pelo M184: 23 funcoes de grafo no binario default e 35 testes — a maior superficie publica
+# depois do vetorial. E **nenhum artefato comparando o pilar com qualquer sistema**, nem um numero
+# de latencia publicado. Qualquer afirmacao sobre o grafo hoje, em qualquer direcao, e sem lastro.
+#
+# O baseline e `WITH RECURSIVE` no proprio Postgres, e a escolha e do item: e o que o usuario faria
+# sem a extensao. Ela responde a pergunta que ele tem — *vale a pena instalar isto?* — e nao a de
+# quem ja decidiu usar um banco de grafo.
+#
+# Tres travessias (1, 2 e 3 saltos) e nao duas: o DoD pede "ao menos duas", e a terceira e barata e
+# e onde a diferenca entre um CSR e uma juncao recursiva deveria aparecer, se aparecer. Uma
+# comparacao que so olha 1 salto mediria quase so round-trip.
+BENCHMARKS["graph/synthetic/vs-recursive-sql"] = BenchmarkEntry(
+    id="graph/synthetic/vs-recursive-sql",
+    description=(
+        "Traversals over a seeded graph, each run twice: once through the CSR and "
+        "once through plain `WITH RECURSIVE` on the same edge table, same server, "
+        "same MVCC. The baseline is what a user would write without the extension."
+    ),
+    workload=GraphWorkload(
+        vertex_count=200_000,
+        average_degree=8,
+        query_count=100,
+        workloads=("1_hop", "2_hop", "3_hop"),
+        compare_recursive_sql=True,
+    ),
+    default_repetitions=3,
+)
+
+
 # B-043 — ONDE a vazao lexical para de subir, e por que.
 #
 # Medido em 2026-08-13: o QPS satura em ~20 clientes numa maquina de 16 vCPU — de 20 a 80 o

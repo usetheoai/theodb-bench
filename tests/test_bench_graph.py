@@ -21,7 +21,7 @@ from theodb_bench.bench.graph import (
     timed_reference_traversal,
     true_neighbourhood,
 )
-from theodb_bench.errors import AdapterError, ConfigError
+from theodb_bench.errors import AdapterError, BenchError, ConfigError
 
 
 def _workload(**overrides: object) -> GraphWorkload:
@@ -73,22 +73,29 @@ def test_a_different_seed_gives_a_different_graph() -> None:
 
 def test_the_oracle_expands_one_hop_correctly() -> None:
     adjacency = {0: [1, 2], 1: [3], 2: [], 3: []}
-    assert true_neighbourhood(adjacency, 0, 1) == [1, 2]
+    assert true_neighbourhood(adjacency, 0, 1) == [0, 1, 2]
 
 
 def test_the_oracle_expands_two_hops_without_revisiting() -> None:
     adjacency = {0: [1, 2], 1: [3], 2: [3], 3: []}
-    assert true_neighbourhood(adjacency, 0, 2) == [1, 2, 3]
+    assert true_neighbourhood(adjacency, 0, 2) == [0, 1, 2, 3]
 
 
 def test_the_oracle_terminates_on_a_cycle() -> None:
     adjacency = {0: [1], 1: [2], 2: [0]}
-    assert true_neighbourhood(adjacency, 0, 10) == [1, 2]
+    assert true_neighbourhood(adjacency, 0, 10) == [0, 1, 2]
 
 
-def test_the_oracle_excludes_the_source() -> None:
+def test_the_oracle_includes_the_source_because_the_system_does() -> None:
+    """SUBSTITUI `test_the_oracle_excludes_the_source`, que codificava o contrato oposto.
+
+    O teste anterior nao estava errado sobre o codigo — estava errado sobre o sistema. Ele
+    afirmava que o oraculo exclui a fonte, e o oraculo de fato excluia; o que ninguem havia
+    conferido e que o CSR medido a **inclui**. Um teste verde sobre uma definicao que o sistema
+    sob medicao nao usa e o mecanismo pelo qual isto sobreviveu ate 2026-08-21.
+    """
     adjacency = {0: [1], 1: [0]}
-    assert 0 not in true_neighbourhood(adjacency, 0, 3)
+    assert true_neighbourhood(adjacency, 0, 1) == [0, 1]
 
 
 def test_an_undirected_graph_has_symmetric_adjacency() -> None:
@@ -287,3 +294,110 @@ def test_metric_series_expose_the_work_units() -> None:
         assert "nanoseconds_per_edge" in series
     finally:
         adapter.stop()
+
+
+# ---------------------------------------------------------------------------
+# B-007 — os dois lados da comparacao precisam medir a MESMA coisa.
+#
+# Medido em 2026-08-21, contra um TheoDB real, e o achado quase virou um numero publicado:
+# para a fonte 1048, o oraculo dizia 8 vertices, o `WITH RECURSIVE` devolvia os mesmos 8, e o CSR
+# devolvia 22 — a vizinhanca NAO-dirigida mais a propria fonte. Cronometrar uma expansao de 22
+# contra uma de 8 e chamar a razao de "speedup" teria sido a mesma classe de defeito que a
+# retratacao lexical desta sessao: um numero honesto sobre uma comparacao que nao existia.
+#
+# O CSR nao tem defeito: `theodb_rs/src/graph.rs:11` documenta *"undirected, <=H hops"* e `:429`
+# fala em **reachable set**, que inclui a semente (alcancavel em 0 saltos). Quem estava errado era
+# o arnes, em quatro pontos — um teste por ponto.
+
+
+def test_oraculo_inclui_a_semente_porque_o_sistema_medido_a_inclui() -> None:
+    """`reachable set` inclui a propria semente; o oraculo tem de modelar isso."""
+    adjacency = {0: [1, 2], 1: [0], 2: [0], 3: []}
+    assert 0 in true_neighbourhood(adjacency, 0, 1)
+
+
+def test_workload_de_grafo_nao_oferece_knob_dirigido() -> None:
+    """Um knob aceito sem efeito e pior que knob nenhum.
+
+    `GraphSpec.directed` so era lido pelo adapter fake; o `PostgresAdapter` nunca o leu, e a
+    extensao so tem CSR nao-dirigido. Declarar `directed=True` e ver a medicao rodar dava a
+    impressao de que a direcao fora respeitada.
+    """
+    assert not hasattr(GraphWorkload(vertex_count=8, average_degree=2), "directed")
+
+
+def test_adapter_real_recusa_grafo_dirigido_em_vez_de_ignorar_o_pedido() -> None:
+    from theodb_bench.adapters.base import GraphSpec
+    from theodb_bench.adapters.postgres import PostgresConfig, TheoDBAdapter
+
+    adapter = TheoDBAdapter(PostgresConfig(dsn="postgresql://x/y"))
+    with pytest.raises(BenchError, match="dirigid"):
+        adapter.load_graph(GraphSpec(name="g", directed=True), [(0, 1)], 2)
+
+
+def test_corretude_de_travessia_compara_conjunto_e_nao_ordem() -> None:
+    """A semantica comparada e "vertices alcancados" — um conjunto.
+
+    O `WITH RECURSIVE` devolve na ordem que o planner escolher, e o CSR na ordem da fronteira.
+    Exigir ordem reprovava um baseline que estava certo.
+    """
+    workload = GraphWorkload(vertex_count=400, average_degree=8, query_count=1)
+    benchmark = workload.build(None, None)
+    source = benchmark.sources[0]
+    esperado = true_neighbourhood(benchmark.adjacency, source, 1)
+    # Sem isto o teste passa por vacuidade: uma vizinhanca de um elemento e igual a si mesma
+    # invertida, e a asercao abaixo nao exercitaria ordem nenhuma.
+    assert len(esperado) >= 2, "a fonte escolhida precisa ter vizinhanca suficiente para reordenar"
+    assert benchmark._is_correct(source, 1, None, list(reversed(esperado)))
+
+
+@pytest.mark.integration
+def test_csr_e_sql_recursivo_concordam_com_o_mesmo_oraculo() -> None:
+    """A propriedade que faz a comparacao do [[B-007]] significar alguma coisa.
+
+    Exige um TheoDB real (`PGHOST`/`PGPORT`/`PGUSER`), porque o defeito que ela existe para pegar
+    e invisivel contra o fake: enquanto o fake excluia a fonte, os testes unitarios ficavam verdes
+    e o servidor discordava do oraculo em 100% das travessias.
+
+    Nao afirma que os dois sao igualmente rapidos — afirma que respondem **a mesma pergunta**.
+    Sem isso, a razao entre os dois tempos e um numero sem referente.
+    """
+    import os
+
+    if not os.environ.get("PGPORT"):
+        pytest.skip("sem servidor declarado: PGPORT ausente")
+
+    from theodb_bench.adapters.postgres import PostgresConfig, TheoDBAdapter
+
+    dsn = (
+        f"postgresql://{os.environ.get('PGUSER', 'postgres')}"
+        f"@{os.environ.get('PGHOST', '127.0.0.1')}:{os.environ['PGPORT']}/postgres"
+    )
+    adapter = TheoDBAdapter(PostgresConfig(dsn=dsn))
+    adapter.prepare()
+    adapter.start()
+    adapter.wait_ready()
+
+    workload = GraphWorkload(vertex_count=2_000, average_degree=8, query_count=5)
+    benchmark = workload.build(None, None)
+    benchmark.load(adapter)
+
+    for source in benchmark.sources[:3]:
+        for hops in (1, 2, 3):
+            # Confere pelo MESMO criterio do portao (`_is_correct`), e nao por `set(...)`.
+            # Uma versao anterior deste teste comparava so conjuntos e deu por corretos dois
+            # baselines que devolviam vertices REPETIDOS — o `UNION` do CTE deduplica a linha
+            # `(v, salto)`, nao o vertice. Um teste mais frouxo que o portao que ele protege nao
+            # protege nada.
+            csr = adapter.traverse(
+                TraversalQuery(graph=workload.graph, source=source, hops=hops, limit=None)
+            ).vertices
+            sql = adapter.traverse_recursive_sql(
+                TraversalQuery(graph=workload.graph, source=source, hops=hops)
+            ).vertices
+            assert benchmark._is_correct(source, hops, None, csr), (
+                f"CSR discordou do oraculo em {source}/{hops} saltos"
+            )
+            assert benchmark._is_correct(source, hops, None, sql), (
+                f"SQL recursivo discordou do oraculo em {source}/{hops} saltos"
+            )

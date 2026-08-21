@@ -7,6 +7,49 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-21
+
+### Added
+- Suíte `graph/synthetic/vs-recursive-sql`: travessia pelo CSR e por `WITH RECURSIVE` na mesma tabela
+  de arestas, emitidos como pontos irmãos (`engine: csr` / `engine: recursive_sql`) para que as
+  ferramentas que já comparam dois sistemas leiam a comparação sem leitor especial (B-007)
+- `PostgresAdapter.traverse_recursive_sql` — o baseline universal: qualquer PostgreSQL o tem (B-007)
+
+### Fixed
+- **Os dois lados da comparação de grafo mediam semânticas diferentes.** O CSR é não-dirigido e
+  inclui a semente; o oráculo era dirigido e a excluía — para uma fonte medida, 8 vértices contra 22.
+  Oráculo, fake e baseline alinhados à semântica do sistema sob medição (B-007)
+- `GraphSpec.directed` era aceito sem efeito: só o adapter fake o lia. O `PostgresAdapter` agora
+  recusa `directed=True` em vez de rodar dando a impressão de que a direção foi respeitada (B-007)
+- O baseline de SQL recursivo não tinha índice na tabela de arestas — uma consulta de 3 saltos levava
+  18 s por seq scan de 1,6 M arestas. Índices criados e cronometrados à parte do build do CSR (B-007)
+- Sem aquecimento, o primeiro workload medido pagava o custo de partida a frio: o p50 de 1 salto saía
+  *maior* que o de 2. A frio o baseline parecia 6,2× mais rápido; a quente são 2,17× (B-007)
+- `structure_bytes` do grafo reportava o tamanho da **tabela de arestas** (71 MB) como se fosse o do
+  CSR (14,4 MB), inflando 5× o custo de memória da própria estrutura (B-007)
+- A guarda de travessia consultava um conjunto por instância e recusava com uma mensagem que
+  afirmava algo sobre o servidor — terceira ocorrência desta classe. Passa a perguntar a
+  `theodb.graph_csr` (B-007)
+- Correção de travessia comparava **ordem**, e nem o `WITH RECURSIVE` nem o CSR prometem ordem; e o
+  `UNION` do CTE deduplica a linha `(v, salto)`, não o vértice, devolvendo repetidos a partir de 2
+  saltos (B-007)
+
+
+### Fixed
+- **A varredura de clientes emitia um total FIXO de operações, e isso fabricava um colapso.** A 80
+  clientes, 300 operações totais são **3,75 por cliente** — a abertura de conexão domina a janela
+  medida, e a curva desaba. Medido lado a lado no mesmo processo: com total fixo, 80 clientes dão
+  **277,7 QPS**; escalando por cliente, **827,0**.
+  .
+  **Isso me fez publicar uma conclusão errada** (#B-043: "o teto de vazão é o cliente do arnês", com
+  6,5× e colapso de 61%). Corrigido, a curva sobe e satura, e a razão contra o `pgbench` é ~1,27×.
+  O `expected_operations` acompanha, senão o próprio portão `operation_count` reprovaria a corrida
+  por uma conta errada dele mesmo.
+  .
+  Comparar o mesmo trabalho **total** entre populações de cliente diferentes é justamente o que não
+  se pode fazer em laço fechado — e a tentação de fazê-lo, para "comparar o mesmo trabalho", está
+  registrada no código para a próxima pessoa. (#B-043)
+
 ## [0.6.0] - 2026-08-21
 
 ### Added

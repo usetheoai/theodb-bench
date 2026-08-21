@@ -93,6 +93,7 @@ from theodb_bench.adapters.base import (
 from theodb_bench.copy_binary import BINARY_HEADER, BINARY_TRAILER, encode_vector_rows
 from theodb_bench.errors import (
     AdapterError,
+    ConfigError,
     ErrorContext,
     Phase,
     SystemUnavailableError,
@@ -1121,9 +1122,63 @@ class PostgresAdapter(SystemAdapter):
                 ),
             )
 
-    def _scalar(self, sql: str) -> Any:
-        row = self._fetch_one(sql)
+    def _scalar(self, sql: str, parameters: tuple[Any, ...] | None = None) -> Any:
+        row = self._fetch_one(sql, parameters) if parameters is not None else self._fetch_one(sql)
         return row[0] if row else None
+
+    def traverse_recursive_sql(self, query: TraversalQuery) -> TraversalResult:
+        """`WITH RECURSIVE` sobre a mesma tabela de arestas — o baseline do [[B-007]].
+
+        Vive no `PostgresAdapter` e nao no `TheoDBAdapter` porque **qualquer** PostgreSQL o tem, e
+        e essa universalidade que faz dele o baseline certo. Responde a pergunta que o usuario tem
+        de fato — *vale a pena instalar a extensao em vez de escrever isto?* — e nao a de quem ja
+        decidiu adotar um banco de grafo.
+
+        `UNION` e nao `UNION ALL`: a semantica comparada e "vertices alcancados", e `UNION ALL`
+        contaria o mesmo vertice uma vez por caminho ate ele. Deduplicar e trabalho que os dois
+        lados fazem; cobrar de um so compararia coisas diferentes.
+
+        **Nao-dirigido, e a semente entra no resultado.** Nao e preferencia: e a semantica que o
+        outro lado implementa (`theodb_rs/src/graph.rs:44` e `:429`), e um baseline que medisse
+        outra coisa nao seria um baseline. A primeira versao deste metodo andava so por `e.src` e
+        excluia a fonte; medido em 2026-08-21, para a fonte 1048 de um grafo de 5 mil vertices ela
+        devolvia 8 vertices onde o CSR devolvia 22. A razao entre esses dois tempos nao teria
+        significado nenhum — e teria sido publicada como "speedup".
+
+        `edges_visited` vem de uma segunda consulta, pela mesma razao que o `traverse` do CSR pede
+        a cardinalidade ao motor: o tamanho da resposta esconde o trabalho, e uma travessia que
+        devolve pouco depois de andar muito e cara. Ela **nao** entra no tempo cronometrado.
+        """
+        table = _identifier(query.graph)
+        alcance = f"""
+            WITH RECURSIVE alcance(v, salto) AS (
+                SELECT %s::bigint, 0
+                UNION
+                SELECT CASE WHEN e.src = a.v THEN e.dst ELSE e.src END, a.salto + 1
+                  FROM alcance a JOIN {table} e ON e.src = a.v OR e.dst = a.v
+                 WHERE a.salto < %s
+            )
+        """
+        parametros = (int(query.source), int(query.hops))
+        started = time.perf_counter()
+        # `DISTINCT` e obrigatorio, nao cosmetico: o `UNION` do CTE deduplica a LINHA `(v, salto)`,
+        # entao um vertice alcancavel em profundidades diferentes volta uma vez por profundidade.
+        # A 1 salto isso nao aparece; a 2 saltos aparece sempre. Medido em 2026-08-21, foi o que
+        # reprovou os baselines de 2 e 3 saltos contra o oraculo — e so foi visto porque a
+        # conferencia compara CARDINALIDADE alem do conjunto. Um probe meu, comparando so
+        # `set(...)`, tinha dado os dois como corretos.
+        rows = self._fetch_all(alcance + " SELECT DISTINCT v FROM alcance", parametros)
+        elapsed = time.perf_counter() - started
+        contagem = self._fetch_one(
+            alcance + f" SELECT count(*) FROM (SELECT DISTINCT v FROM alcance) a"
+            f" JOIN {table} e ON e.src = a.v OR e.dst = a.v",
+            parametros,
+        )
+        return TraversalResult(
+            vertices=tuple(int(r[0]) for r in rows),
+            edges_visited=int(contagem[0]) if contagem and contagem[0] is not None else 0,
+            latency_seconds=elapsed,
+        )
 
 
 class PgvectorAdapter(PostgresAdapter):
@@ -1708,6 +1763,18 @@ class TheoDBAdapter(PgvectorAdapter):
         an empty set, and an empty neighbourhood is a legitimate answer for an
         isolated vertex. The two are indistinguishable after the fact.
         """
+        if spec.directed:
+            # Recusa em vez de ignorar. O CSR da extensao e nao-dirigido
+            # (`theodb_rs/src/graph.rs:44`), entao honrar `directed=True` e impossivel — e aceitar
+            # o pedido em silencio faz a medicao rodar dando a impressao de que a direcao foi
+            # respeitada. Medido em 2026-08-21: era assim que o benchmark de grafo comparava uma
+            # expansao nao-dirigida de 22 vertices com uma dirigida de 8. Parametro aceito sem
+            # efeito e a classe que este arnes existe para barrar.
+            raise ConfigError(
+                "este servidor nao faz travessia dirigida: o CSR da extensao e nao-dirigido; "
+                "peca GraphSpec(directed=False)",
+                context=ErrorContext(phase=Phase.INDEX_BUILD),
+            )
         table = _identifier(spec.name)
         started = time.perf_counter()
         self._execute(f"DROP TABLE IF EXISTS {table} CASCADE")
@@ -1719,22 +1786,80 @@ class TheoDBAdapter(PgvectorAdapter):
             for source, target in edges:
                 copy.write_row((source, target))
         self._execute(f"ANALYZE {table}")
+
+        # Os indices que o BASELINE precisa, construidos aqui e cronometrados A PARTE.
+        #
+        # Medido em 2026-08-21, e e a diferenca entre uma comparacao e uma propaganda: sem eles,
+        # cada passo do `WITH RECURSIVE` faz seq scan das 1,6 M arestas, e UMA consulta de 3 saltos
+        # levou 18 s. Nosso CSR ganharia por uma margem enorme de um baseline que nenhum usuario
+        # competente escreveria — um usuario que escreve `WITH RECURSIVE` indexa a tabela.
+        #
+        # O custo NAO entra em `seconds`: aquele numero e o do nosso build de CSR, e cobrar dele o
+        # indice do concorrente inverteria o vies em vez de remove-lo. Ele sai em
+        # `parameters_in_force` para que o ponto do baseline reporte o proprio custo de construcao.
+        indice_iniciado = time.perf_counter()
+        self._execute(f"CREATE INDEX ON {table} (src)")
+        self._execute(f"CREATE INDEX ON {table} (dst)")
+        self._execute(f"ANALYZE {table}")
+        indice_segundos = time.perf_counter() - indice_iniciado
+        started += indice_segundos  # desconta do relogio do nosso build
+
         self._execute(f"SELECT theodb.graph_build({_literal(spec.name)}, 'src', 'dst')")
         self._graphs_built.add(spec.name)
 
         # Timed as a build, per the contract: folding a CSR is structure work,
         # and charging it to a query would make every traversal look expensive.
-        size = self._scalar(f"SELECT pg_relation_size({_literal(spec.name)})")
+        # O tamanho do CSR, e nao o da tabela de arestas.
+        #
+        # MEDIDO em 2026-08-21: esta linha era `pg_relation_size(<relacao de arestas>)`, que para o
+        # grafo de 200 mil vertices reportava **71 MB** — o heap das arestas, que existe do mesmo
+        # jeito para quem NAO usa a extensao. O CSR de fato ocupa **14 MB**. Como o numero alimenta
+        # `bytes_per_edge`, a conta de custo de memoria da estrutura saia 5x inflada, contra nos.
+        size = self._scalar(
+            "SELECT length(csr) FROM theodb.graph_csr WHERE edge_rel = %s::regclass",
+            (spec.name,),
+        )
         return BuildOutcome(
             seconds=time.perf_counter() - started,
             index_size_bytes=int(size) if size is not None else None,
-            parameters_in_force={"edges": len(edges), "vertices": vertex_count},
+            parameters_in_force={
+                "edges": len(edges),
+                "vertices": vertex_count,
+                # O que o baseline paga para ser um baseline honesto. Fica no artefato para que
+                # ninguem compare tempos de consulta sem ver os dois custos de construcao.
+                "recursive_sql_index_seconds": indice_segundos,
+            },
         )
 
+    def _csr_exists(self, graph: str) -> bool:
+        """O CSR existe NO BANCO? — nao "esta instancia o construiu?".
+
+        Terceira ocorrencia da mesma classe de defeito nesta sessao, depois de `_lexical_built` e
+        do `index_id` derivado de `hash()`. `self._graphs_built` e um conjunto POR INSTANCIA: um
+        adapter novo apontando para o mesmo servidor nascia achando que o CSR nao existia, e a
+        travessia era recusada com uma mensagem que afirmava algo sobre o SERVIDOR ("was never
+        built in this session") a partir da memoria do objeto. Sob populacao de clientes o efeito e
+        o mesmo que o B-043 mediu no lexical: todo cliente extra recusa tudo.
+
+        `theodb.graph_csr` guarda uma linha por relacao de arestas dobrada, entao a pergunta tem
+        resposta no catalogo. Memoriza so o POSITIVO — um CSR construido nao deixa de existir no
+        meio da corrida, e re-perguntar por travessia poria um round-trip dentro do caminho que a
+        corrida esta cronometrando. O negativo nao se memoriza: a corrida pode construi-lo depois.
+        """
+        if graph in self._graphs_built:
+            return True
+        linha = self._fetch_one(
+            "SELECT 1 FROM theodb.graph_csr WHERE edge_rel = %s::regclass", (graph,)
+        )
+        if linha:
+            self._graphs_built.add(graph)
+            return True
+        return False
+
     def traverse(self, query: TraversalQuery) -> TraversalResult:
-        if query.graph not in self._graphs_built:
+        if not self._csr_exists(query.graph):
             raise UnsupportedCapabilityError(
-                f"the CSR for {query.graph} was never built in this session, and "
+                f"no CSR exists for {query.graph} on this server, and "
                 f"expanding a graph that has none returns an empty set -- which is "
                 f"also what an isolated vertex returns",
                 context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),

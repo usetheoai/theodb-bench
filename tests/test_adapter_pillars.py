@@ -242,7 +242,9 @@ def test_theodb_builds_a_persisted_csr_before_traversing() -> None:
     server = _PillarStub()
     server.rows = [(1,), (2,), (5,)]
     adapter = _wire(server)
-    spec = GraphSpec(name="bench_edges")
+    # `directed=False` explicito: o CSR da extensao e nao-dirigido, e o adapter agora recusa
+    # `directed=True` em vez de aceitar um pedido que nao pode honrar.
+    spec = GraphSpec(name="bench_edges", directed=False)
 
     adapter.load_graph(spec, [(0, 1), (1, 2), (2, 5)], vertex_count=6)
 
@@ -252,10 +254,15 @@ def test_theodb_builds_a_persisted_csr_before_traversing() -> None:
 
 def test_traversing_a_graph_that_was_never_built_is_refused() -> None:
     """`graph_expand` over a relation with no persisted CSR would answer with an
-    empty set, which reads as a vertex having no neighbours."""
+    empty set, which reads as a vertex having no neighbours.
+
+    A mensagem passou a falar do SERVIDOR ("no CSR exists ... on this server") e nao da sessao,
+    porque a guarda passou a perguntar ao catalogo em vez de consultar um conjunto por instancia.
+    O texto antigo afirmava sobre o servidor a partir da memoria do objeto.
+    """
     adapter = _wire(_PillarStub())
 
-    with pytest.raises(UnsupportedCapabilityError, match="never built"):
+    with pytest.raises(UnsupportedCapabilityError, match="no CSR exists"):
         adapter.traverse(TraversalQuery(graph="bench_edges", source=0, hops=2))
 
 
@@ -265,7 +272,9 @@ def test_a_traversal_reports_the_work_done_not_only_the_answer() -> None:
     server = _PillarStub()
     server.rows = [(1,), (2,), (5,)]
     adapter = _wire(server)
-    spec = GraphSpec(name="bench_edges")
+    # `directed=False` explicito: o CSR da extensao e nao-dirigido, e o adapter agora recusa
+    # `directed=True` em vez de aceitar um pedido que nao pode honrar.
+    spec = GraphSpec(name="bench_edges", directed=False)
     adapter.load_graph(spec, [(0, 1), (1, 2), (2, 5)], vertex_count=6)
 
     result = adapter.traverse(TraversalQuery(graph="bench_edges", source=0, hops=2))
