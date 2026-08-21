@@ -8,6 +8,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **As diferenças de VELOCIDADE que publicamos passaram a ter teste — e o pareado não servia para
+  elas.** O [[B-045]] deu rigor à *qualidade* (paridade lexical do `b047`, p=0,477 sobre 6.980
+  consultas) enquanto as duas maiores diferenças do projeto seguiam sem nenhum: Elasticsearch a
+  **4,3x** o nosso QPS e pgvector a **+16,3%**. O pareado precisa de valor por consulta e QPS é uma
+  taxa agregada — pareá-lo inventaria correlação e estreitaria o intervalo sem razão. Entram
+  `compare_throughput` (Welch para amostras independentes + bootstrap sobre a **razão**, que é o que
+  a frase publica), `precision_for_n`, o veredito em `compare.py` nomeando o teste, e o comando
+  `theodb-bench throughput`. O `_welch_p_value` e o `_t_critical` são próprios — para não trazer
+  SciPy por duas funções — e **validados contra referência externa**: p bate com
+  `scipy.stats.ttest_ind(equal_var=False)` a ~1e-15, t crítico bate com as tabelas na quarta casa.
+  Aplicado retroativamente: o **b035 sobrevive** com IC de ±8,2% em vez da precisão que "+16,3%"
+  sugere, e o **b047 não é testável** — tem uma corrida por configuração. (#B-049)
+
+### Added
 - **O contrato analítico deixou de ser de uma tabela só.** A avaliação independente do AlloyDB
   publicou Q1/Q5/Q6/Q18 do TPC-H, e a **Q18 junta três tabelas** — nenhuma junção era expressável, e
   responder com shape nosso mede outra coisa e chama de comparação. Entra o esquema multi-tabela com
