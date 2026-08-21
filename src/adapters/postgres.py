@@ -966,6 +966,42 @@ class PostgresAdapter(SystemAdapter):
         # Same verification the search knobs get, and for the same reason.
         self._verified_search_settings(mapping)
 
+    def append_analytical_row_sql(
+        self, table: AnalyticalTable, row: Sequence[Any]
+    ) -> tuple[str, tuple[Any, ...]]:
+        """O `INSERT` de UMA linha na tabela analítica, e os parâmetros dele.
+
+        Escrita de primeiro plano, uma linha por operação: é o lado "escrita" da contenção que o
+        [[B-066]] mede. A carga em massa (`load_analytical`) é outra coisa — ela existe para POR o
+        dado lá, e mede-se pelo tempo total; esta existe para competir com um scan e mede-se pela
+        latência da transação.
+
+        Devolve o SQL e os parâmetros JUNTOS, e não em dois métodos. Foi exatamente a separação
+        deles que produziu o defeito do [[B-063]]: o `assert_index_used` ligava um parâmetro contra
+        um SQL de dois, porque a forma e as ligações viviam em lugares que podiam divergir.
+
+        Identificadores são citados por `_identifier`, que valida o formato — o nome da tabela vem
+        de uma suíte registrada, não de entrada de usuário, mas um validador que só protege quando o
+        autor lembra não protege.
+        """
+        if len(row) != len(table.columns):
+            raise ValueError(
+                f"a linha tem {len(row)} valores e a tabela declara {len(table.columns)} colunas "
+                f"({', '.join(table.columns)}) — escrever mesmo assim faria o servidor recusar com "
+                "uma mensagem pior que esta"
+            )
+        alvo = _identifier(table.name)
+        colunas = ", ".join(_identifier(c) for c in table.columns)
+        marcadores = ", ".join(["%s"] * len(row))
+        return f"INSERT INTO {alvo} ({colunas}) VALUES ({marcadores})", tuple(row)
+
+    def append_analytical_row(self, table: AnalyticalTable, row: Sequence[Any]) -> None:
+        """Executa a escrita de uma linha. Separado do SQL para que a FORMA seja testável sem
+        servidor."""
+        sql, params = self.append_analytical_row_sql(table, row)
+        with self._cursor() as cursor:
+            cursor.execute(sql, params)
+
     def _analytical_query_sql(self, table: AnalyticalTable, query: AnalyticalQuery) -> str:
         template = type(self).ANALYTICAL_SQL.get(query.id)
         if template is None:

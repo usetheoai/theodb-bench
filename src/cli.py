@@ -710,6 +710,25 @@ def build_parser() -> argparse.ArgumentParser:
     dataset_fetch.add_argument("--force", action="store_true", help="re-download mismatched files")
     dataset_fetch.set_defaults(func=cmd_dataset_fetch)
 
+    contention = subparsers.add_parser(
+        "contention",
+        help="measure write x scan contention: each side alone and both together, same session",
+    )
+    contention.add_argument("--system", default="fake", choices=sorted(ADAPTERS))
+    contention.add_argument("--table", default="bench_analytical")
+    contention.add_argument("--path", default="columnar", choices=["row", "columnar", "parquet"])
+    contention.add_argument("--readers", type=int, default=4)
+    contention.add_argument("--writers", type=int, default=1)
+    contention.add_argument("--read-ops", type=int, required=True)
+    contention.add_argument("--write-ops", type=int, required=True)
+    # Sem default silencioso: o arnes NAO tem como saber se o dado cabe no cache — depende do host,
+    # do `shared_buffers` e do tamanho da tabela. Quem monta a corrida sabe, e o artefato carrega a
+    # declaracao. Inferir seria adivinhar e publicar o palpite (B-066, bullet 3).
+    contention.add_argument(
+        "--regime", default="memory-resident", choices=["memory-resident", "exceeds-cache"]
+    )
+    contention.set_defaults(func=cmd_contention)
+
     run = subparsers.add_parser("run", help="execute a benchmark against a system")
     run.add_argument("benchmark", choices=sorted(BENCHMARKS))
     run.add_argument("--system", default="fake", choices=sorted(ADAPTERS))
@@ -786,6 +805,64 @@ def build_parser() -> argparse.ArgumentParser:
     validate_cmd.set_defaults(func=cmd_validate)
 
     return parser
+
+
+def cmd_contention(args: argparse.Namespace) -> int:
+    """Mede a contenção escrita x scan: cada lado sozinho e os dois juntos, na mesma sessão.
+
+    POR QUE ESTE COMANDO EXISTE (B-066). A avaliação independente do AlloyDB mediu uma
+    **inversão** —
+    ligar o colunar PIOROU a contenção a SF100 (29% contra 16% do row store), contra empate a SF10.
+    É o único número em que o colunar do concorrente sai pior, e era o que não tínhamos instrumento
+    para responder.
+
+    A linha de base sai daqui, e de lugar nenhum: `measure_contention` a mede dentro da mesma
+    chamada, e não há parâmetro para injetá-la. Comparar contra outra corrida é a classe de erro que
+    o B-060 e o B-063 documentam.
+    """
+    from theodb_bench.adapters.base import AnalyticalTable
+    from theodb_bench.bench.contention import ContentionSpec, Regime, measure_contention
+    from theodb_bench.load import LoadModel
+
+    tabela = AnalyticalTable(name=args.table, columns=("id", "value"), path=args.path)
+    espec = ContentionSpec(
+        readers=LoadModel(clients=args.readers),
+        writers=LoadModel(clients=args.writers),
+        read_ops=args.read_ops,
+        write_ops=args.write_ops,
+        regime=Regime(args.regime),
+    )
+
+    def novo_cliente() -> Any:
+        return get_adapter(args.system)
+
+    def ler(cliente: Any, index: int) -> None:
+        cliente.execute_analytical(tabela, _contention_probe(index))
+
+    def escrever(cliente: Any, index: int) -> None:
+        cliente.append_analytical_row(tabela, (index, index))
+
+    resultado = measure_contention(
+        espec,
+        make_reader=novo_cliente,
+        issue_read=ler,
+        make_writer=novo_cliente,
+        issue_write=escrever,
+    )
+    print(json.dumps(resultado.as_dict(), indent=2, default=str))
+    return EXIT_OK
+
+
+def _contention_probe(index: int) -> Any:
+    """A consulta que o lado de leitura emite, um agregado — que é o que um scan analítico faz.
+
+    `expected` fica `None` de propósito: aqui o que se mede é CONTENÇÃO, não correção, e um oráculo
+    exigiria conhecer o conteúdo da tabela no meio de uma carga que está escrevendo nela. A
+    correção do resultado analítico é medida pela suíte analítica, que roda sem escritor.
+    """
+    from theodb_bench.adapters.base import AnalyticalQuery
+
+    return AnalyticalQuery(id=f"contention-{index}", description="scan sob contenção")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
