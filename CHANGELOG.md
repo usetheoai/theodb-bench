@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-21
+
 ### Added
 - **As diferenças de VELOCIDADE que publicamos passaram a ter teste — e o pareado não servia para
   elas.** O [[B-045]] deu rigor à *qualidade* (paridade lexical do `b047`, p=0,477 sobre 6.980
@@ -21,7 +23,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   Aplicado retroativamente: o **b035 sobrevive** com IC de ±8,2% em vez da precisão que "+16,3%"
   sugere, e o **b047 não é testável** — tem uma corrida por configuração. (#B-049)
 
-### Added
 - **O contrato analítico deixou de ser de uma tabela só.** A avaliação independente do AlloyDB
   publicou Q1/Q5/Q6/Q18 do TPC-H, e a **Q18 junta três tabelas** — nenhuma junção era expressável, e
   responder com shape nosso mede outra coisa e chama de comparação. Entra o esquema multi-tabela com
@@ -34,7 +35,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   então uma junção de três não passa por ela; e o carregador criava um esquema fixo e depois copiava
   em colunas de outro nome, o que falha na primeira linha. (#B-065)
 
-### Added
 - **A contenção escrita x scan passou a ser medível.** Não havia carga mista: existia motor
   concorrente (`run_load`) e o pilar vetorial o usava, mas nada rodava um escritor ao mesmo tempo que
   leitores — que é onde a avaliação independente do AlloyDB mediu uma **inversão** (ligar o colunar
@@ -46,7 +46,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **`append_analytical_row` no adapter Postgres** — a escrita de primeiro plano que a contenção
   precisa. SQL e parâmetros vêm **juntos** do mesmo método: separá-los foi o que produziu o defeito
   do #B-063. (#B-066)
-
 ## [0.3.0] - 2026-08-20
 
 ### Fixed
