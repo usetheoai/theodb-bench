@@ -141,3 +141,40 @@ def test_running_standalone_still_loads() -> None:
     adapter = _Contador()
     bench.run(adapter)
     assert adapter.cargas == [10], "quem chama run() sozinho nao carregou antes"
+
+
+def test_a_sweep_run_does_not_crash_the_runner_when_load_returns_none(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """`Benchmark.load` declara `float | None`, e o runner formatava o `None` DIRETO.
+
+    MEDIDO no droplet: a corrida da varredura abortava com
+    `TypeError: unsupported format string passed to NoneType.__format__` — e o relatorio
+    culpava o SISTEMA SOB TESTE (`sut_alive: FAIL`) por um defeito do arnes. O contrato ja
+    dizia "segundos, ou None quando nada foi carregado"; quem nao honrava era o runner.
+
+    Este teste passa pelo `run_benchmark` inteiro, e nao por uma copia da expressao — uma
+    asserção sobre a propria copia nao provaria nada sobre o runner.
+    """
+    from theodb_bench.adapters.fake import FakeAdapter
+    from theodb_bench.runner import RunRequest, run_benchmark
+
+    workload = AnalyticalWorkload(
+        row_count=10,
+        row_count_sweep=(10, 20),
+        paths=("row",),
+        queries=(AnalyticalQuery(id="total_rows", description="conta"),),
+        repetitions=1,
+        warmup_queries=0,
+    )
+    resultado = run_benchmark(
+        RunRequest(
+            benchmark_id="analytical/crossover/row-count",
+            workload=workload,
+            adapter_factory=FakeAdapter,
+            results_root=tmp_path / "resultados",
+            repetitions=1,
+        )
+    )
+    carga = (resultado.bundle.root / "raw" / "load.log").read_text(encoding="utf-8")
+    assert "load_seconds=none" in carga, (
+        "o `None` tem de ser REGISTRADO: um `load.log` ausente se leria como carga de custo zero"
+    )
