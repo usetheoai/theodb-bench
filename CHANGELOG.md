@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-21
+
 ### Added
 - Suíte `graph/synthetic/vs-recursive-sql`: travessia pelo CSR e por `WITH RECURSIVE` na mesma tabela
   de arestas, emitidos como pontos irmãos (`engine: csr` / `engine: recursive_sql`) para que as
