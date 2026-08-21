@@ -259,6 +259,23 @@ def _check_url(url: str, dataset_id: str) -> None:
         )
 
 
+#: Quem está baixando. NÃO é cosmético: medido em 2026-08-21 num host limpo, a origem declarada do
+#: `sift-128-euclidean` responde **403 Forbidden** ao `User-Agent` default do `urllib`
+#: (`Python-urllib/3.12`) e **200** ao do `curl` — o CDN filtra por agente. Sem isto o arnês não
+#: consegue buscar o próprio dataset que ele declara, o que só não aparecia porque toda corrida
+#: anterior encontrou o arquivo já em disco.
+#:
+#: O valor IDENTIFICA o cliente em vez de fingir ser um navegador. Passar por Mozilla funcionaria e
+#: seria mentir para o servidor sobre quem está do outro lado — e um arnês cuja premissa é medir
+#: honestamente não começa mentindo na primeira requisição.
+_USER_AGENT: Final = "theodb-bench (+https://github.com/usetheoai/theodb-bench)"
+
+
+def _request(url: str) -> urllib.request.Request:
+    """A requisição com agente declarado. Ver `_USER_AGENT` para o porquê."""
+    return urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})  # noqa: S310
+
+
 def _download(url: str, destination: Path, dataset_id: str, timeout: float) -> None:
     """Download to a temporary file in the destination directory, then rename.
 
@@ -273,7 +290,7 @@ def _download(url: str, destination: Path, dataset_id: str, timeout: float) -> N
         # The URL scheme is checked against an allow-list in _check_url above.
         with (
             os.fdopen(handle, "wb") as sink,
-            urllib.request.urlopen(url, timeout=timeout) as response,  # noqa: S310
+            urllib.request.urlopen(_request(url), timeout=timeout) as response,  # noqa: S310
         ):
             shutil.copyfileobj(response, sink, _READ_CHUNK)
         temporary.replace(destination)

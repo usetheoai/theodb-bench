@@ -98,12 +98,28 @@ class BenchError(Exception):
         return payload
 
     def __str__(self) -> str:
+        """A mensagem legível — que INCLUI a causa quando existe.
+
+        MEDIDO em 2026-08-21, e o custo foi concreto: uma corrida no droplet abortou com
+        `could not connect to theodb [phase=bootstrap system=theodb]`. A causa real —
+        `FATAL: role "root" does not exist` — estava anexada em `cause` e ia para o
+        `as_dict()`, mas **nenhuma renderização humana a mostrava**: o `system.log` do bundle
+        formata `{exc}`, ou seja, este método. Diagnosticar custou duas corridas; a causa
+        estava no log do servidor desde o primeiro segundo.
+
+        `rules/error-handling.md` § 2 pede log com contexto suficiente para reproduzir sem
+        depurador. Guardar a causa numa estrutura que só o JSON vê não cumpre isso — quem lê
+        um log lê texto.
+        """
         ctx = self.context.as_dict()
         ctx.pop("details", None)
-        if not ctx:
-            return self.message
-        rendered = " ".join(f"{k}={v}" for k, v in sorted(ctx.items()))
-        return f"{self.message} [{rendered}]"
+        partes = self.message
+        if ctx:
+            rendered = " ".join(f"{k}={v}" for k, v in sorted(ctx.items()))
+            partes = f"{partes} [{rendered}]"
+        if self.cause is not None:
+            partes = f"{partes}: {type(self.cause).__name__}: {self.cause}"
+        return partes
 
 
 class ConfigError(BenchError):

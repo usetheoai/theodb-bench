@@ -19,6 +19,7 @@ from theodb_bench.adapters.base import IndexSpec, SystemAdapter
 from theodb_bench.adapters.fake import FakeAdapter
 from theodb_bench.bench.analytical import AnalyticalWorkload
 from theodb_bench.bench.protocol import Workload
+from theodb_bench.bench.retrieval import RetrievalWorkload
 from theodb_bench.bench.vector import VectorWorkload
 from theodb_bench.errors import AdapterError, ConfigError, ErrorContext, Phase
 from theodb_bench.load import LoadModel
@@ -269,6 +270,104 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
             warmup_queries=50,
             indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
             search_sweep={"ef_search": (64, 256)},
+        ),
+        default_repetitions=3,
+    ),
+    # B-093 — o pilar lexical medido contra JULGAMENTO HUMANO, e não contra corpus semeado.
+    #
+    # O `bench/retrieval.py` traz nDCG@10, Recall@k, MRR e quatro pipelines desde sempre, e estava
+    # na
+    # lista de órfãos de `tests/test_module_reachability.py`: **nenhum benchmark registrado o
+    # alcançava**. A consequência foi concreta — todo número lexical que este projeto publicou saiu
+    # de
+    # script ad-hoc, e o `m186` chegou a atribuir ao PRODUTO um limite (`bm25_search` só aceitaria
+    # um
+    # termo) que era do script, e que o [[B-014]] depois mediu ser falso.
+    #
+    # O corpus é o SciFact do BEIR: 5183 documentos, 300 consultas com qrel no split `test` — o
+    # mesmo
+    # que o `m186` usou, agora dentro do arnês e com o sha256 do arquivo publicado verificado.
+    #
+    # SÓ A PERNA LEXICAL, e isso é declarado e não uma limitação escondida: o BEIR publica texto e
+    # julgamentos, não embeddings. Preencher os vetores com ruído faria as pernas densa e híbrida
+    # RODAREM e os números PARECEREM medidos.
+    "retrieval/scifact/lexical": BenchmarkEntry(
+        id="retrieval/scifact/lexical",
+        description=(
+            "SciFact (BEIR) against the lexical pipeline, scored by nDCG@10 "
+            "against human qrels rather than against a computed oracle. Dense "
+            "and hybrid legs stay out: BEIR publishes no embeddings, and filling "
+            "them with noise would make those numbers merely look measured."
+        ),
+        workload=RetrievalWorkload(
+            corpus_size=5183,
+            query_count=300,
+            k=10,
+            n=50,
+            warmup_queries=20,
+            pipelines=("lexical",),
+        ),
+        default_repetitions=3,
+    ),
+    # B-046 / B-042 — a fronteira larga, para comparar DOIS motores a RECALL CASADO.
+    #
+    # Comparar QPS a `ef_search` igual compara a coisa errada: `ef` não é a mesma unidade em dois
+    # grafos diferentes. O [[B-046]] mede que, no mesmo `ef=64`, o TheoDB entrega recall 0,9600 e o
+    # pgvector 0,9835 — logo um "déficit de QPS" lido nesse par está comparando um sistema que
+    # buscou menos com um que buscou mais. A comparação honesta lê os dois na MESMA altura de
+    # recall, e para isso é preciso ter pontos suficientes dos dois lados para interpolar.
+    #
+    # {40, 64, 128, 256} num único build: `ef_search` é GUC de sessão, então os quatro pontos saem
+    # do mesmo índice e o build é pago uma vez. O 128 está aqui porque é onde o [[B-046]] mediu que
+    # o TheoDB alcança o recall do pgvector em 64.
+    #
+    # E o build é medido junto, o que responde o [[B-042]] sem uma segunda corrida: o artefato já
+    # registra `build_seconds` e `index_size_bytes` por ponto.
+    "vector/sift1m/frontier": BenchmarkEntry(
+        id="vector/sift1m/frontier",
+        description=(
+            "SIFT1M across a wide ef_search sweep, so two engines can be read at "
+            "MATCHED RECALL instead of at matched ef -- which is not the same "
+            "knob in two different graphs. Build time and index size come with it."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_000_000,
+            dimension=128,
+            query_count=500,
+            k=10,
+            warmup_queries=50,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (40, 64, 128, 256)},
+        ),
+        default_repetitions=3,
+    ),
+    # B-018 — a pergunta é sobre o DEFAULT, e por isso a varredura é {40, 64} e não {64, 256}.
+    #
+    # Medido em 2026-08-21: o `theodb_hnsw` usa `ef_search = 64` por default (herdado do
+    # `SCAN_EF` fixo pré-M35) e o pgvector usa 40. Em 64 o planner larga o índice numa junção
+    # com filtro seletivo — e o pgvector, no MESMO 64, produz plano e custos idênticos aos
+    # nossos. Não é defeito de implementação; é a escolha do default. Baixá-lo para 40 é uma
+    # linha, e **troca recall por plano**.
+    #
+    # Este benchmark existe para que essa troca seja MEDIDA antes de decidida. Os dois valores
+    # da varredura não são arbitrários: são exatamente os dois defaults em disputa. Um sweep
+    # {64, 256} — o das outras suítes — responde outra pergunta (onde fica a fronteira) e não
+    # esta (o que o default custa). `wiki/benchmarks/b018-planner-hnsw-juncao.md`.
+    "vector/sift1m/ef-default": BenchmarkEntry(
+        id="vector/sift1m/ef-default",
+        description=(
+            "SIFT1M against theodb_hnsw at the two ef_search DEFAULTS in dispute "
+            "-- 40 (pgvector's) and 64 (ours). Measures what lowering the default "
+            "costs in recall, which is the trade the B-018 fix pays."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_000_000,
+            dimension=128,
+            query_count=500,
+            k=10,
+            warmup_queries=50,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (40, 64)},
         ),
         default_repetitions=3,
     ),
@@ -571,6 +670,35 @@ BENCHMARKS["analytical/synthetic/paths"] = BenchmarkEntry(
         "benchmark's own oracle, so a path that is fast and wrong is caught."
     ),
     workload=AnalyticalWorkload(row_count=200_000),
+    default_repetitions=3,
+)
+
+
+# B-058 bullet 2 — ABAIXO DE QUANTAS LINHAS o nosso colunar perde para o heap?
+#
+# O item registra o crossover do CONCORRENTE (o avaliador do AlloyDB mediu a inversao em algumas
+# centenas de milhares: 31,6 ms colunar contra 27,5 ms heap a 100K) e diz, sobre o NOSSO: nunca
+# medido, so estimado. Um colunar so paga o custo de decodificar stripe quando ha linha bastante
+# para amortiza-lo; abaixo disso ele PERDE, e saber onde e o que decide quando liga-lo.
+#
+# A faixa vai de 10K a 2M porque contem a inversao esperada com folga dos DOIS lados. Comecar em
+# 100K correria o risco de a curva nascer ja do lado errado do joelho, e a medicao concluir "sempre
+# perde" ou "sempre ganha" por escolha de faixa — que e um resultado sobre a faixa, nao sobre o
+# motor.
+#
+# Cada N RECARREGA os dados nos tres caminhos, entao esta corrida e cara por construcao. E o preco
+# de uma CURVA; um ponto so nao responde "abaixo de quantas".
+BENCHMARKS["analytical/crossover/row-count"] = BenchmarkEntry(
+    id="analytical/crossover/row-count",
+    description=(
+        "The same aggregations over heap, columnar and Parquet across a row-count "
+        "sweep, to find where columnar stops losing to heap. A single row count "
+        "cannot answer 'below how many rows', which is the question."
+    ),
+    workload=AnalyticalWorkload(
+        row_count=10_000,
+        row_count_sweep=(10_000, 50_000, 100_000, 500_000, 1_000_000, 2_000_000),
+    ),
     default_repetitions=3,
 )
 

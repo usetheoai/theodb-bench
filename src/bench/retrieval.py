@@ -17,7 +17,7 @@ model's stage separately, so the database's contribution stays visible.
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -126,6 +126,62 @@ class RetrievalWorkload:
     def table_spec(self) -> DocumentTableSpec:
         return DocumentTableSpec(table=self.table, dimension=self.dimension, metric=self.metric)
 
+    # ---- protocolo `Workload` (bench/protocol.py) ----
+    #
+    # Estes cinco membros faltavam, e a consequência foi medida: `bench.retrieval` estava na lista
+    # de
+    # órfãos de `tests/test_module_reachability.py` — a pipeline inteira existia e NENHUM benchmark
+    # registrado a alcançava. Todo número lexical publicado saiu de script ad-hoc, e o `m186` chegou
+    # a
+    # atribuir ao produto um limite que era do script.
+
+    def build(self, corpus: Any, queries: Any) -> RetrievalBenchmark:
+        """O benchmark ligado aos seus dados — reais quando houver, semeados quando não.
+
+        `corpus`/`queries` vêm `None` quando ninguém passou `--dataset`, e aí o corpus semeado do
+        `generate_corpus` entra. Ele exercita a pipeline e as métricas; **não é alegação de
+        qualidade**, e um artefato produzido sobre ele não deve ser citado como tal.
+        """
+        if corpus is None or queries is None:
+            return RetrievalBenchmark(self)
+        return RetrievalBenchmark(self, documents=corpus, queries=queries)
+
+    def benchmark_payload(self) -> dict[str, Any]:
+        return {
+            "workload": {
+                "type": "retrieval",
+                "loop": "closed",
+                "clients": 1,
+                "arrival_rate_per_second": None,
+                "k": [self.k],
+                "operation_count": self.query_count,
+            },
+            # A qualidade aqui é JULGADA, não computada: o nDCG mede contra qrels humanos, e não
+            # contra um oráculo que o próprio arnês calcula. Chamar os dois de "ground_truth:
+            # computed" apagaria a diferença que mais importa entre medir recall aproximado e medir
+            # qualidade de busca.
+            # `dataset` e nao `computed`: os qrels VEM COM o corpus, humanos, em vez de serem
+            # calculados pelo arnes como o oraculo de recall e. O schema do artefato ja fazia
+            # essa distincao — a primeira versao disto inventou `judged`, o schema recusou, e
+            # estava certo: a palavra que faltava ja existia, e com melhor nome.
+            "quality": {"metric": "ndcg", "ground_truth": "dataset"},
+            "parameters": {"pipelines": list(self.pipelines), "n": [self.n], "rrf_k": [self.rrf_k]},
+        }
+
+    def expected_operations(self, measured_points: int, repetitions: int) -> int:
+        return measured_points * repetitions * self.query_count
+
+    @property
+    def warmup_operations(self) -> int:
+        return self.warmup_queries
+
+    def quality_was_reported(self, points: list[Any]) -> bool:
+        return any(
+            repetition.ndcg_at_10 is not None
+            for point in points
+            for repetition in point.repetitions
+        )
+
 
 @dataclass(frozen=True)
 class QuerySet:
@@ -210,9 +266,37 @@ class PipelineResult:
     status: str = "measured"
     status_detail: str | None = None
 
+    #: Custo do indice, quando a familia o conhece. O runner le os dois de toda repeticao, e ate
+    #: aqui `PipelineResult` tinha oito dos dez campos que ele pede — a familia estava orfa, entao
+    #: ninguem nunca tinha pedido os outros dois. Ficam `None` no lexical: o indice BM25 e
+    #: construido
+    #: pelo `bm25_build` dentro do adapter, e o arnes ainda nao le esse custo. **`None` diz "nao
+    #: medido"; um zero diria "de graca", que e falso.**
+    build_seconds: float | None = None
+    index_size_bytes: int | None = None
+
+    #: Latencia por consulta, em ms, indexada pela POSICAO da consulta no conjunto. O runner grava
+    #: isto no artefato e o teste pareado do `significance.py` o consome — sem ele, comparar duas
+    #: corridas so pode usar agregado, e agregado nao tem par. Este campo faltava, e a familia
+    #: inteira estava orfa, entao nada nunca o pediu.
+    latency_by_query: dict[int, float] = field(default_factory=dict)
+
     @property
     def throughput(self) -> float | None:
         return self.successes / self.duration_seconds if self.duration_seconds > 0 else None
+
+    @property
+    def recall(self) -> float | None:
+        """Alias de `recall_at_k` sob o nome que o relatorio pede.
+
+        O `report.pareto_payload` le `r.recall` de toda repeticao — acoplamento ao vocabulario da
+        familia vetorial, apesar de o protocolo `Workload` dizer que cada familia possui o
+        seu. A
+        ponte e honesta e nao um remendo: `recall_at_k` E recall, e a fronteira recall x vazao e
+        leitura legitima tambem para retrieval. O que NAO se alia e o nDCG, que nao e recall e
+        entraria como um numero de outra natureza no mesmo eixo.
+        """
+        return self.recall_at_k
 
     def metric_series(self) -> dict[str, list[float]]:
         series: dict[str, list[float]] = {}
@@ -236,12 +320,48 @@ class PipelineResult:
         return series
 
 
+@dataclass
+class RetrievalPoint:
+    """Uma configuração medida — aqui, um pipeline — com suas repetições.
+
+    Mesma forma que o `PointResult` da família vetorial, porque é o que o runner lê: `label`,
+    `parameters`, `status`, `repetitions` e `metric_series()`. Não é herança nem base compartilhada
+    de propósito: as duas famílias reportam eixos de qualidade DIFERENTES (recall computado contra
+    oráculo lá, nDCG contra julgamento humano aqui), e uma base comum convidaria a somá-los.
+    """
+
+    label: str
+    parameters: dict[str, Any]
+    status: str = "measured"
+    status_detail: str | None = None
+    repetitions: list[PipelineResult] = field(default_factory=list)
+
+    def metric_series(self) -> dict[str, list[float]]:
+        series: dict[str, list[float]] = {}
+        for repeticao in self.repetitions:
+            for nome, valores in repeticao.metric_series().items():
+                series.setdefault(nome, []).extend(valores)
+        return series
+
+
 class RetrievalBenchmark:
     """Runs every declared pipeline over one corpus and one query set."""
 
-    def __init__(self, workload: RetrievalWorkload) -> None:
+    def __init__(
+        self,
+        workload: RetrievalWorkload,
+        *,
+        documents: Sequence[Document] | None = None,
+        queries: QuerySet | None = None,
+    ) -> None:
         self.workload = workload
-        self.documents, self.queries = generate_corpus(workload)
+        if documents is None or queries is None:
+            self.documents, self.queries = generate_corpus(workload)
+        else:
+            # Corpus real. O `corpus_size`/`query_count` declarados no workload descrevem o SEMEADO;
+            # com dado real quem manda é o dado, e forçar o declarado truncaria o corpus em
+            # silêncio.
+            self.documents, self.queries = list(documents), queries
 
     def load(self, adapter: SystemAdapter) -> float:
         outcome = adapter.load_documents(self.workload.table_spec(), self.documents)
@@ -298,6 +418,7 @@ class RetrievalBenchmark:
                 continue
 
             latencies.append(elapsed * 1000.0)
+            result.latency_by_query[index] = elapsed * 1000.0
             for stage, seconds in stage_seconds.items():
                 stages[stage] = stages.get(stage, 0.0) + seconds
 
@@ -383,6 +504,42 @@ class RetrievalBenchmark:
             n=self.workload.n,
             k=self.workload.rrf_k,
         )
+
+    def points(
+        self,
+        adapter: SystemAdapter,
+        repetitions: int,
+        make_client: Callable[[], Any] | None = None,
+    ) -> list[RetrievalPoint]:
+        """Um ponto por pipeline, com uma repetição por passada.
+
+        `make_client` é aceito e ignorado: esta família emite trabalho em série, e o protocolo diz
+        que um benchmark serial deve ACEITAR o argumento em vez de o runner ter de saber qual tipo
+        segura. Recusá-lo poria o regime de volta em quem chama.
+        """
+        del make_client
+        pontos: list[RetrievalPoint] = []
+        for pipeline in self.workload.pipelines:
+            self.warm_up(adapter, pipeline)
+            # 1-based: o schema do artefato exige `repetition >= 1`. `range(repetitions)` daria
+            # zero na primeira, e o validador recusa — corretamente, porque "repeticao 0" nao
+            # significa nada para quem le o artefato depois.
+            passadas = [self.run_pipeline(adapter, pipeline, r) for r in range(1, repetitions + 1)]
+            # O status do ponto é o da primeira passada: `unsupported` é propriedade do adapter e
+            # não
+            # varia entre repetições. Um pipeline sem suporte reporta isso UMA vez, em vez de somar
+            # três repetições vazias que pareceriam medição.
+            estado = passadas[0].status if passadas else "unsupported"
+            pontos.append(
+                RetrievalPoint(
+                    label=f"pipeline={pipeline}",
+                    parameters={"pipeline": pipeline, "k": self.workload.k, "n": self.workload.n},
+                    status=estado,
+                    status_detail=passadas[0].status_detail if passadas else None,
+                    repetitions=passadas,
+                )
+            )
+        return pontos
 
     def summary(self, results: Sequence[PipelineResult]) -> dict[str, Any]:
         """A comparison across pipelines on the same corpus and query set."""

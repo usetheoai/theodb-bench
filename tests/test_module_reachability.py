@@ -24,9 +24,16 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 
-#: Órfãos conhecidos em 2026-08-20. Cada um é uma família de workload completa cujo
-#: caminho até `theodb-bench run` não existe. Sair daqui é o objetivo, não a exceção.
-ORFAOS_CONHECIDOS = frozenset({"bench.graph", "bench.operations", "bench.retrieval"})
+#: Órfãos conhecidos. Cada um é uma família de workload completa cujo caminho até
+#: `theodb-bench run` não existe. Sair daqui é o objetivo, não a exceção.
+#:
+#: 2026-08-21 — `bench.retrieval` SAIU. Ela foi ligada por `retrieval/scifact/lexical`, com o corpus
+#: SciFact do BEIR (`bench.beir`) e julgamento humano. O custo de ela ter ficado órfã foi medido e
+#: não
+#: é hipotético: todo número lexical que este projeto publicou saiu de script ad-hoc, e o `m186`
+#: chegou a atribuir ao PRODUTO um limite que era do script — o [[B-014]] depois mediu que
+#: `bm25_search` sempre aceitou consulta multi-termo.
+ORFAOS_CONHECIDOS = frozenset({"bench.graph", "bench.operations"})
 
 
 def _modules_under(*packages: str) -> dict[str, Path]:

@@ -257,7 +257,20 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
 
         # Phase 4 -- dataset load, measured separately from the query benchmark.
         load_seconds = benchmark.load(adapter)
-        bundle.write_raw_text("load.log", f"load_seconds={load_seconds:.6f}\n")
+        # `None` e legal e o protocolo ja o dizia — `Benchmark.load` devolve "segundos, ou None
+        # quando nada foi carregado". O runner nao honrava, e formatava `None` direto: a corrida
+        # abortava com `TypeError: unsupported format string passed to NoneType.__format__`,
+        # culpando o sistema sob teste por um defeito do arnes.
+        #
+        # Exposto pela varredura de crossover, onde quem carrega e o `points()` (os dados mudam a
+        # cada N) e o `load()` do orquestrador nao tem o que carregar. REGISTRADO e nao omitido:
+        # um `load.log` ausente se leria como carga de custo zero.
+        bundle.write_raw_text(
+            "load.log",
+            f"load_seconds={load_seconds:.6f}\n"
+            if load_seconds is not None
+            else "load_seconds=none  # a carga nao foi feita aqui; ver o benchmark\n",
+        )
 
         collectors.start()
         # Phases 5 to 8 -- build, warm-up, measurement and repetition, per
