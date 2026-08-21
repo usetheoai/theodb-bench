@@ -20,6 +20,7 @@ from typing import Any, Final
 
 from theodb_bench import __version__
 from theodb_bench.adapters.base import IndexSpec
+from theodb_bench.bench.contention import Regime
 from theodb_bench.bench.vector import (
     FloatArray,
     VectorBenchmark,
@@ -725,7 +726,12 @@ def build_parser() -> argparse.ArgumentParser:
     # do `shared_buffers` e do tamanho da tabela. Quem monta a corrida sabe, e o artefato carrega a
     # declaracao. Inferir seria adivinhar e publicar o palpite (B-066, bullet 3).
     contention.add_argument(
-        "--regime", default="memory-resident", choices=["memory-resident", "exceeds-cache"]
+        "--regime",
+        default=Regime.MEMORY_RESIDENT.value,
+        # As escolhas vem do ENUM e nao de literais: uma lista aqui divergiria dele no dia em que um
+        # terceiro regime aparecesse, e o portao de codigo morto acusou exatamente essa duplicacao —
+        # dentro de `src/` os membros nunca eram referenciados por nome, so reconstruidos de string.
+        choices=[r.value for r in Regime],
     )
     contention.set_defaults(func=cmd_contention)
 

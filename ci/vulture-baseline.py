@@ -92,3 +92,19 @@ peak_rss_bytes  # unused variable (src/telemetry.py:124)
 voluntary_switches  # unused variable (src/telemetry.py:126)
 involuntary_switches  # unused variable (src/telemetry.py:127)
 is_present_bool  # unused function (src/validation.py:439)
+
+
+# ============================================================================
+# LIMITACOES ESTRUTURAIS DA FERRAMENTA — sem sunset, e a distincao importa.
+# ============================================================================
+# As entradas ACIMA sao DIVIDA: codigo morto real, com sunset em 2026-11-20, para sair conforme cada
+# simbolo e removido ou ganha chamador. As abaixo sao outra coisa: casos em que o vulture esta
+# narrowly certo e a conclusao errada.
+#
+# Um MEMBRO DE ENUM existe para ser escolhido pelo usuario, nao referenciado em codigo. `Regime` tem
+# dois valores e a CLI os oferece por `choices=[r.value for r in Regime]`; o membro que nao e o
+# default nunca aparece por nome dentro de `src/`. Escrever uma referencia para satisfazer o linter
+# seria pior que a entrada aqui — seria codigo cuja unica razao de existir e um falso positivo.
+#
+# Misturar as duas classes num arquivo so faria a data de sunset mentir sobre metade dele.
+Regime.EXCEEDS_CACHE  # unused attribute (src/bench/contention.py:38) — membro de enum
