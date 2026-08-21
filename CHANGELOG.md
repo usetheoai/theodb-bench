@@ -7,6 +7,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A guarda do índice lexical perguntava à INSTÂNCIA, não ao banco — e isso tornava impossível
+  qualquer curva de concorrência.** Medido no droplet: com 1 cliente, **349,4 QPS**; com 5 ou mais,
+  **0,0 QPS, 300 erros, zero sucessos**. O adapter guardava `_lexical_built` como estado por
+  instância, então cada cliente novo nascia com o conjunto vazio e toda consulta era recusada com
+  *"never built in this **session**"* — mas o índice vive no **banco**, não na sessão. A guarda
+  afirmava algo sobre a memória do adapter e reportava como fato sobre o servidor.
+  .
+  Invisível até agora porque **nada no arnês jamais abriu uma segunda conexão**. As duas guardas
+  (lexical e híbrida) passam a consultar o catálogo, memorizando só o **positivo**: um índice
+  construído não deixa de existir no meio da corrida, e re-perguntar por consulta poria um
+  round-trip no caminho que a corrida mede. O negativo não se memoriza — a corrida pode construir o
+  índice depois. (#B-043)
+
 ### Added
 - **`retrieval/scifact/concurrency`** — o pilar lexical sob **população de clientes**, laço fechado,
   varrendo 1 a 80. O [[B-043]] mede que o QPS satura em ~20 clientes e que de 20 a 80 o throughput não

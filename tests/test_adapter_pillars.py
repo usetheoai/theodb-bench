@@ -156,11 +156,17 @@ def test_theodb_declares_lexical_and_reaches_bm25() -> None:
 
 def test_the_lexical_index_is_built_before_it_is_searched() -> None:
     """`bm25_search` on an index that was never built is the B-041 defect: it
-    returned zero rows, indistinguishable from nothing matching."""
+    returned zero rows, indistinguishable from nothing matching.
+
+    A mensagem mudou de "never built in this session" para "does not exist in the database"
+    quando o B-043 mediu que a guarda perguntava a coisa errada — ver
+    `test_the_guard_asks_the_database_not_the_instance`. A PROPRIEDADE e a mesma: buscar num
+    indice que nao existe e recusado.
+    """
     server = _PillarStub()
     adapter = _wire(server)
 
-    with pytest.raises(UnsupportedCapabilityError, match="never built"):
+    with pytest.raises(UnsupportedCapabilityError, match="does not exist in the database"):
         adapter.execute_lexical(LexicalQuery(table="bench_docs", text="lazy", n=5))
 
 
@@ -291,7 +297,7 @@ def test_hybrid_needs_both_legs_loaded() -> None:
     """Fusing over a corpus that only has text would fuse one leg with nothing."""
     adapter = _wire(_PillarStub())
 
-    with pytest.raises(UnsupportedCapabilityError, match="never built"):
+    with pytest.raises(UnsupportedCapabilityError, match="does not exist in the database"):
         adapter.execute_hybrid(
             HybridQuery(table="pillar_docs", text="lazy", vector=DOCS[0].vector, n=3)
         )
@@ -301,3 +307,63 @@ def test_quantized_indexes_are_declared_because_the_suites_build_them() -> None:
     """`pq_subspaces`, `sbq_bits` and `rabitq_bits` are real reloptions, and
     `vector/sift/pg-scann` builds with `pq_subspaces=64`."""
     assert TheoDBAdapter().supports("vector_quantized")
+
+
+# ---------------------------------------------------------- B-043: a guarda perguntava a instancia
+
+
+class _ServidorComIndice(_PillarStub):
+    """Um servidor que TEM o indice — o que o catalogo responderia depois de um `bm25_build`."""
+
+    def fetch_one(
+        self, sql: str, parameters: tuple[object, ...] | None = None
+    ) -> tuple[object, ...] | None:
+        if "lexical_index_meta" in sql:
+            self.executed.append(sql)
+            return (1,)
+        return super().fetch_one(sql, parameters)
+
+
+def test_the_guard_asks_the_database_not_the_instance() -> None:
+    """O defeito que impedia QUALQUER curva de concorrencia.
+
+    MEDIDO em 2026-08-21: a guarda consultava `self._lexical_built`, um conjunto POR INSTANCIA.
+    Sob populacao de clientes, cada cliente novo nasce com ele vazio e **toda** consulta era
+    recusada — 300 erros e zero sucessos ja a partir de dois clientes.
+
+    A mensagem dizia "never built in this SESSION", mas o indice vive no BANCO. A guarda afirmava
+    algo sobre a memoria do adapter e reportava como fato sobre o servidor.
+
+    Este adapter e NOVO — nunca chamou `build_lexical_index` — e mesmo assim tem de conseguir
+    buscar, porque o indice existe no banco.
+    """
+    adapter = _wire(_ServidorComIndice())
+    assert adapter._lexical_built == set(), (
+        "o teste so mede o que se propoe se a instancia for nova"
+    )
+
+    resultado = adapter.execute_lexical(LexicalQuery(table="bench_docs", text="lazy", n=5))
+    assert resultado.ids == (0, 2)
+
+
+def test_the_positive_answer_is_remembered_and_the_negative_is_not() -> None:
+    """Memorizar o positivo evita um round-trip por consulta no caminho que a corrida MEDE.
+
+    O negativo nao pode ser memorizado: a corrida pode construir o indice depois, e um "nao existe"
+    guardado faria toda consulta seguinte falhar contra um indice que ja existe.
+    """
+    servidor = _ServidorComIndice()
+    adapter = _wire(servidor)
+
+    adapter.execute_lexical(LexicalQuery(table="bench_docs", text="lazy", n=5))
+    adapter.execute_lexical(LexicalQuery(table="bench_docs", text="dog", n=5))
+    consultas_ao_catalogo = [s for s in servidor.executed if "lexical_index_meta" in s]
+    assert len(consultas_ao_catalogo) == 1, "o positivo e perguntado UMA vez"
+
+    vazio = _wire(_PillarStub())
+    for _ in range(2):
+        with pytest.raises(UnsupportedCapabilityError):
+            vazio.execute_lexical(LexicalQuery(table="bench_docs", text="lazy", n=5))
+    assert vazio._lexical_built == set(), (
+        "um negativo memorizado quebraria o indice construido depois"
+    )

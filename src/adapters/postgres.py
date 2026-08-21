@@ -1576,10 +1576,40 @@ class TheoDBAdapter(PgvectorAdapter):
         """A stable id per table, since bm25_build is keyed by integer."""
         return abs(hash(spec.table)) % 1_000_000
 
+    def _lexical_index_exists(self, table: str) -> bool:
+        """O indice existe NO BANCO? — nao "esta instancia o construiu?".
+
+        MEDIDO em 2026-08-21 (B-043): a guarda anterior consultava `self._lexical_built`, um
+        conjunto POR INSTANCIA. Sob populacao de clientes, cada cliente novo nasce com ele vazio e
+        **toda** consulta era recusada: 300 erros e zero sucessos ja a partir de dois clientes. A
+        curva de concorrencia era impossivel de produzir, e o defeito ficou invisivel porque nada
+        no arnes nunca abriu uma segunda conexao.
+
+        A mensagem antiga dizia "never built in this SESSION" — mas o indice vive no BANCO, nao na
+        sessao. A guarda afirmava algo sobre a memoria do adapter e o reportava como fato sobre o
+        servidor. E o servidor JA recusa corretamente: foi o que o B-041 entregou, consultando
+        `lexical_index_meta`.
+
+        Consulta o catalogo, e memoriza o resultado POSITIVO: um indice construido nao deixa de
+        existir no meio de uma corrida, e re-perguntar por consulta poria um round-trip a mais no
+        caminho que a corrida esta medindo. O negativo NAO e memorizado — a corrida pode construir
+        o indice depois.
+        """
+        if table in self._lexical_built:
+            return True
+        linha = self._fetch_one(
+            "SELECT 1 FROM theodb.lexical_index_meta WHERE index_id = %s",
+            (abs(hash(table)) % 1_000_000,),
+        )
+        if linha:
+            self._lexical_built.add(table)
+            return True
+        return False
+
     def execute_lexical(self, query: LexicalQuery) -> RankedResult:
-        if query.table not in self._lexical_built:
+        if not self._lexical_index_exists(query.table):
             raise UnsupportedCapabilityError(
-                f"the BM25 index over {query.table} was never built in this session, "
+                f"the BM25 index over {query.table} does not exist in the database, "
                 f"and searching one that does not exist returns zero rows -- "
                 f"indistinguishable from nothing matching",
                 context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
@@ -1611,10 +1641,10 @@ class TheoDBAdapter(PgvectorAdapter):
         BM25 index that `load_documents` builds, and a report must not imply it
         does.
         """
-        if query.table not in self._lexical_built:
+        if not self._lexical_index_exists(query.table):
             raise UnsupportedCapabilityError(
-                f"the lexical leg over {query.table} was never built, and fusing one "
-                f"leg with nothing returns the dense ranking under a hybrid label",
+                f"the lexical leg over {query.table} does not exist in the database, and "
+                f"fusing one leg with nothing returns the dense ranking under a hybrid label",
                 context=ErrorContext(phase=Phase.MEASUREMENT, system=self.system_id),
             )
         started = time.perf_counter()
