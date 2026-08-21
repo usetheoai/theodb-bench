@@ -359,7 +359,52 @@ def apply_cpu_affinity(pid: int, cpus: frozenset[int]) -> Measured[bool]:
     return True
 
 
-def apply_isolation(plan: IsolationPlan, pid: int | None = None) -> AppliedIsolation:
+def read_effective_memory_limit(cgroup_path: Path | None = None) -> Measured[int]:
+    """Le o limite de memoria do cgroup em que ESTE processo ja roda, em bytes.
+
+    Existe porque `apply_isolation` aconselhava "run under an externally created cgroup instead" e
+    nunca verificava se alguem havia feito isso — deixando `memory_limit_applied` sempre ausente e,
+    com ele, os perfis `nightly` e `release` inalcancaveis por construcao.
+
+    Aplicar o limite aqui exigiria privilegio e teria efeito colateral sobre o host; LER o que ja
+    vale nao tem nenhum dos dois. `max` significa ausencia de limite e e reportado como ausencia:
+    devolver um numero faria um cgroup irrestrito passar por restrito, que e pior que reprovar,
+    porque a corrida pareceria isolada.
+    """
+    base = cgroup_path if cgroup_path is not None else _cgroup_of_self()
+    if base is None:
+        return unavailable("could not resolve the cgroup this process runs in")
+    arquivo = base / "memory.max"
+    if not arquivo.exists():
+        return unavailable(f"{arquivo} does not exist; no cgroup v2 memory limit in effect")
+    try:
+        texto = arquivo.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        return unavailable(f"{arquivo} unreadable: {exc}")
+    if texto == "max":
+        return unavailable(f"{arquivo} is 'max': the cgroup imposes no memory limit")
+    try:
+        return int(texto)
+    except ValueError:
+        return unavailable(f"{arquivo} holds {texto!r}, which is not a byte count")
+
+
+def _cgroup_of_self() -> Path | None:
+    """O diretorio cgroup v2 deste processo, derivado de /proc/self/cgroup."""
+    try:
+        linhas = Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for linha in linhas:
+        # cgroup v2 e sempre a linha `0::<caminho>`.
+        if linha.startswith("0::"):
+            return _CGROUP_ROOT / linha[3:].lstrip("/")
+    return None
+
+
+def apply_isolation(
+    plan: IsolationPlan, pid: int | None = None, cgroup_path: Path | None = None
+) -> AppliedIsolation:
     """Apply what can be applied here and record what could not.
 
     Never claims enforcement it did not achieve: an unenforceable control is
@@ -377,15 +422,26 @@ def apply_isolation(plan: IsolationPlan, pid: int | None = None) -> AppliedIsola
         applied.cpu_affinity_applied = unavailable("no CPU set declared")
 
     if plan.memory_bytes is not None:
-        support = probe_cgroup_support()
-        if support.usable:
-            applied.memory_limit_applied = unavailable(
-                "cgroup v2 is writable but delegated memory limiting is not implemented; "
-                "run under an externally created cgroup instead"
-            )
+        # O check se chama "Declared memory bound was respected". Um cgroup externo MAIS APERTADO
+        # que o declarado respeita a declaracao — ele a cumpre com folga. Um mais frouxo nao, e
+        # dizer o contrario seria afirmar isolamento que nao existe.
+        efetivo = read_effective_memory_limit(cgroup_path)
+        if isinstance(efetivo, int):
+            if efetivo <= plan.memory_bytes:
+                applied.memory_limit_applied = True
+                applied.notes.append(
+                    f"external cgroup limit of {efetivo} bytes respects the declared "
+                    f"{plan.memory_bytes}"
+                )
+            else:
+                applied.memory_limit_applied = unavailable(
+                    f"the cgroup allows {efetivo} bytes, above the declared "
+                    f"{plan.memory_bytes}; the declared bound is not enforced"
+                )
+                applied.notes.append(str(applied.memory_limit_applied))
         else:
-            applied.memory_limit_applied = unavailable(support.detail)
-        applied.notes.append(str(applied.memory_limit_applied))
+            applied.memory_limit_applied = efetivo
+            applied.notes.append(str(applied.memory_limit_applied))
     else:
         applied.memory_limit_applied = unavailable("no memory bound declared")
 

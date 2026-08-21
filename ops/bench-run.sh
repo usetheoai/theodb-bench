@@ -76,9 +76,21 @@ subir() {
 medir() {
   local tag="$1" suite="$2" saida="$3"
   echo "=== $tag :: $suite inicio $(date -Is) ==="
-  PGUSER=postgres /root/venv/bin/theodb-bench run "$suite" \
-    --system theodb --profile "$PROFILE" --output "$saida" \
-    ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"}
+  # Sob MEM_MAX o arnes roda DENTRO de um cgroup com limite, porque e o que ele exige para marcar
+  # `memory_limit` como respeitado — aplicar o limite ele mesmo pediria privilegio e teria efeito
+  # colateral sobre o host, entao ele LE o limite que ja vale. `systemd-run --scope` e o mecanismo
+  # nativo para criar esse cgroup (degrau 3 da parsimony ladder), e sem ele os perfis `nightly` e
+  # `release` sao inalcancaveis.
+  if [ -n "$MEM_MAX" ] && command -v systemd-run >/dev/null 2>&1; then
+    PGUSER=postgres systemd-run --scope --quiet -p "MemoryMax=$MEM_MAX" \
+      /root/venv/bin/theodb-bench run "$suite" \
+      --system theodb --profile "$PROFILE" --output "$saida" \
+      ${CPU_SET:+--cpu-set "$CPU_SET"} --memory "$MEM_MAX"
+  else
+    PGUSER=postgres /root/venv/bin/theodb-bench run "$suite" \
+      --system theodb --profile "$PROFILE" --output "$saida" \
+      ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"}
+  fi
   local rc=$?
   echo "=== $tag :: $suite fim rc=$rc $(date -Is) ==="
   return $rc
