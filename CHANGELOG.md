@@ -7,6 +7,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `ops/provision.sh` — provisiona um host de bench e, com `--verify`, **reprova em ~2 s** se faltar
+  qualquer capacidade, antes de qualquer trabalho caro. É a fonte de verdade do que a máquina precisa
+  ter; o snapshot da nuvem passa a ser cache derivado dele (B-098)
+- `ops/bench-run.sh` — executor com ordem imposta: portão de capacidades → servidor (criando o
+  diretório de Parquet dentro do contêiner) → proveniência lida do servidor → **smoke barato** →
+  sweep. Um pipeline quebrado é descoberto em 35 s, não depois de carregar 2 milhões de linhas seis
+  vezes (B-098)
+- `ops/README.md` — por que o script é a verdade e o snapshot é cache, e por que código por tarball
+  limita todo veredito a `EXPLORATORY` (B-098)
+
 ## [0.7.0] - 2026-08-21
 
 ### Added
