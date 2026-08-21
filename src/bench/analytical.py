@@ -486,7 +486,22 @@ class AnalyticalBenchmark:
                         ),
                     )
                     if measurement.status != "measured" or measurement.latency is None:
-                        point.status = measurement.status
+                        # `invalid` e vocabulario INTERNO desta familia; o artefato conhece
+                        # `measured | unsupported | skipped | failed`. Uma medida invalidada —
+                        # resposta errada do oraculo, ou caminho que nao se provou — rodou e nao
+                        # produziu resultado utilizavel, que e exatamente o que `failed` significa.
+                        #
+                        # Nao acrescentar um quinto termo e deliberado: ele sobreporia `failed` e o
+                        # vocabulario do artefato e pequeno de proposito. A distincao que importa —
+                        # recusada por nao provar o caminho, contra caiu — vive no `status_detail`,
+                        # que carrega a razao inteira.
+                        #
+                        # O defeito e ANTERIOR a este portao: a resposta errada do oraculo ja
+                        # produzia `invalid` desde sempre, e o schema ja o teria recusado. Nunca
+                        # disparou porque o oraculo nunca falhou nas suites.
+                        point.status = (
+                            "failed" if measurement.status == "invalid" else (measurement.status)
+                        )
                         point.status_detail = measurement.status_detail
                         continue
                     point.repetitions.append(

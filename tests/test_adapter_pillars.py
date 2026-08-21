@@ -22,6 +22,7 @@ is nothing to measure, and a stub would put a number where an absence belongs.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -156,11 +157,17 @@ def test_theodb_declares_lexical_and_reaches_bm25() -> None:
 
 def test_the_lexical_index_is_built_before_it_is_searched() -> None:
     """`bm25_search` on an index that was never built is the B-041 defect: it
-    returned zero rows, indistinguishable from nothing matching."""
+    returned zero rows, indistinguishable from nothing matching.
+
+    A mensagem mudou de "never built in this session" para "does not exist in the database"
+    quando o B-043 mediu que a guarda perguntava a coisa errada — ver
+    `test_the_guard_asks_the_database_not_the_instance`. A PROPRIEDADE e a mesma: buscar num
+    indice que nao existe e recusado.
+    """
     server = _PillarStub()
     adapter = _wire(server)
 
-    with pytest.raises(UnsupportedCapabilityError, match="never built"):
+    with pytest.raises(UnsupportedCapabilityError, match="does not exist in the database"):
         adapter.execute_lexical(LexicalQuery(table="bench_docs", text="lazy", n=5))
 
 
@@ -291,7 +298,7 @@ def test_hybrid_needs_both_legs_loaded() -> None:
     """Fusing over a corpus that only has text would fuse one leg with nothing."""
     adapter = _wire(_PillarStub())
 
-    with pytest.raises(UnsupportedCapabilityError, match="never built"):
+    with pytest.raises(UnsupportedCapabilityError, match="does not exist in the database"):
         adapter.execute_hybrid(
             HybridQuery(table="pillar_docs", text="lazy", vector=DOCS[0].vector, n=3)
         )
@@ -301,3 +308,105 @@ def test_quantized_indexes_are_declared_because_the_suites_build_them() -> None:
     """`pq_subspaces`, `sbq_bits` and `rabitq_bits` are real reloptions, and
     `vector/sift/pg-scann` builds with `pq_subspaces=64`."""
     assert TheoDBAdapter().supports("vector_quantized")
+
+
+# ---------------------------------------------------------- B-043: a guarda perguntava a instancia
+
+
+class _ServidorComIndice(_PillarStub):
+    """Um servidor que TEM o indice — o que o catalogo responderia depois de um `bm25_build`."""
+
+    def fetch_one(
+        self, sql: str, parameters: tuple[object, ...] | None = None
+    ) -> tuple[object, ...] | None:
+        if "lexical_index_meta" in sql:
+            self.executed.append(sql)
+            return (1,)
+        return super().fetch_one(sql, parameters)
+
+
+def test_the_guard_asks_the_database_not_the_instance() -> None:
+    """O defeito que impedia QUALQUER curva de concorrencia.
+
+    MEDIDO em 2026-08-21: a guarda consultava `self._lexical_built`, um conjunto POR INSTANCIA.
+    Sob populacao de clientes, cada cliente novo nasce com ele vazio e **toda** consulta era
+    recusada — 300 erros e zero sucessos ja a partir de dois clientes.
+
+    A mensagem dizia "never built in this SESSION", mas o indice vive no BANCO. A guarda afirmava
+    algo sobre a memoria do adapter e reportava como fato sobre o servidor.
+
+    Este adapter e NOVO — nunca chamou `build_lexical_index` — e mesmo assim tem de conseguir
+    buscar, porque o indice existe no banco.
+    """
+    adapter = _wire(_ServidorComIndice())
+    assert adapter._lexical_built == set(), (
+        "o teste so mede o que se propoe se a instancia for nova"
+    )
+
+    resultado = adapter.execute_lexical(LexicalQuery(table="bench_docs", text="lazy", n=5))
+    assert resultado.ids == (0, 2)
+
+
+def test_the_positive_answer_is_remembered_and_the_negative_is_not() -> None:
+    """Memorizar o positivo evita um round-trip por consulta no caminho que a corrida MEDE.
+
+    O negativo nao pode ser memorizado: a corrida pode construir o indice depois, e um "nao existe"
+    guardado faria toda consulta seguinte falhar contra um indice que ja existe.
+    """
+    servidor = _ServidorComIndice()
+    adapter = _wire(servidor)
+
+    adapter.execute_lexical(LexicalQuery(table="bench_docs", text="lazy", n=5))
+    adapter.execute_lexical(LexicalQuery(table="bench_docs", text="dog", n=5))
+    consultas_ao_catalogo = [s for s in servidor.executed if "lexical_index_meta" in s]
+    assert len(consultas_ao_catalogo) == 1, "o positivo e perguntado UMA vez"
+
+    vazio = _wire(_PillarStub())
+    for _ in range(2):
+        with pytest.raises(UnsupportedCapabilityError):
+            vazio.execute_lexical(LexicalQuery(table="bench_docs", text="lazy", n=5))
+    assert vazio._lexical_built == set(), (
+        "um negativo memorizado quebraria o indice construido depois"
+    )
+
+
+def test_the_lexical_index_id_is_stable_across_processes() -> None:
+    """O id chaveia um objeto PERSISTENTE do banco, e vinha do `hash()` embutido.
+
+    MEDIDO em 2026-08-21: o `hash()` de string em Python e aleatorizado por processo (PEP 456) —
+    tres execucoes, tres ids diferentes para a mesma tabela. As consequencias:
+
+    - um indice construido numa corrida NAO e encontravel na seguinte;
+    - um gerador de carga externo (o `pgbench` que o DoD do B-043 exige) nao tem como computar o
+      mesmo id;
+    - dentro de UM processo tudo funciona, que e por que ninguem viu.
+
+    Este teste roda o calculo num SUBPROCESSO com semente de hash diferente. Compara-lo consigo
+    mesmo no processo atual nao provaria nada — o `hash()` tambem e estavel dentro de um processo.
+    """
+    import subprocess
+    import sys
+
+    from theodb_bench.adapters.postgres import TheoDBAdapter
+
+    aqui = TheoDBAdapter.lexical_index_id("bench_documents")
+    programa = (
+        "import sys; sys.path.insert(0, 'src');"
+        "from theodb_bench.adapters.postgres import TheoDBAdapter;"
+        "print(TheoDBAdapter.lexical_index_id('bench_documents'))"
+    )
+    vistos = set()
+    for semente in ("0", "1", "12345"):
+        saida = subprocess.run(
+            [sys.executable, "-c", programa],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+            env={"PYTHONHASHSEED": semente, "PATH": "/usr/bin:/bin"},
+            check=True,
+        )
+        vistos.add(int(saida.stdout.strip()))
+    assert vistos == {aqui}, (
+        f"o id mudou entre processos: {vistos} contra {aqui} — um indice construido numa corrida "
+        f"nao seria encontravel na seguinte"
+    )
