@@ -16,6 +16,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   junto, porque ele é a resposta certa **para aquele corpus**. (#B-058)
 
 ### Fixed
+- **O runner formatava `None` e culpava o sistema sob teste pelo próprio defeito.**
+  `Benchmark.load` declara `float | None` — "segundos, ou None quando nada foi carregado" — e o
+  runner fazia `f"{load_seconds:.6f}"` direto. A corrida abortava com
+  `TypeError: unsupported format string passed to NoneType.__format__`, e o relatório marcava
+  **`sut_alive: FAIL`**: o motor era acusado de ter caído por um defeito do arnês. O `None` passa a
+  ser **registrado**, não omitido — um `load.log` ausente se leria como carga de custo zero. (#B-058)
 - **A varredura teria custado 4× o necessário, e o custo já existia.** Medido: o `points()` chamava
   `run()` uma vez por repetição e cada chamada **recarregava todos os caminhos**; somando a carga do
   orquestrador, eram **quatro cargas por caminho** numa corrida de 3 repetições. A 2M linhas isso é a
