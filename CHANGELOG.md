@@ -8,6 +8,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **A família de retrieval deixou de ser órfã, e o pilar lexical passou a ter corpus com julgamento
+  humano.** O `bench/retrieval.py` trazia nDCG@10, Recall@k, MRR e quatro pipelines desde sempre, e
+  **nenhum benchmark registrado o alcançava** — ele estava na lista de órfãos do próprio arnês, e o
+  único corpus era o semeado, cuja docstring diz que exercita a pipeline sem ser alegação de
+  qualidade. A consequência foi concreta: todo número lexical publicado saiu de script ad-hoc, e o
+  `m186` atribuiu ao PRODUTO um limite que era do script.
+  .
+  Entram: o `RetrievalWorkload` satisfazendo o protocolo `Workload` (os cinco membros faltavam), o
+  `points()` no benchmark, o carregador `bench/beir.py`, o manifesto `beir-scifact` verificado por
+  sha256, e o benchmark registrado `retrieval/scifact/lexical`. O `bench.retrieval` **saiu do
+  baseline de órfãos** — que existe para encolher. (#B-093)
+- **Medido de ponta a ponta: nDCG@10 de 0,6864 no SciFact** (recall@10 0,8227, QPS 213,5, CV 2,1%),
+  contra os **0,6269** que o `m186` publicou somando scores por termo do lado de fora. **+9,5%
+  relativo** — o número antigo era um piso, como o [[B-014]] havia previsto ao medir que
+  `bm25_search` sempre aceitou consulta multi-termo. É o primeiro número lexical deste projeto
+  produzido **dentro do arnês**. (#B-093)
+
+### Added
 - **`vector/sift1m/frontier`** — varredura de `ef_search` em {40, 64, 128, 256} num único build, para
   ler **dois motores a recall casado** em vez de a `ef` casado. Comparar QPS no mesmo `ef` compara a
   coisa errada: `ef` não é a mesma unidade em dois grafos diferentes — no mesmo 64 o [[B-046]] mede

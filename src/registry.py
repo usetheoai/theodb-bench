@@ -19,6 +19,7 @@ from theodb_bench.adapters.base import IndexSpec, SystemAdapter
 from theodb_bench.adapters.fake import FakeAdapter
 from theodb_bench.bench.analytical import AnalyticalWorkload
 from theodb_bench.bench.protocol import Workload
+from theodb_bench.bench.retrieval import RetrievalWorkload
 from theodb_bench.bench.vector import VectorWorkload
 from theodb_bench.errors import AdapterError, ConfigError, ErrorContext, Phase
 from theodb_bench.load import LoadModel
@@ -269,6 +270,42 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
             warmup_queries=50,
             indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
             search_sweep={"ef_search": (64, 256)},
+        ),
+        default_repetitions=3,
+    ),
+    # B-093 — o pilar lexical medido contra JULGAMENTO HUMANO, e não contra corpus semeado.
+    #
+    # O `bench/retrieval.py` traz nDCG@10, Recall@k, MRR e quatro pipelines desde sempre, e estava
+    # na
+    # lista de órfãos de `tests/test_module_reachability.py`: **nenhum benchmark registrado o
+    # alcançava**. A consequência foi concreta — todo número lexical que este projeto publicou saiu
+    # de
+    # script ad-hoc, e o `m186` chegou a atribuir ao PRODUTO um limite (`bm25_search` só aceitaria
+    # um
+    # termo) que era do script, e que o [[B-014]] depois mediu ser falso.
+    #
+    # O corpus é o SciFact do BEIR: 5183 documentos, 300 consultas com qrel no split `test` — o
+    # mesmo
+    # que o `m186` usou, agora dentro do arnês e com o sha256 do arquivo publicado verificado.
+    #
+    # SÓ A PERNA LEXICAL, e isso é declarado e não uma limitação escondida: o BEIR publica texto e
+    # julgamentos, não embeddings. Preencher os vetores com ruído faria as pernas densa e híbrida
+    # RODAREM e os números PARECEREM medidos.
+    "retrieval/scifact/lexical": BenchmarkEntry(
+        id="retrieval/scifact/lexical",
+        description=(
+            "SciFact (BEIR) against the lexical pipeline, scored by nDCG@10 "
+            "against human qrels rather than against a computed oracle. Dense "
+            "and hybrid legs stay out: BEIR publishes no embeddings, and filling "
+            "them with noise would make those numbers merely look measured."
+        ),
+        workload=RetrievalWorkload(
+            corpus_size=5183,
+            query_count=300,
+            k=10,
+            n=50,
+            warmup_queries=20,
+            pipelines=("lexical",),
         ),
         default_repetitions=3,
     ),
