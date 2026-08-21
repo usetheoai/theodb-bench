@@ -19,6 +19,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
   roda o portão, mede, colhe os bundles e **destrói por `trap EXIT`**. A garantia importa mais que
   parece: o desperdício medido não veio de droplet caro, veio de droplet ocioso — um `delete` no fim
   do caminho feliz não roda quando o script morre (B-098)
+- Coleta verificada: um `scp` bem-sucedido de arquivo vazio ou corrompido deixava de contar como
+  colhido, e o droplet era destruído com o resultado dentro. Agora confere tamanho e integridade do
+  arquivo antes de afirmar que colheu (B-098)
+- Coleta escopada à corrida atual: `bench-run.sh` registra qual corrida acabou de rodar, e a coleta
+  leva só essa. Um snapshot carrega o que estava no disco do host de origem, então varrer `res-*`
+  misturava corrida velha com nova — pior que não colher, porque parece completo (B-098)
+- `provision.sh` instala uma regra `tmpfiles.d` para `/var/run/postgresql`. Medido: `/var/run` é
+  tmpfs, foi a única das nove capacidades que não sobreviveu ao snapshot, e o mecanismo nativo do
+  systemd resolve sem reprovisionar (B-098)
 - `ops/README.md` — por que o script é a verdade e o snapshot é cache, e por que código por tarball
   limita todo veredito a `EXPLORATORY` (B-098)
 

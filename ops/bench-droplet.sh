@@ -38,12 +38,18 @@ limpar() {
   if [ -n "$IP" ] && [ "$COLHIDO" = "0" ]; then
     echo ">>> colhendo resultados antes de destruir"
     mkdir -p "$DESTINO"
+    # So a corrida DESTA execucao. `res-*` varreria tambem o que veio dentro do snapshot.
     ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "root@$IP" \
-      'tar -czf /root/resultados.tgz /root/res-* /root/bench-run.log 2>/dev/null; true' 2>/dev/null
-    if scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q "root@$IP:/root/resultados.tgz" "$DESTINO/$NOME.tgz" 2>/dev/null; then
-      COLHIDO=1; echo "    $DESTINO/$NOME.tgz"
+      'st=$(cat /root/ULTIMA_CORRIDA 2>/dev/null); [ -n "$st" ] || exit 1
+       tar -czf /root/resultados.tgz "/root/res-$st" /root/bench-run.log 2>/dev/null' 2>/dev/null
+    if scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q "root@$IP:/root/resultados.tgz" "$DESTINO/$NOME.tgz" 2>/dev/null \
+       && [ -s "$DESTINO/$NOME.tgz" ] && tar -tzf "$DESTINO/$NOME.tgz" >/dev/null 2>&1; then
+      COLHIDO=1; echo "    $DESTINO/$NOME.tgz ($(du -h "$DESTINO/$NOME.tgz" | cut -f1))"
     else
-      echo "!!! NAO consegui colher de $IP"
+      # Copiar NAO e colher. Um `scp` bem-sucedido de um arquivo vazio ou corrompido reportaria
+      # sucesso e o droplet seria destruido com o resultado dentro. Verificar o que se afirma ter
+      # colhido e a mesma disciplina que o resto deste sistema aplica a medicao.
+      echo "!!! NAO consegui colher de $IP (ausente, vazio ou corrompido)"
     fi
   fi
 

@@ -84,7 +84,15 @@ swapoff -a 2>/dev/null || true
 cpupower frequency-set --governor performance >/dev/null 2>&1 || echo "governor: nao ajustavel neste host"
 
 # O arnes NAO sobe servidor — ele mede um que ja exista, pelo socket unix.
+#
+# MEDIDO em 2026-08-21: `/var/run` e TMPFS. Nada ali sobrevive a um boot, e portanto nada ali entra
+# num snapshot — foi a unica das nove capacidades que um host nascido do snapshot NAO tinha. Nao e
+# defeito do snapshot; e o Linux funcionando como projetado, e supor persistencia ali era erro meu.
+# `tmpfiles.d` e o mecanismo NATIVO do systemd para exatamente isto (degrau 3 da parsimony ladder),
+# entao o diretorio volta a cada boot sem reprovisionar.
 mkdir -p /var/run/postgresql && chmod 777 /var/run/postgresql
+mkdir -p /usr/lib/tmpfiles.d
+printf 'd /var/run/postgresql 0777 root root -\n' > /usr/lib/tmpfiles.d/theodb-bench.conf
 
 if [ -d "$BENCH_SRC" ]; then
   python3 -m venv "$VENV"

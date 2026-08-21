@@ -95,5 +95,11 @@ for tag in $TAGS; do
   medir "$tag" "$SUITE" "/root/res-$STAMP/$tag" || echo "AVISO: $tag terminou nao-zero (bundle preservado)"
 done
 
+# Registra QUAL corrida acabou de rodar. Sem isto a coleta faz `tar /root/res-*` e varre tambem os
+# resultados de corridas anteriores — inclusive os que vieram DENTRO do snapshot, porque ele foi
+# tirado de um host que ja tinha medido. Colher resultado velho junto com novo e pior que nao colher:
+# parece completo.
+echo "$STAMP" > /root/ULTIMA_CORRIDA
+
 echo "=== FIM $(date -Is) resultados em /root/res-$STAMP ==="
 touch /root/PRONTO
