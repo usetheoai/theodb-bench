@@ -735,6 +735,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     contention.set_defaults(func=cmd_contention)
 
+    tpch = subparsers.add_parser(
+        "tpch", help="run the multi-table TPC-H shaped suite, checked against its own oracle"
+    )
+    tpch.add_argument("--system", default="fake", choices=sorted(ADAPTERS))
+    tpch.add_argument("--scale-factor", type=float, default=0.001)
+    tpch.add_argument("--seed", type=int, default=20260821)
+    tpch.add_argument("--prefix", default="tpch_")
+    # Sem `--dsn` o comando so alcança o sistema fake, e um arnês que só mede o próprio fake mede a
+    # si mesmo. É a mesma razão pela qual o `run` o aceita.
+    tpch.add_argument("--dsn", default=None, help="connection string for the system under test")
+    tpch.set_defaults(func=cmd_tpch)
+
     run = subparsers.add_parser("run", help="execute a benchmark against a system")
     run.add_argument("benchmark", choices=sorted(BENCHMARKS))
     run.add_argument("--system", default="fake", choices=sorted(ADAPTERS))
@@ -840,7 +852,9 @@ def cmd_contention(args: argparse.Namespace) -> int:
     )
 
     def novo_cliente() -> Any:
-        return get_adapter(args.system)
+        # `.build()` constroi o adapter; `get_adapter` devolve a ENTRADA do registro. Confundir os
+        # dois produz `AttributeError` no primeiro uso, e foi o que aconteceu.
+        return get_adapter(args.system).build()
 
     def ler(cliente: Any, index: int) -> None:
         cliente.execute_analytical(tabela, _contention_probe(index))
@@ -869,6 +883,57 @@ def _contention_probe(index: int) -> Any:
     from theodb_bench.adapters.base import AnalyticalQuery
 
     return AnalyticalQuery(id=f"contention-{index}", description="scan sob contenção")
+
+
+def cmd_tpch(args: argparse.Namespace) -> int:
+    """Roda a suíte TPC-H multi-tabela contra um sistema, conferindo cada resposta contra o oráculo.
+
+    POR QUE ESTE COMANDO EXISTE (B-065). O contrato analítico anterior era de UMA tabela, e a
+    avaliação independente do AlloyDB publicou Q1/Q5/Q6/Q18 — a Q18 junta três. Sem esquema
+    multi-tabela, os números do concorrente não tinham onde ser respondidos com o mesmo shape, e
+    responder com shape nosso mede outra coisa e chama de comparação.
+
+    O oráculo é consultado SEMPRE: uma query rápida e errada não é uma query rápida.
+    """
+    from theodb_bench.bench.tpch import run_tpch_suite
+
+    # Ciclo de vida completo, como o `compare` faz: construir NAO e preparar, preparar nao e
+    # iniciar, e iniciar nao e estar pronto. Pular qualquer um rende `system is not ready` no
+    # primeiro `load` — que foi o que a primeira execucao deste comando devolveu, com a mensagem
+    # certa apontando para o passo que faltava.
+    entrada = get_adapter(args.system)
+    adapter = entrada.build(dsn=args.dsn) if args.dsn else entrada.build()
+    adapter.prepare()
+    adapter.start()
+    adapter.wait_ready()
+    try:
+        medidas = run_tpch_suite(
+            adapter,
+            scale_factor=args.scale_factor,
+            seed=args.seed,
+            prefix=args.prefix,
+        )
+    finally:
+        adapter.stop()
+    print(
+        json.dumps(
+            {
+                "scale_factor": args.scale_factor,
+                "seed": args.seed,
+                "queries": {
+                    qid: {
+                        "seconds": m.seconds,
+                        "matches_oracle": m.matches_oracle,
+                        "rows_returned": m.rows_returned,
+                    }
+                    for qid, m in medidas.items()
+                },
+            },
+            indent=2,
+        )
+    )
+    # Sai não-zero quando alguma resposta discorda do oráculo: um motor rápido e errado não passa.
+    return EXIT_OK if all(m.matches_oracle for m in medidas.values()) else EXIT_ERROR
 
 
 def main(argv: Sequence[str] | None = None) -> int:

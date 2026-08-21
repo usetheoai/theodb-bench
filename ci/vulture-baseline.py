@@ -108,3 +108,9 @@ is_present_bool  # unused function (src/validation.py:439)
 #
 # Misturar as duas classes num arquivo so faria a data de sunset mentir sobre metade dele.
 Regime.EXCEEDS_CACHE  # unused attribute (src/bench/contention.py:38) — membro de enum
+TpchMeasurement.matches_oracle  # unused attribute (src/bench/tpch.py) — campo de resultado
+TpchMeasurement.rows_returned  # unused attribute (src/bench/tpch.py) — campo de resultado
+# Os dois acima sao campos de um dataclass de RESULTADO: existem para serem lidos por quem chama a
+# suite, e quem chama esta fora de `src/`. Mesma classe do membro de enum acima — o vulture ve a
+# ausencia de leitura interna e conclui morte, quando a leitura e o proposito e mora do outro lado
+# da fronteira.
