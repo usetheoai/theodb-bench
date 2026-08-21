@@ -29,7 +29,7 @@ from theodb_bench.bench.vector import (
     generate_corpus,
 )
 from theodb_bench.bundle import RunBundle
-from theodb_bench.compare import render_paired_verdict
+from theodb_bench.compare import render_paired_verdict, render_throughput_verdict
 from theodb_bench.datasets import (
     DatasetManifest,
     DatasetRegistry,
@@ -747,6 +747,16 @@ def build_parser() -> argparse.ArgumentParser:
     tpch.add_argument("--dsn", default=None, help="connection string for the system under test")
     tpch.set_defaults(func=cmd_tpch)
 
+    throughput = subparsers.add_parser(
+        "throughput",
+        help="compare speed between two configurations from N runs each (unpaired, Welch)",
+    )
+    throughput.add_argument("--a", required=True, help="name of the first configuration")
+    throughput.add_argument("--a-runs", required=True, nargs="+", type=float)
+    throughput.add_argument("--b", required=True, help="name of the second configuration")
+    throughput.add_argument("--b-runs", required=True, nargs="+", type=float)
+    throughput.set_defaults(func=cmd_throughput)
+
     run = subparsers.add_parser("run", help="execute a benchmark against a system")
     run.add_argument("benchmark", choices=sorted(BENCHMARKS))
     run.add_argument("--system", default="fake", choices=sorted(ADAPTERS))
@@ -934,6 +944,24 @@ def cmd_tpch(args: argparse.Namespace) -> int:
     )
     # Sai não-zero quando alguma resposta discorda do oráculo: um motor rápido e errado não passa.
     return EXIT_OK if all(m.matches_oracle for m in medidas.values()) else EXIT_ERROR
+
+
+def cmd_throughput(args: argparse.Namespace) -> int:
+    """Compara VELOCIDADE entre duas configurações, a partir de N corridas por lado.
+
+    POR QUE SEPARADO DO `compare` (B-049). O `compare` faz o teste PAREADO sobre latência por
+    consulta, e o pareado não serve para taxa agregada: QPS é um número por corrida, não por
+    consulta. Aplicá-lo a taxas inventaria uma correlação inexistente e estreitaria o intervalo sem
+    razão — e as duas maiores diferenças que este projeto publica são justamente de velocidade.
+
+    Os valores vêm na linha de comando porque é isso que um operador tem hoje: N bundles, cada um
+    com o seu `throughput_per_second`. Ler os bundles direto é a integração que o bullet 1 pede do
+    runner, e ela é trabalho próprio.
+    """
+    print(
+        render_throughput_verdict(args.a, list(args.a_runs), args.b, list(args.b_runs)),
+    )
+    return EXIT_OK
 
 
 def main(argv: Sequence[str] | None = None) -> int:

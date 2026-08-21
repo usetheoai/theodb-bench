@@ -16,7 +16,7 @@ and differing key sets are a typed error rather than an intersection (I22:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from theodb_bench.errors import ConfigError, ErrorContext, Phase
@@ -178,3 +178,75 @@ def render_paired_verdict(
         f"mean diff = {effect.mean_difference:+.3f}{dz}; "
         f"{faster} faster on {better_count} of {n} queries, {effect.ties} tied)"
     )
+
+
+#: Acima deste coeficiente de variação entre corridas, o número publicado precisa dizer ISSO mais do
+#: que precisa de um `p`. 15% é a fronteira em que a dispersão deixa de ser ruído de medição e passa
+#: a ser a notícia — e ela é uma convenção declarada, não um limiar medido.
+HIGH_VARIANCE_CV: float = 0.15
+
+
+def render_throughput_verdict(
+    name_a: str,
+    runs_a: Sequence[float],
+    name_b: str,
+    runs_b: Sequence[float],
+) -> str:
+    """O veredito para VELOCIDADE, que é irmão do pareado e deliberadamente não é ele.
+
+    O [[B-049]] existe porque as duas maiores diferenças que o projeto publica são de velocidade —
+    Elasticsearch a 4,3x o nosso QPS, pgvector a +16,3% — e nenhuma tinha teste, enquanto um empate
+    de terceira casa decimal em qualidade tinha. A assimetria era indefensável.
+
+    O pareado NÃO SERVE aqui, e a razão é estrutural: ele precisa de valor por consulta, e QPS é uma
+    taxa agregada sobre a corrida inteira. Aplicá-lo a taxas inventaria uma correlação inexistente e
+    estreitaria o intervalo sem razão — é o erro que este item existe para não cometer, e o texto
+    abaixo nomeia o teste usado para que ninguém confunda os dois vereditos num relatório.
+    """
+    from theodb_bench.analysis.throughput import compare_throughput, precision_for_n
+
+    try:
+        resultado = compare_throughput(runs_a, runs_b)
+    except ConfigError as exc:
+        return (
+            f"**{name_a} vs {name_b}** — not comparable: {exc.args[0].splitlines()[0]} "
+            f"(n_a = {len(runs_a)}, n_b = {len(runs_b)})"
+        )
+
+    aviso = ""
+    pior_cv = max(resultado.a.coefficient_of_variation, resultado.b.coefficient_of_variation)
+    if pior_cv > HIGH_VARIANCE_CV:
+        # E diz quantas corridas comprariam qual precisao, em vez de so avisar. Um aviso sem
+        # remedio informa que ha um problema e deixa a decisao sem numero — o bullet 3 do B-049
+        # pede exatamente o contrário: qual N compra qual precisão.
+        n_atual = min(resultado.n_a, resultado.n_b)
+        atual = precision_for_n(cv=pior_cv, n=n_atual)
+        sugerido = next(
+            (n for n in range(n_atual + 1, 51) if precision_for_n(cv=pior_cv, n=n) <= atual / 2),
+            None,
+        )
+        remedio = (
+            f"; halving it needs n = {sugerido} per side"
+            if sugerido is not None
+            else "; no n under 50 halves it, which is itself the finding"
+        )
+        aviso = (
+            f" — **high between-run variance** (CV = {pior_cv:.0%}, so the interval is "
+            f"±{atual:.0%} at n = {n_atual}{remedio}); the spread is the finding here more than "
+            f"the p-value is"
+        )
+
+    corpo = (
+        f"**{name_a} vs {name_b}** (throughput) — {name_b} is **{resultado.ratio:.1f}x** "
+        f"(95% CI [{resultado.ci_low:.2f}x, {resultado.ci_high:.2f}x], "
+        f"p = {resultado.p_value:.4f}, n_a = {resultado.n_a}, n_b = {resultado.n_b}) "
+        f"· Welch t-test on **unpaired** independent runs, bootstrap CI on the ratio"
+    )
+    if not resultado.significant:
+        corpo = (
+            f"**{name_a} vs {name_b}** (throughput) — **indistinguishable** "
+            f"(p = {resultado.p_value:.4f}, ratio {resultado.ratio:.2f}x, "
+            f"95% CI [{resultado.ci_low:.2f}x, {resultado.ci_high:.2f}x]) "
+            f"· Welch t-test on **unpaired** independent runs"
+        )
+    return corpo + aviso
