@@ -674,6 +674,35 @@ BENCHMARKS["analytical/synthetic/paths"] = BenchmarkEntry(
 )
 
 
+# B-058 bullet 2 — ABAIXO DE QUANTAS LINHAS o nosso colunar perde para o heap?
+#
+# O item registra o crossover do CONCORRENTE (o avaliador do AlloyDB mediu a inversao em algumas
+# centenas de milhares: 31,6 ms colunar contra 27,5 ms heap a 100K) e diz, sobre o NOSSO: nunca
+# medido, so estimado. Um colunar so paga o custo de decodificar stripe quando ha linha bastante
+# para amortiza-lo; abaixo disso ele PERDE, e saber onde e o que decide quando liga-lo.
+#
+# A faixa vai de 10K a 2M porque contem a inversao esperada com folga dos DOIS lados. Comecar em
+# 100K correria o risco de a curva nascer ja do lado errado do joelho, e a medicao concluir "sempre
+# perde" ou "sempre ganha" por escolha de faixa — que e um resultado sobre a faixa, nao sobre o
+# motor.
+#
+# Cada N RECARREGA os dados nos tres caminhos, entao esta corrida e cara por construcao. E o preco
+# de uma CURVA; um ponto so nao responde "abaixo de quantas".
+BENCHMARKS["analytical/crossover/row-count"] = BenchmarkEntry(
+    id="analytical/crossover/row-count",
+    description=(
+        "The same aggregations over heap, columnar and Parquet across a row-count "
+        "sweep, to find where columnar stops losing to heap. A single row count "
+        "cannot answer 'below how many rows', which is the question."
+    ),
+    workload=AnalyticalWorkload(
+        row_count=10_000,
+        row_count_sweep=(10_000, 50_000, 100_000, 500_000, 1_000_000, 2_000_000),
+    ),
+    default_repetitions=3,
+)
+
+
 def get_benchmark(benchmark_id: str) -> BenchmarkEntry:
     if benchmark_id not in BENCHMARKS:
         raise ConfigError(

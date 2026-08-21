@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Final
 
 import numpy as np
@@ -71,6 +71,18 @@ class AnalyticalWorkload:
     repetitions: int = 3
     warmup_queries: int = 1
 
+    #: Contagens de linha a varrer. **Vazio mantem o comportamento de um N so** — que e o que as
+    #: suites existentes usam, e o que os testes delas protegem.
+    #:
+    #: Existe para o crossover do [[B-058]]: *abaixo de quantas linhas o colunar PERDE para o
+    #: heap?* Um colunar so paga o custo de decodificar stripe quando ha linha suficiente para
+    #: amortiza-lo, e o avaliador do AlloyDB mediu a inversao em algumas centenas de milhares.
+    #: A nossa nunca foi medida.
+    #:
+    #: A varredura recarrega os dados a cada N — nao e um GUC de sessao como o `ef_search`. Por
+    #: isso ela vive aqui e nao num parametro de consulta: quem varre precisa mandar na carga.
+    row_count_sweep: tuple[int, ...] = ()
+
     def __post_init__(self) -> None:
         unknown = set(self.paths) - set(PATHS)
         if unknown:
@@ -110,13 +122,20 @@ class AnalyticalWorkload:
                 # optional and requires it non-empty when present, which is the
                 # right reading -- an aggregation has no k, and sending [] or [1]
                 # would put a k-NN concept into a workload that has none.
-                "operation_count": len(self.queries) * len(self.paths),
+                "operation_count": (
+                    len(self.queries) * len(self.paths) * max(1, len(self.row_count_sweep))
+                ),
             },
             # An analytical answer is right or wrong against this benchmark's own
             # oracle. `exact_match` is the vocabulary's own term for that; a recall
             # figure would put a number where a verdict belongs.
             "quality": {"metric": "exact_match", "ground_truth": "computed"},
-            "parameters": {"paths": list(self.paths)},
+            "parameters": {
+                "paths": list(self.paths),
+                # Declarado so quando existe: um `row_count` no artefato de uma corrida de N unico
+                # ja e dito em `declared`, e repeti-lo como parametro varrido sugeriria varredura.
+                **({"row_count": list(self.row_count_sweep)} if self.row_count_sweep else {}),
+            },
         }
 
     def expected_operations(self, measured_points: int, repetitions: int) -> int:
@@ -253,6 +272,19 @@ class AnalyticalBenchmark:
         self.rows = generate_rows(workload)
         self.oracle = {query.id: expected_answer(self.rows, query.id) for query in workload.queries}
 
+    def _reapontar(self, row_count: int) -> None:
+        """Refaz linhas e oraculo para uma contagem da varredura.
+
+        O oraculo TEM de ser refeito junto: ele e a resposta certa PARA ESTE corpus, e reusar o de
+        outro N faria toda medida da varredura ser invalidada por resposta errada — ou, pior, uma
+        coincidencia passaria.
+        """
+        self.workload = replace(self.workload, row_count=row_count)
+        self.rows = generate_rows(self.workload)
+        self.oracle = {
+            query.id: expected_answer(self.rows, query.id) for query in self.workload.queries
+        }
+
     def _load_path(self, adapter: SystemAdapter, path: str) -> float | None:
         """Load the identical rows into one path. Returns None when unsupported."""
         capability = _CAPABILITY[path]
@@ -335,10 +367,39 @@ class AnalyticalBenchmark:
                     measurement.bytes_per_second = last.bytes_read / measurement.wall_seconds
         return measurement
 
-    def run(self, adapter: SystemAdapter) -> list[QueryMeasurement]:
-        """Every declared query on every declared path."""
+    def run(self, adapter: SystemAdapter, *, load_first: bool = True) -> list[QueryMeasurement]:
+        """Every declared query on every declared path.
+
+        `load_first=False` para quem JA carregou. Medido em 2026-08-21: o `points()` chamava `run()`
+        uma vez por repeticao e cada chamada recarregava todos os caminhos — somando a carga do
+        orquestrador, eram **quatro cargas por caminho** numa corrida de 3 repeticoes. A 2M linhas
+        na varredura do crossover isso e a maior parte do custo da corrida, gasto para reescrever a
+        mesma tabela.
+
+        O default continua `True` porque carregar faz parte do contrato de quem chama `run()`
+        SOZINHO — quatro testes o fazem, e mudar isso trocaria um desperdicio por uma quebra.
+        """
         measurements: list[QueryMeasurement] = []
         for path in self.workload.paths:
+            if not load_first:
+                # Sem carregar, o suporte e perguntado direto — que e o que o `_load_path` fazia
+                # de qualquer modo antes de decidir devolver `None`.
+                capability = _CAPABILITY[path]
+                if capability is not None and not adapter.supports(capability):
+                    measurements.extend(
+                        QueryMeasurement(
+                            query_id=query.id,
+                            path=path,
+                            status="unsupported",
+                            status_detail=f"{adapter.system_id} has no {path} path",
+                        )
+                        for query in self.workload.queries
+                    )
+                    continue
+                measurements.extend(
+                    self.run_query(adapter, path, query) for query in self.workload.queries
+                )
+                continue
             if self._load_path(adapter, path) is None:
                 measurements.extend(
                     QueryMeasurement(
@@ -365,6 +426,10 @@ class AnalyticalBenchmark:
         them. A path that the adapter does not support contributes None rather
         than zero: an absent path is not a path that loaded instantly.
         """
+        if self.workload.row_count_sweep and path is None:
+            # Numa varredura quem manda na carga e o `points()`, porque os dados mudam a cada N.
+            # Carregar aqui gastaria uma carga do primeiro N que seria sobrescrita em seguida.
+            return None
         if path is not None:
             return self._load_path(adapter, path)
         total = 0.0
@@ -388,39 +453,56 @@ class AnalyticalBenchmark:
         exactly what this workload compares: the same answer computed three ways
         is three operating points, and folding them into one would average away
         the comparison.
+
+        Com `row_count_sweep`, o ponto passa a ser (consulta, caminho, N) e os dados sao
+        RECARREGADOS a cada N — e por isso que a varredura vive na carga e nao num parametro de
+        consulta. O crossover so e legivel como UMA curva num artefato so; cinco bundles separados
+        precisariam de costura manual, e o `compare` compara dois.
         """
+        contagens = self.workload.row_count_sweep or (self.workload.row_count,)
         by_label: dict[str, PointResult] = {}
-        for repetition in range(1, max(1, repetitions) + 1):
-            for measurement in self.run(adapter):
-                label = f"{measurement.query_id} via {measurement.path}"
-                point = by_label.setdefault(
-                    label,
-                    PointResult(
-                        label=label,
-                        parameters={
-                            "query": measurement.query_id,
-                            "path": measurement.path,
-                        },
-                    ),
-                )
-                if measurement.status != "measured" or measurement.latency is None:
-                    point.status = measurement.status
-                    point.status_detail = measurement.status_detail
-                    continue
-                point.repetitions.append(
-                    RepetitionResult(
-                        repetition=repetition,
-                        successes=1,
-                        errors=0,
-                        timeouts=0,
-                        duration_seconds=measurement.wall_seconds or 0.0,
-                        latency=measurement.latency,
-                        # Correctness here is a right-or-wrong verdict, already
-                        # carried by `status`. A recall figure would be a number
-                        # standing in for a verdict.
-                        recall=None,
+        for n_linhas in contagens:
+            if self.workload.row_count_sweep:
+                self._reapontar(n_linhas)
+                # Carga por N: os dados sao outros, entao o que estava na tabela nao serve.
+                for caminho in self.workload.paths:
+                    self._load_path(adapter, caminho)
+            for repetition in range(1, max(1, repetitions) + 1):
+                # `load_first=False`: os dados ja estao la — postos pelo orquestrador no caso de N
+                # unico, ou por esta funcao logo acima no caso da varredura. Recarregar por
+                # repeticao gastaria 3 cargas para reescrever a mesma tabela.
+                for measurement in self.run(adapter, load_first=False):
+                    sufixo = f" @ {n_linhas} linhas" if self.workload.row_count_sweep else ""
+                    label = f"{measurement.query_id} via {measurement.path}{sufixo}"
+                    point = by_label.setdefault(
+                        label,
+                        PointResult(
+                            label=label,
+                            parameters={
+                                "query": measurement.query_id,
+                                "path": measurement.path,
+                                "row_count": n_linhas,
+                            },
+                        ),
                     )
-                )
+                    if measurement.status != "measured" or measurement.latency is None:
+                        point.status = measurement.status
+                        point.status_detail = measurement.status_detail
+                        continue
+                    point.repetitions.append(
+                        RepetitionResult(
+                            repetition=repetition,
+                            successes=1,
+                            errors=0,
+                            timeouts=0,
+                            duration_seconds=measurement.wall_seconds or 0.0,
+                            latency=measurement.latency,
+                            # Correctness here is a right-or-wrong verdict, already
+                            # carried by `status`. A recall figure would be a number
+                            # standing in for a verdict.
+                            recall=None,
+                        )
+                    )
         return list(by_label.values())
 
     def compare_paths(self, measurements: Sequence[QueryMeasurement]) -> dict[str, Any]:

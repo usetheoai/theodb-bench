@@ -7,6 +7,21 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`analytical/crossover/row-count`** — as mesmas agregações sobre heap, colunar e Parquet ao longo
+  de uma varredura de 10K a 2M linhas, para achar **abaixo de quantas linhas o colunar perde para o
+  heap**. Um N único responde "neste N", que é outra pergunta. O `AnalyticalWorkload` ganhou
+  `row_count_sweep`; vazio mantém o comportamento de um N só, que é o que as suítes existentes usam.
+  Cada N **recarrega** os dados — não é um GUC de sessão como o `ef_search` —, e o oráculo é refeito
+  junto, porque ele é a resposta certa **para aquele corpus**. (#B-058)
+
+### Fixed
+- **A varredura teria custado 4× o necessário, e o custo já existia.** Medido: o `points()` chamava
+  `run()` uma vez por repetição e cada chamada **recarregava todos os caminhos**; somando a carga do
+  orquestrador, eram **quatro cargas por caminho** numa corrida de 3 repetições. A 2M linhas isso é a
+  maior parte do custo, gasto para reescrever a mesma tabela. `run()` ganhou `load_first`, e o default
+  continua `True` porque carregar faz parte do contrato de quem o chama sozinho. (#B-058)
+
 ### Fixed
 - **A prova de que a consulta analítica usou o caminho que ela declara nunca era pedida.**
   `assert_analytical_path` existia no `PostgresAdapter` — provando residência pelo `pg_class.relam`
