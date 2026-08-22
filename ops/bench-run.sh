@@ -175,6 +175,19 @@ portao
 
 # ---------------------------------------------------------------- tres vias (B-059 bullet 4)
 if [ "$MODE" = "headtohead" ]; then
+  # Perfil que exige isolamento sem isolamento declarado produz bundle INVALID depois de
+  # medir tudo — medido em 2026-08-22: as tres pernas rodaram, deram numero, e sairam
+  # `INVALID: cpu_limit, memory_limit`. O caminho de tres vias tem laco proprio e nao
+  # passava por `medir()`, entao os flags que eu tinha acrescentado la nao chegavam aqui.
+  # Recusar ANTES de medir custa um segundo; descobrir depois custou a corrida inteira.
+  case "$PROFILE" in
+    pr|nightly|release)
+      [ -n "$CPU_SET" ] && [ -n "$MEM_MAX" ] || {
+        echo "FALHA: perfil '$PROFILE' exige isolamento e CPU_SET/MEM_MAX nao foram dados;"
+        echo "       as tres pernas mediriam e o bundle sairia INVALID no fim."
+        exit 1
+      } ;;
+  esac
 
   # O engine colunar do Omni vem DESLIGADO e o GUC e de contexto `postmaster`: nao ha
   # SET de sessao que o ligue. Sem isto toda consulta colunar cai para heap, e o portao
@@ -238,10 +251,14 @@ if [ "$MODE" = "headtohead" ]; then
     if [ -n "$host" ]; then
       PGHOST="$host" PGPORT="$porta" PGUSER=postgres PGPASSWORD=x \
         /root/venv/bin/theodb-bench run "$SUITE" --system "$sist" --profile "$PROFILE" \
-        $ARG_DS --output "/root/res-$STAMP/$sist"
+        $ARG_DS ${REPS:+--repetitions "$REPS"} \
+        ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"} \
+        --output "/root/res-$STAMP/$sist"
     else
       PGUSER=postgres /root/venv/bin/theodb-bench run "$SUITE" --system "$sist" \
-        --profile "$PROFILE" $ARG_DS --output "/root/res-$STAMP/$sist"
+        --profile "$PROFILE" $ARG_DS ${REPS:+--repetitions "$REPS"} \
+        ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"} \
+        --output "/root/res-$STAMP/$sist"
     fi
     echo "=== $sist fim rc=$? $(date -Is) ==="
   done
