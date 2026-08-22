@@ -18,7 +18,12 @@ MEM_MAX="${MEM_MAX:-}"
 # tem de torna-la verdadeira. Por isso os dois regimes usam a MESMA carga e servidores com
 # `shared_buffers` diferentes — residencia em cache e o que separa os dois, nao o tamanho absoluto.
 MODE="${MODE:-suite}"
-CONT_LINHAS="${CONT_LINHAS:-1000000}"
+# MEDIDO em 2026-08-22: 1M linhas de `(id, value)` no colunar ocupam **3.248 kB** — a compressao e
+# tao boa que o regime `exceeds-cache` com 32 MB de `shared_buffers` nao excedia NADA. Declarar um
+# regime nao o torna verdadeiro, e medir "fora do cache" com o dado inteiro dentro dele mediria a
+# mesma coisa duas vezes com rotulos diferentes. 40M linhas dao ~130 MB, que excede os 32 MB com
+# folga; o regime residente usa a mesma carga com 16 GB, onde ela cabe inteira.
+CONT_LINHAS="${CONT_LINHAS:-40000000}"
 CONT_LEITORES="${CONT_LEITORES:-4}"
 CONT_ESCRITORES="${CONT_ESCRITORES:-2}"
 SMOKE="${SMOKE:-analytical/synthetic/paths}"
@@ -133,7 +138,12 @@ if [ "$MODE" = "contention" ]; then
        INSERT INTO bench_contention SELECT g, g FROM generate_series(1,$CONT_LINHAS) g;" \
       || { echo "FALHA: carga"; exit 1; }
     echo "-- $regime: $CONT_LINHAS linhas, shared_buffers=$SB --"
-    PGUSER=postgres psql -h /var/run/postgresql -tAc "SELECT pg_size_pretty(pg_total_relation_size('bench_contention'))" || true
+    # O tamanho REAL contra o `shared_buffers` declarado — sem isto, "exceeds-cache" e so um rotulo.
+    tam=$(PGUSER=postgres psql -h /var/run/postgresql -tAc "SELECT pg_total_relation_size('bench_contention')" 2>/dev/null || echo 0)
+    echo "   tabela: $(PGUSER=postgres psql -h /var/run/postgresql -tAc "SELECT pg_size_pretty($tam)" 2>/dev/null) contra shared_buffers=$SB"
+    if [ "$regime" = "exceeds-cache" ] && [ "$tam" -lt 33554432 ]; then
+      echo "FALHA: o dado ($tam bytes) NAO excede os 32 MB de cache — o regime seria falso"; exit 1
+    fi
 
     PGUSER=postgres /root/venv/bin/theodb-bench contention --system theodb \
       --table bench_contention --path columnar \

@@ -1015,10 +1015,23 @@ def _contention_probe(index: int) -> Any:
     `expected` fica `None` de propósito: aqui o que se mede é CONTENÇÃO, não correção, e um oráculo
     exigiria conhecer o conteúdo da tabela no meio de uma carga que está escrevendo nela. A
     correção do resultado analítico é medida pela suíte analítica, que roda sem escritor.
+
+    O `id` é `total_rows` e NÃO `contention-{index}`. MEDIDO em 2026-08-22, na primeira corrida
+    contra um servidor de verdade: o adapter real resolve o SQL por `ANALYTICAL_SQL[query.id]`, e um
+    id inventado nunca está lá — toda leitura levantava `unknown analytical query`, e os dois regimes
+    fecharam com `0/200`. Os testes do executor não pegaram porque usavam o adapter `fake`, que não
+    consulta esse mapa e aceita qualquer id: suíte verde sobre um caminho que não existe.
+
+    `total_rows` (`SELECT count(*)`) é o agregado que serve aqui por duas razões: ele varre a tabela
+    inteira, que é o que contende com o escritor, e não nomeia coluna nenhuma — a tabela de contenção
+    é `(id, value)`, e um agregado sobre `amount` resolveria o template e só falharia no servidor.
+
+    O `index` continua no parâmetro porque ele identifica a OPERAÇÃO para quem lê o log; ele não entra
+    mais no id da consulta, que é o que precisa ser resolvível.
     """
     from theodb_bench.adapters.base import AnalyticalQuery
 
-    return AnalyticalQuery(id=f"contention-{index}", description="scan sob contenção")
+    return AnalyticalQuery(id="total_rows", description=f"scan sob contenção (op {index})")
 
 
 def cmd_tpch(args: argparse.Namespace) -> int:
