@@ -116,34 +116,37 @@ medir() {
   return $rc
 }
 
+# Sobe um concorrente em container proprio, um porto TCP cada. Vive aqui, e nao dentro
+# de um modo, porque `headtohead` e `tpch` precisam da mesma coisa (DRY).
+subir_externo() {
+  local nome="$1" imagem="$2" porta="$3"
+  docker rm -f "$nome" >/dev/null 2>&1 || true
+  docker run -d --name "$nome" -e POSTGRES_PASSWORD=x -e POSTGRES_HOST_AUTH_METHOD=trust \
+    -p "$porta":5432 --shm-size=4g "$imagem" >/dev/null || { echo "FALHA: docker run $nome"; return 1; }
+  # Prontidao lida de FORA, por TCP — nao por `docker exec pg_isready`.
+  #
+  # Medido no Omni em 2026-08-22, amostrando os dois predicados a cada 3 s:
+  #
+  #   18s  docker exec: SIM   tcp: nao   <- servidor TEMPORARIO do entrypoint,
+  #                                         que so escuta no socket unix
+  #   21s  docker exec: nao   tcp: nao   <- o init derruba o temporario
+  #   27s  docker exec: SIM   tcp: SIM   <- servidor real
+  #
+  # Um script que avanca aos 18 s conversa com um servidor que vai ser DESCARTADO:
+  # o `ALTER SYSTEM` some junto e ninguem reclama. Foi assim que o primeiro teste
+  # desta funcao falhou. O porto TCP so e publicado pelo servidor real, entao ele
+  # e o unico dos dois que responde a pergunta que se quis fazer.
+  for _ in $(seq 1 120); do
+    PGPASSWORD=x pg_isready -h 127.0.0.1 -p "$porta" -U postgres >/dev/null 2>&1 && return 0
+    sleep 3
+  done
+  echo "FALHA: $nome nao subiu"; docker logs "$nome" 2>&1 | tail -15; return 1
+}
+
 portao
 
 # ---------------------------------------------------------------- tres vias (B-059 bullet 4)
 if [ "$MODE" = "headtohead" ]; then
-  subir_externo() {
-    local nome="$1" imagem="$2" porta="$3"
-    docker rm -f "$nome" >/dev/null 2>&1 || true
-    docker run -d --name "$nome" -e POSTGRES_PASSWORD=x -e POSTGRES_HOST_AUTH_METHOD=trust \
-      -p "$porta":5432 --shm-size=4g "$imagem" >/dev/null || { echo "FALHA: docker run $nome"; return 1; }
-    # Prontidao lida de FORA, por TCP — nao por `docker exec pg_isready`.
-    #
-    # Medido no Omni em 2026-08-22, amostrando os dois predicados a cada 3 s:
-    #
-    #   18s  docker exec: SIM   tcp: nao   <- servidor TEMPORARIO do entrypoint,
-    #                                         que so escuta no socket unix
-    #   21s  docker exec: nao   tcp: nao   <- o init derruba o temporario
-    #   27s  docker exec: SIM   tcp: SIM   <- servidor real
-    #
-    # Um script que avanca aos 18 s conversa com um servidor que vai ser DESCARTADO:
-    # o `ALTER SYSTEM` some junto e ninguem reclama. Foi assim que o primeiro teste
-    # desta funcao falhou. O porto TCP so e publicado pelo servidor real, entao ele
-    # e o unico dos dois que responde a pergunta que se quis fazer.
-    for _ in $(seq 1 120); do
-      PGPASSWORD=x pg_isready -h 127.0.0.1 -p "$porta" -U postgres >/dev/null 2>&1 && return 0
-      sleep 3
-    done
-    echo "FALHA: $nome nao subiu"; docker logs "$nome" 2>&1 | tail -15; return 1
-  }
 
   # O engine colunar do Omni vem DESLIGADO e o GUC e de contexto `postmaster`: nao ha
   # SET de sessao que o ligue. Sem isto toda consulta colunar cai para heap, e o portao
@@ -205,6 +208,86 @@ if [ "$MODE" = "headtohead" ]; then
     fi
     echo "=== $sist fim rc=$? $(date -Is) ==="
   done
+  echo "$STAMP" > /root/ULTIMA_CORRIDA
+  echo "=== FIM $(date -Is) resultados em /root/res-$STAMP ==="
+  touch /root/PRONTO
+  exit 0
+fi
+
+# ---------------------------------------------------------------- TPC-H (B-058 bullet 1)
+#
+# O criterio: "TPC-H nos mesmos moldes: theodb_columnar contra heap no MESMO binario, e
+# contra o Omni com engine off/on na mesma maquina". Quatro corridas, um host, um dado.
+#
+# O engine do Omni e ligado DEPOIS das corridas com ele desligado, e nao antes, porque
+# `enabled` e de contexto postmaster: liga-lo exige restart, e um restart no meio de uma
+# corrida invalidaria a que estivesse rodando.
+if [ "$MODE" = "tpch" ]; then
+  SFS="${SFS:-0.01 0.1}"
+  DEST="/root/res-$STAMP/tpch"
+  mkdir -p "$DEST"
+
+  rodar_tpch() {
+    local rotulo="$1" sistema="$2" caminho="$3" dsn="$4" sf="$5"
+    local saida="$DEST/${rotulo}-sf${sf}.json"
+    echo "=== tpch $rotulo sf=$sf inicio $(date -Is) ==="
+    if [ -n "$dsn" ]; then
+      /root/venv/bin/theodb-bench tpch --system "$sistema" --dsn "$dsn" \
+        --scale-factor "$sf" --path "$caminho" > "$saida" 2>"$saida.err"
+    else
+      PGUSER=postgres /root/venv/bin/theodb-bench tpch --system "$sistema" \
+        --scale-factor "$sf" --path "$caminho" > "$saida" 2>"$saida.err"
+    fi
+    local rc=$?
+    # O que MEDE aborta em erro; o que apenas REGISTRA nunca aborta. Uma perna que caiu
+    # e um dado sobre o sistema, e some se a corrida inteira morrer com ela.
+    if [ "$rc" -ne 0 ]; then
+      echo "AVISO: $rotulo sf=$sf rc=$rc"; head -3 "$saida.err" 2>/dev/null
+    else
+      python3 - "$saida" <<'PYEOF' 2>/dev/null || true
+import json, sys
+d = json.load(open(sys.argv[1]))
+for q, v in sorted(d["queries"].items()):
+    marca = "" if v["matches_oracle"] else "  <-- DISCORDA DO ORACULO"
+    print(f"  {q:4} {v['seconds']*1000:9.1f} ms  {v['rows_returned']:6d} linhas{marca}")
+PYEOF
+    fi
+    echo "=== tpch $rotulo sf=$sf fim rc=$rc $(date -Is) ==="
+  }
+
+  docker pull "$OMNI_IMAGE" >/dev/null 2>&1 || { echo "FALHA: pull do Omni"; exit 1; }
+  subir "${TAGS%% *}" || exit 1
+  subir_externo omni "$OMNI_IMAGE" 55460 || exit 1
+
+  echo "-- proveniencia, lida de cada servidor --"
+  PGUSER=postgres psql -h /var/run/postgresql -tAc "select 'theodb: '||version()" 2>&1 | head -1 || true
+  PGPASSWORD=x psql -h 127.0.0.1 -p 55460 -U postgres -tAc "select 'omni:   '||version()" 2>&1 | head -1 || true
+  OMNI_DSN="postgresql://postgres:x@127.0.0.1:55460/postgres"
+
+  for sf in $SFS; do
+    rodar_tpch "theodb-heap"     theodb      row      ""          "$sf"
+    rodar_tpch "theodb-colunar"  theodb      columnar ""          "$sf"
+    rodar_tpch "omni-engineoff"  alloydbomni row      "$OMNI_DSN" "$sf"
+  done
+
+  # Agora sim: liga o engine (ALTER SYSTEM + restart) e repete o lado do Omni.
+  docker exec -u postgres omni psql -q -c \
+    "ALTER SYSTEM SET google_columnar_engine.enabled = on" >/dev/null 2>&1 \
+    || { echo "FALHA: ALTER SYSTEM"; exit 1; }
+  docker restart omni >/dev/null 2>&1 || { echo "FALHA: restart do omni"; exit 1; }
+  for _ in $(seq 1 120); do
+    PGPASSWORD=x pg_isready -h 127.0.0.1 -p 55460 -U postgres >/dev/null 2>&1 && break
+    sleep 3
+  done
+  V=$(docker exec -u postgres omni psql -tAc "SHOW google_columnar_engine.enabled" 2>/dev/null | tr -d '[:space:]')
+  [ "$V" = "on" ] || { echo "FALHA: engine = '${V:-<vazio>}' apos ALTER SYSTEM + restart"; exit 1; }
+  echo "-- omni: google_columnar_engine.enabled = on (lido do servidor) --"
+
+  for sf in $SFS; do
+    rodar_tpch "omni-engineon-heap"    alloydbomni row      "$OMNI_DSN" "$sf"
+    rodar_tpch "omni-engineon-colunar" alloydbomni columnar "$OMNI_DSN" "$sf"
+  done
+
   echo "$STAMP" > /root/ULTIMA_CORRIDA
   echo "=== FIM $(date -Is) resultados em /root/res-$STAMP ==="
   touch /root/PRONTO
