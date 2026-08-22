@@ -370,3 +370,36 @@ def test_the_per_query_quality_reaches_the_repetition_the_runner_emits() -> None
                 "chega ao artefato e o teste pareado continua impossivel"
             )
             assert len(rep.quality_by_query) == 12
+
+
+def test_the_quality_verdict_knows_higher_is_better() -> None:
+    """MEDIDO em 2026-08-22, e por pouco nao virou publicacao: o veredito dizia
+    'hybrid_rrf BEATS vector' sobre `mean diff = -0.007`, com a fusao em 0,8195 e a
+    vetorial em 0,8266. A fusao e PIOR.
+
+    Causa: `render_paired_verdict` nasceu para LATENCIA, onde menor e melhor, e tem
+    `lower_is_better=True` por default. Para nDCG maior e melhor, e eu nao passei o
+    parametro — que ja existia. O texto ate imprimia 'faster', que nao significa nada
+    para qualidade.
+
+    Este teste existe porque a inversao e invisivel na leitura: 'A beats B' parece certo
+    ate alguem conferir o sinal.
+    """
+    from theodb_bench.bench.retrieval import veredito_de_qualidade
+
+    # Amostra grande o bastante para o teste ter poder — com quatro consultas nao ha
+    # significancia, e o veredito sai "indistinguishable", onde a ordem dos nomes e a dos
+    # argumentos e nao a do vencedor. A primeira versao deste teste caiu nisso.
+    melhor = {i: 0.80 + (i % 5) * 0.01 for i in range(120)}
+    pior = {i: 0.60 + (i % 5) * 0.01 for i in range(120)}
+
+    v = veredito_de_qualidade("pior", pior, "melhor", melhor)
+    assert v, "sem veredito"
+    assert "**melhor** beats **pior**" in v, (
+        f"o vencedor tem de ser `melhor`, que tem nDCG maior em toda consulta: {v}"
+    )
+    assert "faster" not in v, f"'faster' nao significa nada para qualidade: {v}"
+
+    # E o inverso, para o teste nao passar por acidente de ordem dos argumentos.
+    inverso = veredito_de_qualidade("melhor", melhor, "pior", pior)
+    assert inverso and "**melhor** beats **pior**" in inverso, inverso

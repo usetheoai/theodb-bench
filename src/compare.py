@@ -171,12 +171,17 @@ def render_paired_verdict(
         better_count = a_larger if a_is_better else b_larger
 
     dz = f", dz = {effect.cohens_dz:.2f}" if effect.cohens_dz is not None else ""
+    # "faster" só quando menor é melhor. Numa métrica de QUALIDADE — nDCG, recall — vencer
+    # não é ser mais rápido, e a frase "faster on 120 of 120 queries" sobre nDCG diz uma
+    # coisa que não foi medida. Encontrado em 2026-08-22, ao usar este renderizador pela
+    # primeira vez fora do eixo de latência.
+    verbo = "faster" if lower_is_better else "ahead"
     return (
         f"**{faster}** beats **{slower}** on {metric} "
         f"(p = {result.p_randomisation:.4f}, n = {n}, "
         f"95% CI [{result.ci_low:+.3f}, {result.ci_high:+.3f}], "
         f"mean diff = {effect.mean_difference:+.3f}{dz}; "
-        f"{faster} faster on {better_count} of {n} queries, {effect.ties} tied)"
+        f"{faster} {verbo} on {better_count} of {n} queries, {effect.ties} tied)"
     )
 
 

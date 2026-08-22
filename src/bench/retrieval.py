@@ -281,7 +281,18 @@ def veredito_de_qualidade(
     comuns = set(ndcg_a) & set(ndcg_b)
     if not comuns:
         return None
-    return render_paired_verdict(nome_a, dict(ndcg_a), nome_b, dict(ndcg_b), metric="ndcg_at_10")
+    # `lower_is_better=False` NAO é detalhe. `render_paired_verdict` nasceu para latência,
+    # onde menor vence, e tem esse default. Medido em 2026-08-22, sem passá-lo: o veredito
+    # imprimiu *"hybrid_rrf beats vector"* sobre `mean diff = -0,007`, com a fusão em 0,8195
+    # e a vetorial em 0,8266 — **o oposto da medição**, e a frase parecia certa.
+    return render_paired_verdict(
+        nome_a,
+        dict(ndcg_a),
+        nome_b,
+        dict(ndcg_b),
+        metric="ndcg_at_10",
+        lower_is_better=False,
+    )
 
 
 def generate_corpus(workload: RetrievalWorkload) -> tuple[list[Document], QuerySet]:
