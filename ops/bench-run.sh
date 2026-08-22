@@ -133,16 +133,27 @@ if [ "$MODE" = "contention" ]; then
     done
     [ -n "$pronto" ] || { echo "FALHA: servidor nao subiu"; exit 1; }
 
-    PGUSER=postgres psql -h /var/run/postgresql -q -c \
+    # `-v ON_ERROR_STOP=1` NAO e detalhe. Sem ele o `psql` devolve 0 mesmo quando o SQL falha, e a
+    # carga "tem sucesso" com a tabela inexistente — foi o que aconteceu em 2026-08-22: os dois
+    # regimes rodaram, leram 0/200, e o erro real nunca apareceu. E a MESMA armadilha que derrubou
+    # uma corrida mais cedo hoje, com o nome da extensao, reintroduzida em codigo novo.
+    if ! PGUSER=postgres psql -h /var/run/postgresql -v ON_ERROR_STOP=1 -q -c \
       "CREATE TABLE bench_contention (id bigint, value bigint) USING theodb_columnar;
-       INSERT INTO bench_contention SELECT g, g FROM generate_series(1,$CONT_LINHAS) g;" \
-      || { echo "FALHA: carga"; exit 1; }
+       INSERT INTO bench_contention SELECT g, g FROM generate_series(1,$CONT_LINHAS) g;"; then
+      echo "FALHA: carga de $CONT_LINHAS linhas nao completou (erro acima)"; exit 1
+    fi
     echo "-- $regime: $CONT_LINHAS linhas, shared_buffers=$SB --"
     # O tamanho REAL contra o `shared_buffers` declarado — sem isto, "exceeds-cache" e so um rotulo.
-    tam=$(PGUSER=postgres psql -h /var/run/postgresql -tAc "SELECT pg_total_relation_size('bench_contention')" 2>/dev/null || echo 0)
-    echo "   tabela: $(PGUSER=postgres psql -h /var/run/postgresql -tAc "SELECT pg_size_pretty($tam)" 2>/dev/null) contra shared_buffers=$SB"
+    tam=$(PGUSER=postgres psql -h /var/run/postgresql -v ON_ERROR_STOP=1 -tAc \
+      "SELECT pg_total_relation_size('bench_contention')" 2>&1)
+    # Vazio ou nao-numerico significa que a consulta falhou — e um `-lt` contra vazio e FALSO, entao
+    # a guarda de regime passaria calada. Tratar aqui e o que a torna guarda.
+    case "$tam" in
+      ''|*[!0-9]*) echo "FALHA: nao consegui medir o tamanho da tabela (psql disse: $tam)"; exit 1 ;;
+    esac
+    echo "   tabela: $((tam / 1048576)) MiB contra shared_buffers=$SB"
     if [ "$regime" = "exceeds-cache" ] && [ "$tam" -lt 33554432 ]; then
-      echo "FALHA: o dado ($tam bytes) NAO excede os 32 MB de cache — o regime seria falso"; exit 1
+      echo "FALHA: o dado ($((tam / 1048576)) MiB) NAO excede os 32 MB de cache — o regime seria falso"; exit 1
     fi
 
     PGUSER=postgres /root/venv/bin/theodb-bench contention --system theodb \
