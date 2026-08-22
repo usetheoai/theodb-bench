@@ -7,6 +7,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **O resumo do `run` dizia `recall=not measured` sobre uma corrida que mediu qualidade.** Ele perguntava pela
+  métrica que **ele** conhece — `recall`, do eixo vetorial — em vez da que a corrida produziu. Medido: a suíte
+  `retrieval/synthetic/hybrid` imprimia *"não medido"* no terminal enquanto o bundle trazia `ndcg_at_10` de
+  **0,0365 a 0,8266** nas três pernas. A suíte mede qualidade; ela só não a chama de `recall`. É a mesma classe
+  que `wiki/guides/instrumento-reporta-o-pedido.md` registra, agora na **camada de exibição** — e ela morde
+  onde mais dói, porque um operador que lê o terminal e conclui que não houve qualidade **não abre o bundle**.
+  A linha passa a nomear a métrica que existe (`ndcg@10=0.8266`), e a dizer *"qualidade não medida"* só quando
+  nenhuma existe.
+
 ### Added
 - **`retrieval/synthetic/hybrid`: o pilar híbrido passa a ter suíte (B-104 / B-005).** Ele era o único
   **declarado e não medido** — `hybrid` aparecia como capacidade do `theodb` e nenhuma das 23 suítes a

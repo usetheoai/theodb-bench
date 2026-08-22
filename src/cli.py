@@ -14,7 +14,7 @@ import itertools
 import json
 import statistics
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
@@ -445,17 +445,49 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"bundle    {outcome.bundle.root}")
     for point in outcome.statistics:
         throughput = point.metrics.get("throughput_per_second")
-        recall = point.metrics.get("recall")
         rendered_throughput = f"{throughput.median:,.1f}" if throughput else "not measured"
-        rendered_recall = f"{recall.median:.4f}" if recall else "not measured"
+        qualidade = qualidade_do_ponto(point.metrics)
+        rendered_qualidade = (
+            f"{qualidade[0]}={qualidade[1]:.4f}" if qualidade else "qualidade não medida"
+        )
         marker = "" if point.stability.stable else "  (unstable)"
         print(
-            f"  {point.label:32s} qps={rendered_throughput:>12s}  recall={rendered_recall}{marker}"
+            f"  {point.label:32s} qps={rendered_throughput:>12s}  {rendered_qualidade}{marker}"
         )
     if outcome.status != "VALID":
         reasons = ", ".join(outcome.validation["invalidated_by"]) or "see validation.json"
         print(f"\nRun is {outcome.status}: {reasons}")
     return EXIT_OK if outcome.status != "INVALID" else EXIT_ERROR
+
+
+#: Métricas de qualidade que uma corrida pode reportar, em ordem de preferência.
+#:
+#: `recall` é a do eixo vetorial e `ndcg_at_10` a do eixo de retrieval. A ordem importa
+#: pouco — quase nenhuma corrida produz as duas — e existe para que a saída seja estável.
+_QUALIDADE: Final[tuple[tuple[str, str], ...]] = (
+    ("recall", "recall"),
+    ("ndcg_at_10", "ndcg@10"),
+    ("mrr", "mrr"),
+)
+
+
+def qualidade_do_ponto(metrics: Mapping[str, Any]) -> tuple[str, float] | None:
+    """A métrica de qualidade que ESTA corrida reportou, com o nome dela.
+
+    MEDIDO em 2026-08-22: `retrieval/synthetic/hybrid` imprimia `recall=not measured` no
+    terminal enquanto o bundle trazia `ndcg_at_10` de 0,0365 a 0,8266 nas três pernas. A
+    suíte mede qualidade; ela só não a chama de `recall`.
+
+    O resumo perguntava pela métrica que ELE conhece em vez da que a corrida produziu, e
+    respondia "não medida" sobre uma medição que estava no disco — a mesma classe que
+    `wiki/guides/instrumento-reporta-o-pedido.md` registra, agora na camada de exibição.
+    Um operador que lê o terminal e conclui que não houve qualidade não abre o bundle.
+    """
+    for chave, rotulo in _QUALIDADE:
+        entrada = metrics.get(chave)
+        if entrada is not None:
+            return rotulo, float(entrada.median)
+    return None
 
 
 def cmd_report(args: argparse.Namespace) -> int:
