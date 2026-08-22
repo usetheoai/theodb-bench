@@ -989,7 +989,7 @@ def cmd_contention(args: argparse.Namespace) -> int:
 
     # `.build()` constroi o adapter; `get_adapter` devolve a ENTRADA do registro. Confundir os
     # dois produz `AttributeError` no primeiro uso, e foi o que aconteceu.
-    novo_cliente = _contention_client_factory(lambda: get_adapter(args.system).build())
+    novo_cliente = _contention_client_factory(lambda: get_adapter(args.system).build(), tabela)
 
     def ler(cliente: Any, index: int) -> None:
         cliente.execute_analytical(tabela, _contention_probe(index))
@@ -1008,7 +1008,7 @@ def cmd_contention(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _contention_client_factory(construir: Any) -> Any:
+def _contention_client_factory(construir: Any, tabela: Any = None) -> Any:
     """Envolve o construtor do adapter para entregar um cliente **conectado**.
 
     MEDIDO em 2026-08-22: `measure_contention` chama `make_reader()`/`make_writer()` e usa o
@@ -1020,6 +1020,18 @@ def _contention_client_factory(construir: Any) -> Any:
 
     Cada chamada entrega um cliente NOVO de propósito: a contenção que se mede é entre sessões, e
     clientes compartilhando conexão mediriam serialização do cliente em vez do servidor.
+
+    E cada cliente recebe a SESSÃO ANALÍTICA do caminho. MEDIDO em 2026-08-22: sem isso, a contenção
+    reportou p50 de **15,7 s** para o mesmo `count(*)` que a suíte analítica mede em **4,8 ms** — e a
+    diferença não era de volume nem de gerador, era de **configuração**. O
+    `_apply_analytical_session` liga `theodb.enable_columnar_agg`, e ele só era chamado dentro de
+    `load_analytical` (`adapters/postgres.py:944`), na conexão que CARREGA a tabela. A suíte carrega e
+    mede na mesma conexão, então herda o ajuste; a contenção cria clientes novos, que nunca passavam
+    pelo carregador — e media o colunar SEM o pushdown.
+
+    O proprio adapter descreve o defeito antes de ele acontecer: *"uma GUC que vem desligada e
+    silenciosamente continua desligada e como uma medicao acaba descrevendo uma configuracao que
+    ninguem rodou"*.
     """
 
     def fabrica() -> Any:
@@ -1027,6 +1039,11 @@ def _contention_client_factory(construir: Any) -> Any:
         cliente.prepare()
         cliente.start()
         cliente.wait_ready()
+        # DEPOIS de conectar: `SET` precisa de conexao. E opcional porque nem todo adapter implementa
+        # o gancho — exigir que implemente quebraria o `fake` e qualquer adapter futuro sem GUC.
+        aplicar = getattr(cliente, "_apply_analytical_session", None)
+        if tabela is not None and callable(aplicar):
+            aplicar(tabela)
         return cliente
 
     return fabrica
