@@ -846,6 +846,14 @@ def build_parser() -> argparse.ArgumentParser:
     tpch.add_argument("--scale-factor", type=float, default=0.001)
     tpch.add_argument("--seed", type=int, default=20260821)
     tpch.add_argument("--prefix", default="tpch_")
+    # O eixo do B-058: o mesmo TPC-H, o mesmo binario, o mesmo dado — so o access
+    # method muda. `row` e heap, que e o que o PostgreSQL usa sem que ninguem peca.
+    tpch.add_argument(
+        "--path",
+        default="row",
+        help="caminho analitico das tres tabelas (row=heap, columnar=...). Vale para TODAS: "
+        "uma juncao com lineitem colunar e orders heap nao mede nenhum dos dois",
+    )
     # Sem `--dsn` o comando so alcança o sistema fake, e um arnês que só mede o próprio fake mede a
     # si mesmo. É a mesma razão pela qual o `run` o aceita.
     tpch.add_argument("--dsn", default=None, help="connection string for the system under test")
@@ -1101,6 +1109,7 @@ def cmd_tpch(args: argparse.Namespace) -> int:
             scale_factor=args.scale_factor,
             seed=args.seed,
             prefix=args.prefix,
+            path=args.path,
         )
     finally:
         adapter.stop()
@@ -1109,6 +1118,9 @@ def cmd_tpch(args: argparse.Namespace) -> int:
             {
                 "scale_factor": args.scale_factor,
                 "seed": args.seed,
+                # O caminho sai no resultado porque a corrida inteira depende dele e o
+                # numero sozinho nao o revela — a mesma razao do B-102, um eixo acima.
+                "path": args.path,
                 "queries": {
                     qid: {
                         "seconds": m.seconds,

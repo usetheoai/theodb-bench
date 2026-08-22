@@ -17,6 +17,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
   **TCP**, que só o servidor real publica.
 
 ### Added
+- **`tpch --path {row|columnar}`: o TPC-H passa a rodar no colunar, não só em heap (B-058).** A suíte
+  multi-tabela existia desde o B-065 e sempre criava heap, porque `tpch_schema` não tinha por onde receber o
+  caminho — enquanto `AnalyticalTable.path` é justamente o campo que decide o access method. O critério aberto
+  do B-058 é *"TPC-H nos mesmos moldes: `theodb_columnar` contra heap no MESMO binário"*, e ele era
+  inalcançável pelo próprio ponto de entrada. O caminho vale para **as três** tabelas: uma junção com
+  `lineitem` colunar e `orders` em heap não mede nenhum dos dois. Ele também sai no resultado, pela mesma razão
+  do B-102 — o número sozinho não revela em que caminho foi obtido. Verificado por execução contra um
+  PostgreSQL real: `row` roda e as três queries batem com o oráculo; `columnar` pedido a um sistema que não o
+  tem é **recusado** com mensagem tipada, não medido em heap sob o rótulo errado.
 - **O engine colunar do Omni é ligado e VERIFICADO antes da corrida analítica (B-058).**
   `google_columnar_engine.enabled` vem desligado e é de contexto `postmaster` — não há `SET` de sessão que o
   ligue. Sem isso toda consulta colunar cai para heap e o portão do adapter aborta a corrida, o que é o portão

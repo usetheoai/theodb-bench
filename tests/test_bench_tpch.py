@@ -255,3 +255,34 @@ def test_a_key_pointing_at_a_column_that_does_not_exist_is_refused() -> None:
             run_tpch_suite(_Motor(), scale_factor=0.001, seed=1)
     finally:
         mod.tpch_schema = original
+
+
+# ------------------------ B-058: o TPC-H tem de saber rodar no colunar, nao so no heap
+#
+# O criterio aberto do B-058 e "TPC-H nos mesmos moldes: theodb_columnar contra heap
+# no MESMO binario, e contra o Omni com engine off/on na mesma maquina". A suite
+# existia e sempre criava heap, porque `tpch_schema` nao tinha por onde receber o
+# caminho — e `AnalyticalTable.path` e justamente o campo que decide o access method.
+
+
+def test_the_schema_defaults_to_heap() -> None:
+    """Sem pedir nada, e heap — o comportamento que ja existia nao muda."""
+    schema = tpch_schema()
+
+    assert [t.path for t in schema.tables] == ["row", "row", "row"]
+
+
+def test_the_schema_carries_the_requested_path_to_every_table() -> None:
+    """Uma tabela em heap no meio de um TPC-H colunar mediria uma juncao hibrida."""
+    schema = tpch_schema(path="columnar")
+
+    assert [t.path for t in schema.tables] == ["columnar", "columnar", "columnar"]
+    assert len(schema.tables) == 3, "as tres tabelas da Q18 precisam do mesmo caminho"
+
+
+def test_the_path_survives_the_prefix() -> None:
+    """Prefixo e caminho sao eixos independentes e nao podem interferir um no outro."""
+    schema = tpch_schema(prefix="x_", path="columnar")
+
+    assert all(t.name.startswith("x_") for t in schema.tables)
+    assert all(t.path == "columnar" for t in schema.tables)

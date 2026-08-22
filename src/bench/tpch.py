@@ -124,7 +124,7 @@ OUT_OF_SCOPE: Final[dict[str, str]] = {
 }
 
 
-def tpch_schema(*, prefix: str = "") -> AnalyticalSchema:
+def tpch_schema(*, prefix: str = "", path: str = "row") -> AnalyticalSchema:
     """O esquema e as chaves que a Q18 percorre.
 
     UM ESPAÇO DE NOMES SÓ, e isso foi um defeito de desenho que o primeiro teste pegou: a versão
@@ -134,13 +134,26 @@ def tpch_schema(*, prefix: str = "") -> AnalyticalSchema:
 
     O `prefix` continua disponível para quem precise isolar as tabelas num banco compartilhado, e
     ele se aplica a AMBOS os lados: as chaves são derivadas dos mesmos nomes.
+
+    O `path` decide o access method de TODAS as três tabelas, e não de uma. Uma junção em que
+    `lineitem` é colunar e `orders` é heap não mede nem um caminho nem o outro — mede uma terceira
+    coisa e a rotula com o nome de um dos dois. É o critério aberto do [[B-058]]: *TPC-H nos mesmos
+    moldes, `theodb_columnar` contra heap no MESMO binário*. O default é `row` porque heap é o que
+    o PostgreSQL usa sem que ninguém peça, e porque não mudar o comportamento de quem já chamava
+    isto é o mínimo.
     """
     customer, orders, lineitem = f"{prefix}customer", f"{prefix}orders", f"{prefix}lineitem"
     return AnalyticalSchema(
         tables=(
-            AnalyticalTable(name=customer, columns=_CUSTOMER, column_types=_CUSTOMER_TYPES),
-            AnalyticalTable(name=orders, columns=_ORDERS, column_types=_ORDERS_TYPES),
-            AnalyticalTable(name=lineitem, columns=_LINEITEM, column_types=_LINEITEM_TYPES),
+            AnalyticalTable(
+                name=customer, columns=_CUSTOMER, column_types=_CUSTOMER_TYPES, path=path
+            ),
+            AnalyticalTable(
+                name=orders, columns=_ORDERS, column_types=_ORDERS_TYPES, path=path
+            ),
+            AnalyticalTable(
+                name=lineitem, columns=_LINEITEM, column_types=_LINEITEM_TYPES, path=path
+            ),
         ),
         keys=(
             ForeignKey(orders, "o_custkey", customer, "c_custkey"),
@@ -366,7 +379,7 @@ class TpchMeasurement:
 
 
 def run_tpch_suite(
-    engine: Any, *, scale_factor: float, seed: int, prefix: str = ""
+    engine: Any, *, scale_factor: float, seed: int, prefix: str = "", path: str = "row"
 ) -> dict[str, TpchMeasurement]:
     """Carrega o esquema e roda as queries registradas, conferindo cada resposta contra o oráculo.
 
@@ -378,7 +391,7 @@ def run_tpch_suite(
     query rápida, e comparar os motores entre si não acharia um erro que todos cometessem — é a
     mesma disciplina do `AnalyticalBenchmark` sobre tabela única, agora sobre junção.
     """
-    schema = tpch_schema(prefix=prefix)
+    schema = tpch_schema(prefix=prefix, path=path)
     dados = generate_tpch(scale_factor=scale_factor, seed=seed)
 
     # As chaves do esquema decidem a ORDEM de carga: uma tabela referenciada entra antes da que a
