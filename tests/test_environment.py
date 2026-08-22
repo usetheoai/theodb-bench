@@ -123,3 +123,54 @@ def test_software_versions_are_strings_or_absences() -> None:
 def test_theodb_version_is_not_claimed_by_the_host_capture() -> None:
     # Only a bootstrapped adapter can answer this; the host cannot.
     assert _is_absence(capture_software()["theodb"])
+
+
+# ------------------------ B-043: o doctor lia a POLITICA, nao o efeito
+#
+# MEDIDO no droplet em 2026-08-22, como root, com perf_event_paranoid = 4:
+#
+#   perf stat -e task-clock -- sleep 0.05   ->  1.19 msec task-clock
+#   perf record -e cpu-clock                ->  perfil com simbolos de userspace E kernel
+#
+# E `capture_capabilities()["perf_events"]` respondia False, porque a regra era
+# `paranoid <= 2` — o valor da politica. Root contorna a politica; a regra nao sabia
+# disso. A nota do B-043 citava essa resposta como o bloqueio da campanha de
+# perfilamento, e a campanha nunca estava bloqueada.
+#
+# Sao DUAS capacidades, e conflati-las foi o segundo erro: contador de HARDWARE
+# (cycles, cache-misses) e amostragem por SOFTWARE (cpu-clock, task-clock). A campanha
+# do B-043 so precisa da segunda.
+
+
+def test_hardware_counters_and_software_sampling_are_separate_capabilities() -> None:
+    """Um host pode amostrar por software sem expor contador de hardware — VM e o caso comum."""
+    from theodb_bench.environment import capture_capabilities
+
+    c = capture_capabilities()
+    assert "perf_events" in c, "contador de hardware"
+    assert "perf_sampling" in c, "amostragem por software — o que a campanha do B-043 precisa"
+
+
+def test_perf_capabilities_are_probed_not_deduced_from_the_policy_value() -> None:
+    """Medir o efeito, nao ler a politica: root funciona com paranoid=4, e a regra dizia nao."""
+    import subprocess
+    from shutil import which
+
+    from theodb_bench.environment import capture_capabilities
+
+    relatado = capture_capabilities()["perf_sampling"]
+    if which("perf") is None:
+        assert not isinstance(relatado, bool), "sem perf no PATH, a resposta honesta e ausencia"
+        return
+    real = (
+        subprocess.run(
+            ["perf", "stat", "-e", "task-clock", "--", "true"],
+            capture_output=True,
+            timeout=30,
+        ).returncode
+        == 0
+    )
+    assert relatado == real, (
+        f"capture_capabilities diz {relatado!r} e `perf stat` de verdade diz {real!r} — "
+        "o instrumento esta reportando a politica em vez do efeito"
+    )

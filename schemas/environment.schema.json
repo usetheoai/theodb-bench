@@ -103,6 +103,7 @@
       "description": "Host facilities the isolation and telemetry layers depend on.",
       "properties": {
         "perf_events": { "$ref": "#/$defs/maybe_boolean" },
+        "perf_sampling": { "$ref": "#/$defs/maybe_boolean" },
         "cgroup_v2": { "$ref": "#/$defs/maybe_boolean" },
         "cpu_affinity": { "$ref": "#/$defs/maybe_boolean" },
         "numa_control": { "$ref": "#/$defs/maybe_boolean" }

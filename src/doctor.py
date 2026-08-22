@@ -174,13 +174,37 @@ def check_perf_events() -> Check:
         return Check("perf_events", Outcome.UNAVAILABLE, _absent_detail(perf, "perf unknown"))
     if not perf:
         # Not fatal anywhere: hardware counters are optional telemetry, and the
-        # result records them as unavailable rather than as zero.
+        # result records them as unavailable rather than as zero. And their absence
+        # says nothing about software sampling -- see `check_perf_sampling`.
         return Check(
             "perf_events",
             Outcome.WARN,
             "hardware counters unavailable; cycles and cache misses will be recorded as absent",
         )
     return Check("perf_events", Outcome.PASS, "perf events accessible")
+
+
+def check_perf_sampling() -> Check:
+    """Amostragem por software — `perf record -e cpu-clock`, que perfila um backend.
+
+    Separado de `check_perf_events` porque as duas falham por razoes diferentes e uma
+    campanha de perfilamento so precisa desta. Uma VM tipicamente nao expoe PMU e amostra
+    por software sem problema; ler as duas como uma coisa so reporta "sem perf" a quem
+    tinha perf de sobra para o que ia fazer.
+    """
+    perf = capture_capabilities()["perf_sampling"]
+    if not isinstance(perf, bool):
+        return Check(
+            "perf_sampling", Outcome.UNAVAILABLE, _absent_detail(perf, "perf unknown")
+        )
+    if not perf:
+        return Check(
+            "perf_sampling",
+            Outcome.WARN,
+            "software sampling unavailable; a CPU profile of the backend cannot be taken. "
+            "As root this is usually fixable with `sysctl kernel.perf_event_paranoid=1`",
+        )
+    return Check("perf_sampling", Outcome.PASS, "software sampling works (probed, not deduced)")
 
 
 def check_cgroups() -> Check:
@@ -282,6 +306,7 @@ CHECKS: Final[tuple[Callable[[], Check], ...]] = (
     check_swap,
     check_storage,
     check_perf_events,
+    check_perf_sampling,
     check_cgroups,
     check_cpu_affinity,
     check_numa,

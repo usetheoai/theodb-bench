@@ -7,7 +7,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **O `doctor` reportava a POLÍTICA de `perf` em vez do efeito, e isso bloqueou uma campanha inteira
+  (B-043).** A capacidade era deduzida de `perf_event_paranoid <= 2`. **Medido no droplet, como root, com
+  `perf_event_paranoid = 4`:** `perf stat -e task-clock` devolveu `1.19 msec` e `perf record -e cpu-clock`
+  produziu perfil com símbolos de userspace **e** de kernel — enquanto o arnês respondia `perf_events: False`.
+  A razão: `perf_event_paranoid` restringe usuário **sem privilégio**, root o contorna, e o arnês roda como
+  root no host de medição. É a classe que `guides/instrumento-reporta-o-pedido.md` documenta, encontrada agora
+  **dentro do instrumento que deveria detectá-la**. A capacidade passa a ser **medida por probe**.
+
 ### Added
+- **`perf_sampling` separado de `perf_events`.** Contador de **hardware** (cycles, cache-misses) e amostragem
+  por **software** (cpu-clock, task-clock) falham por razões diferentes: uma VM tipicamente não expõe PMU e
+  ainda assim amostra por software sem problema. Conflati-los reportava "sem perf" a quem tinha perf de sobra
+  para o que ia fazer — e a campanha de perfilamento do B-043 só precisa da segunda. Quando a amostragem falha,
+  a mensagem agora diz o conserto: `sysctl kernel.perf_event_paranoid=1`.
+
 - **`tpch --repetitions` (default 3): o comando deixa de publicar amostra única.** O primeiro head-to-head
   contra o AlloyDB Omni teve de carregar *"uma execução por ponto, sem variância"* como ressalva, porque cada
   query rodava exatamente uma vez — e `rigorous-perf-eval-georges-2007` recusa afirmação de performance sobre

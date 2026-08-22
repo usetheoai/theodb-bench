@@ -11,6 +11,7 @@ resolve to ``unsupported`` rather than to a fabricated value.
 from __future__ import annotations
 
 import os
+import subprocess
 import platform
 import sys
 from collections.abc import Iterator
@@ -358,28 +359,60 @@ def capture_software() -> dict[str, Any]:
 # ------------------------------------------------------------------ capabilities
 
 
+def _perf_probe(event: str) -> Measured[bool]:
+    """Roda `perf stat` de verdade em vez de deduzir do `perf_event_paranoid`.
+
+    MEDIDO no droplet em 2026-08-22, como root, com `perf_event_paranoid = 4`:
+    `perf stat -e task-clock -- sleep 0.05` devolveu `1.19 msec task-clock`, e
+    `perf record -e cpu-clock` produziu perfil com simbolos de userspace e de kernel.
+    A regra anterior — `paranoid <= 2` — respondia **False** para isso.
+
+    Por que ela errava: `perf_event_paranoid` restringe usuario SEM privilegio. Root o
+    contorna, e o arnes roda como root no host de medicao. A regra lia a POLITICA e
+    respondia como se fosse o EFEITO — a mesma classe que
+    `guides/instrumento-reporta-o-pedido.md` documenta, agora no proprio instrumento que
+    deveria detecta-la.
+
+    O custo e um subprocesso de poucos milissegundos, uma vez por captura, e ele compra a
+    diferenca entre "a politica diz que nao" e "nao funciona".
+    """
+    if which("perf") is None:
+        return unavailable("perf not on PATH")
+    try:
+        concluido = subprocess.run(
+            ["perf", "stat", "-e", event, "--", "true"],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return unavailable(f"perf probe failed: {type(exc).__name__}")
+    return concluido.returncode == 0
+
+
 def capture_capabilities() -> dict[str, Any]:
     if not _is_linux():
         absent = _linux_only("host capabilities")
         return {
             key: encode(absent)
-            for key in ("perf_events", "cgroup_v2", "cpu_affinity", "numa_control")
+            for key in (
+                "perf_events",
+                "perf_sampling",
+                "cgroup_v2",
+                "cpu_affinity",
+                "numa_control",
+            )
         }
 
-    paranoid = _read_int(_PROC / "sys/kernel/perf_event_paranoid")
-    perf_events: Measured[bool]
-    if which("perf") is None:
-        perf_events = unavailable("perf not on PATH")
-    elif paranoid is None:
-        perf_events = unavailable("perf_event_paranoid unreadable")
-    else:
-        # <= 2 permits per-process counters for an unprivileged user; 3 denies
-        # them outright. Recording the reason matters: a run that silently lost
-        # hardware counters would report them as absent without saying why.
-        perf_events = paranoid <= 2
+    # Duas capacidades, e conflati-las custou uma campanha inteira. Contador de HARDWARE
+    # (cycles, cache-misses) e amostragem por SOFTWARE (cpu-clock, task-clock) falham por
+    # razoes diferentes: uma VM tipicamente nao expoe PMU e ainda assim amostra por software
+    # sem problema algum. A campanha de perfilamento do B-043 so precisa da segunda.
+    perf_events = _perf_probe("cycles")
+    perf_sampling = _perf_probe("task-clock")
 
     return {
         "perf_events": encode(perf_events),
+        "perf_sampling": encode(perf_sampling),
         "cgroup_v2": encode((_SYS / "fs/cgroup/cgroup.controllers").exists()),
         "cpu_affinity": encode(hasattr(os, "sched_setaffinity")),
         "numa_control": encode(which("numactl") is not None),
