@@ -426,6 +426,31 @@ def run_tpch_suite(
         tabela = schema.table(f"{prefix}{nome_logico}")
         engine.load_analytical(tabela, dados[nome_logico])
 
+    # ANTES de cronometrar: as tabelas estão MESMO no caminho que esta corrida declara?
+    #
+    # `bench/analytical.py` já faz isto, e o comentário de lá registra que
+    # `assert_analytical_path` chegou a existir com ZERO chamadas no repositório inteiro. O
+    # TPC-H nasceu com o mesmo defeito: carregava com `path=columnar` e cronometrava sem
+    # perguntar.
+    #
+    # Importa mais aqui do que em quase todo lugar, por causa do concorrente: no AlloyDB Omni
+    # o caminho colunar é um CACHE sobre heap. Store não residente responde CERTO, rápido o
+    # bastante para não levantar suspeita, e o número publicado é heap com rótulo colunar —
+    # que é exatamente o defeito que custou uma corrida inteira ao avaliador independente.
+    #
+    # ABORTA, não invalida a medida: aqui as três tabelas formam UM caso. Se `lineitem` caiu
+    # para heap, nenhuma das três queries mede o que diz medir, e seguir produziria uma tabela
+    # inteira de números com rótulo errado. `bench/analytical.py` invalida em vez de abortar
+    # porque lá os caminhos são independentes e derrubar tudo perderia heap e Parquet.
+    #
+    # LIMITE DECLARADO: prova-se RESIDÊNCIA, não o plano. O plano exigiria o SQL registrado em
+    # `ANALYTICAL_SQL`, e o do TPC-H é construído pela suíte a partir do esquema. Residência diz
+    # onde as linhas estão; só o plano diria o que rodou.
+    provar = getattr(engine, "assert_analytical_path", None)
+    if callable(provar):
+        for nome_logico in ordem:
+            provar(schema.table(f"{prefix}{nome_logico}"))
+
     medidas: dict[str, TpchMeasurement] = {}
     for query in TPCH_QUERIES:
         esperado = expected_tpch_answer(dados, query.id)

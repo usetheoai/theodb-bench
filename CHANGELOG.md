@@ -8,6 +8,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **A suíte TPC-H não provava o caminho que declarava (B-058).** Ela carregava com `--path columnar` e
+  cronometrava sem perguntar se as tabelas estavam mesmo lá — o mesmo defeito que `bench/analytical.py` já
+  havia consertado, e cujo comentário registra que `assert_analytical_path` chegou a existir com **zero
+  chamadas** no repositório inteiro. Importa mais aqui por causa do concorrente: no AlloyDB Omni o caminho
+  colunar é um **cache sobre heap**, e um store não residente responde **certo**, rápido o bastante para não
+  levantar suspeita — o número publicado seria heap com rótulo colunar, que é o defeito que custou uma corrida
+  inteira ao avaliador independente. A suíte **aborta** em vez de invalidar a medida, porque aqui as três
+  tabelas formam um caso só: se `lineitem` caiu para heap, nenhuma das três queries mede o que diz medir.
+  **Limite declarado:** prova-se residência, **não o plano** — o plano exigiria o SQL registrado em
+  `ANALYTICAL_SQL`, e o do TPC-H é construído pela suíte.
 - **O `doctor` reportava a POLÍTICA de `perf` em vez do efeito, e isso bloqueou uma campanha inteira
   (B-043).** A capacidade era deduzida de `perf_event_paranoid <= 2`. **Medido no droplet, como root, com
   `perf_event_paranoid = 4`:** `perf stat -e task-clock` devolveu `1.19 msec` e `perf record -e cpu-clock`

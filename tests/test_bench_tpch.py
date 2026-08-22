@@ -399,3 +399,79 @@ def test_a_repetition_count_below_one_is_refused() -> None:
 
     with _pytest.raises(ConfigError):
         run_tpch_suite(_Motor(), scale_factor=0.001, seed=42, repetitions=0)
+
+
+# ------------------------ B-058: o TPC-H nao provava o caminho que declarava
+#
+# `bench/analytical.py` chama `assert_analytical_path` antes de cronometrar, e o
+# comentario de la registra que esse portao ja teve ZERO chamadas no repositorio inteiro.
+# O TPC-H nasceu com o mesmo defeito: carregava com `path=columnar` e cronometrava sem
+# perguntar se o caminho era mesmo aquele.
+#
+# Por que importa aqui mais que em outros lugares: no AlloyDB Omni o caminho colunar e um
+# CACHE sobre heap. Se o store nao estiver residente, a consulta responde CERTO, rapido o
+# bastante para nao levantar suspeita, e o numero publicado e heap com rotulo colunar.
+#
+# LIMITE DECLARADO: prova-se RESIDENCIA, nao o plano. O plano exigiria o SQL registrado em
+# `ANALYTICAL_SQL`, e o SQL do TPC-H e construido pela suite a partir do esquema. Residencia
+# diz onde as linhas estao; so o plano diria o que rodou.
+
+
+def test_the_suite_proves_the_declared_path_before_timing_it() -> None:
+    from theodb_bench.bench.tpch import run_tpch_suite, tpch_schema
+
+    provados: list[str] = []
+
+    class _Motor:
+        def load_analytical(self, table, rows) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def assert_analytical_path(self, table, query=None) -> None:  # type: ignore[no-untyped-def]
+            provados.append(table.name)
+
+        def execute_analytical_sql(self, sql: str):  # type: ignore[no-untyped-def]
+            return ()
+
+    run_tpch_suite(_Motor(), scale_factor=0.001, seed=42, path="columnar", repetitions=1)
+    assert sorted(provados) == sorted(t.name for t in tpch_schema().tables), (
+        "as tres tabelas tem de ser provadas — uma em heap no meio de um TPC-H colunar "
+        "mediria uma juncao hibrida"
+    )
+
+
+def test_a_path_that_cannot_be_proven_aborts_instead_of_publishing() -> None:
+    """Heap com rotulo colunar e pior que falha: sai um numero, e ele parece bom."""
+    import pytest as _pytest
+    from theodb_bench.bench.tpch import run_tpch_suite
+    from theodb_bench.errors import AdapterError, ErrorContext, Phase
+
+    class _Motor:
+        def load_analytical(self, table, rows) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def assert_analytical_path(self, table, query=None) -> None:  # type: ignore[no-untyped-def]
+            raise AdapterError(
+                "o store nao esta residente",
+                context=ErrorContext(phase=Phase.MEASUREMENT, system="x"),
+            )
+
+        def execute_analytical_sql(self, sql: str):  # type: ignore[no-untyped-def]
+            return ()
+
+    with _pytest.raises(AdapterError):
+        run_tpch_suite(_Motor(), scale_factor=0.001, seed=42, path="columnar", repetitions=1)
+
+
+def test_an_adapter_without_the_gate_still_runs() -> None:
+    """Protocolo estrutural: a suite pede duas operacoes, nao a superficie inteira (ISP)."""
+    from theodb_bench.bench.tpch import run_tpch_suite
+
+    class _MotorMinimo:
+        def load_analytical(self, table, rows) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def execute_analytical_sql(self, sql: str):  # type: ignore[no-untyped-def]
+            return ()
+
+    r = run_tpch_suite(_MotorMinimo(), scale_factor=0.001, seed=42, repetitions=1)
+    assert set(r) == {q.id for q in TPCH_QUERIES}
