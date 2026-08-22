@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import itertools
 import json
 import statistics
 import sys
@@ -562,7 +563,25 @@ def cmd_head2head(args: argparse.Namespace) -> int:
 
     probes = [benchmark._query(i) for i in range(len(queries))]
     try:
-        for (index_a, search_a), (index_b, search_b) in zip(sides[0][2], sides[1][2], strict=False):
+        # PRODUTO, nao `zip`. O `zip` pareava por POSICAO: o ponto 1 de A com o ponto 1 de B.
+        #
+        # Medido em 2026-08-22 numa corrida real (B-103): a varredura do ScaNN e cartesiana —
+        # `num_leaves_to_search (5,20,80)` x `pre_reordering (25,100,400)` = 9 pontos — e o `zip`
+        # pegou os TRES PRIMEIROS contra os nossos tres. Os tres primeiros do produto tem todos
+        # `num_leaves_to_search=5`, o valor mais raso, e as tres comparacoes sairam `no verdict`
+        # por diferenca de recall. A mensagem estava certa e a razao era outra: **os pontos que
+        # poderiam casar nunca foram medidos**.
+        #
+        # Recall so se conhece MEDINDO, entao nao ha como escolher o par antes. Varrer o produto e
+        # deixar o portao de tolerancia abaixo decidir e o algoritmo correto, e ele ja existia — o
+        # que faltava era dar a ele os pares para julgar. O custo e |A|x|B| em vez de min(|A|,|B|),
+        # e e o preco de uma comparacao entre familias de indice com botoes diferentes.
+        #
+        # A leitura facil que isto impede era FAVORAVEL A NOS: com so o canto raso do concorrente
+        # medido, a tabela sugeria que ele satura em 0,72 de recall enquanto chegamos a 0,995.
+        recalls_a: list[float] = []
+        recalls_b: list[float] = []
+        for (index_a, search_a), (index_b, search_b) in itertools.product(sides[0][2], sides[1][2]):
             labels: list[str] = []
             for (name, adapter, _), index, search in (
                 (sides[0], index_a, search_a),
@@ -598,6 +617,11 @@ def cmd_head2head(args: argparse.Namespace) -> int:
                 )
             )
 
+            if recall_a is not None:
+                recalls_a.append(recall_a)
+            if recall_b is not None:
+                recalls_b.append(recall_b)
+
             if recall_a is None or recall_b is None or abs(recall_a - recall_b) > RECALL_TOLERANCE:
                 print(
                     f"  no verdict — the two points differ in quality by more than "
@@ -629,6 +653,20 @@ def cmd_head2head(args: argparse.Namespace) -> int:
                 print(
                     f"  caveat: {lower} operated at {abs(gap):.4f} lower recall, so part "
                     f"of its latency advantage is work it did not do."
+                )
+        # A faixa que cada lado cobriu, porque "nao casou" sem ela nao distingue "o concorrente
+        # nao alcanca esse recall" de "nao medimos onde ele alcanca" — e as duas leituras levam a
+        # conclusoes opostas sobre o concorrente.
+        if recalls_a and recalls_b:
+            print()
+            print(
+                f"Recall coberto: {sides[0][0]} de {min(recalls_a):.4f} a {max(recalls_a):.4f}; "
+                f"{sides[1][0]} de {min(recalls_b):.4f} a {max(recalls_b):.4f}."
+            )
+            if max(min(recalls_a), min(recalls_b)) > min(max(recalls_a), max(recalls_b)):
+                print(
+                    "As faixas NAO se sobrepoem: nenhum par poderia casar, e isso e um fato "
+                    "sobre a varredura declarada, nao sobre os sistemas."
                 )
     finally:
         for _, adapter, _ in sides:

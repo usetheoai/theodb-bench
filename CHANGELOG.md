@@ -7,6 +7,21 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`head2head` pareava os pontos por POSIÇÃO, e a comparação entre famílias de índice depende de casá-los por
+  recall (B-103).** O `zip` casava o ponto 1 de A com o ponto 1 de B. **Medido numa corrida real:** a varredura
+  do ScaNN é cartesiana — `num_leaves_to_search (5,20,80)` × `pre_reordering (25,100,400)` = **9 pontos** — e o
+  `zip` pegou os **três primeiros** contra os nossos três. Os três primeiros do produto têm todos
+  `num_leaves_to_search=5`, o valor mais raso, e as três comparações saíram `no verdict` por diferença de
+  recall. A mensagem estava certa e a razão era outra: **os pontos que poderiam casar nunca foram medidos**.
+  A leitura fácil que isso produzia era **favorável a nós** — a tabela sugeria que o concorrente satura em 0,72
+  de recall enquanto chegamos a 0,995. Agora o laço varre o **produto** dos dois lados e o portão de tolerância,
+  que já existia, decide quais pares viram veredito. O custo passa de `min(|A|,|B|)` para `|A|×|B|`, e é o preço
+  de comparar famílias com botões diferentes.
+- **O `head2head` passa a dizer a FAIXA de recall que cada lado cobriu**, e avisa quando as faixas não se
+  sobrepõem. *"Não casou"* sem a faixa não distingue *"o concorrente não alcança esse recall"* de *"não medimos
+  onde ele alcança"* — e as duas leituras levam a conclusões opostas sobre o concorrente.
+
 ### Added
 - **`ops/bench-run.sh` busca e passa o dataset que a suíte exige.** Complemento do portão abaixo: ele recusa a
   corrida sem o dado, e isto é onde o dado chega. O script pergunta ao **registro** qual dataset a suíte exige
