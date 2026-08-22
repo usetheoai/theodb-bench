@@ -579,19 +579,31 @@ def cmd_head2head(args: argparse.Namespace) -> int:
         #
         # A leitura facil que isto impede era FAVORAVEL A NOS: com so o canto raso do concorrente
         # medido, a tabela sugeria que ele satura em 0,72 de recall enquanto chegamos a 0,995.
+        # Qual indice esta de pe em cada lado, para nao reconstruir o mesmo.
+        construido: list[Any] = [None, None]
         recalls_a: list[float] = []
         recalls_b: list[float] = []
         for (index_a, search_a), (index_b, search_b) in itertools.product(sides[0][2], sides[1][2]):
             labels: list[str] = []
-            for (name, adapter, _), index, search in (
-                (sides[0], index_a, search_a),
-                (sides[1], index_b, search_b),
+            for lado, ((name, adapter, _), index, search) in enumerate(
+                (
+                    (sides[0], index_a, search_a),
+                    (sides[1], index_b, search_b),
+                )
             ):
                 try:
-                    adapter.drop_indexes(spec)
-                    adapter.build_index(spec, index)
+                    # Reconstruir so quando o INDICE muda. Trocar `ef_search` ou
+                    # `num_leaves_to_search` e um parametro de BUSCA — o indice em disco e o
+                    # mesmo. Com o produto sao |A|x|B| pares e a maioria repete o indice do par
+                    # anterior: sem isto, 40 pares custariam 80 construcoes onde 14 bastam, e a
+                    # construcao domina o tempo de uma corrida em 100 mil vetores.
+                    if construido[lado] != index:
+                        adapter.drop_indexes(spec)
+                        adapter.build_index(spec, index)
+                        construido[lado] = index
                     adapter.set_search_parameters(search)
                 except Exception as exc:  # a refusal or a rejected knob, either way no pair
+                    construido[lado] = None  # estado incerto: a proxima iteracao reconstroi
                     labels.append(f"{name} refused: {exc}")
             if labels:
                 print(f"- skipped — {'; '.join(labels)}")
