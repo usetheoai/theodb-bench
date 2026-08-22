@@ -113,6 +113,33 @@ for p in $PROIBIDOS; do
   [ "$NOME" = "$p" ] && { echo "recusado: nome colide com droplet protegido"; exit 1; }
 done
 
+# PORTAO: os refs de TAGS sao resolvidos LOCALMENTE, antes de existir maquina alguma.
+#
+# Medido em 2026-08-22: `TAGS="fix"` (sem ref) criou um droplet, provisionou por dois
+# minutos e so entao descobriu que `theodb:fix` nao estava no host — e destruiu. Os
+# portoes de coleta e destruicao funcionaram; o problema e que a descoberta custou uma
+# maquina para chegar. Um ref que nao resolve no repo local nao resolve no host tampouco,
+# e isso da para saber de graca.
+for spec in $TAGS; do
+  nome="${spec%%:*}"; ref="${spec#*:}"
+  if [ "$nome" = "$ref" ]; then
+    # `nome` sozinho aposta que a imagem ja esta no snapshot — e isso e o unico caso que
+    # NAO da para verificar daqui. Exigir opt-in explicito e o que impede a aposta de ser
+    # feita por engano, que foi como este portao nasceu.
+    [ "${IMAGEM_PREEXISTENTE:-0}" = "1" ] || {
+      echo "FALHA: TAGS='$spec' nao traz ref, entao a imagem theodb:$nome tem de ja existir"
+      echo "       no snapshot — e isso nao e verificavel antes de criar a maquina."
+      echo "       Use 'nome:ref' (ex: '$nome:HEAD'), ou IMAGEM_PREEXISTENTE=1 se souber."
+      exit 1
+    }
+    continue
+  fi
+  git -C "$DB_REPO" rev-parse --verify --quiet "$ref^{commit}" >/dev/null || {
+    echo "FALHA: o ref '$ref' de TAGS='$spec' nao resolve em $DB_REPO"
+    exit 1
+  }
+done
+
 echo "=== criando $NOME ($TAMANHO, $REGIAO) $(date -Is) ==="
 IMAGEM="ubuntu-24-04-x64"
 if [ -n "$SNAPSHOT" ]; then

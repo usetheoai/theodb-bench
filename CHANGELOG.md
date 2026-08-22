@@ -8,6 +8,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **`ops/bench-droplet.sh` descobria um `TAGS` inválido só depois de criar a máquina.** `TAGS="fix"` (sem ref)
+  criou um droplet, provisionou por dois minutos e só então descobriu que `theodb:fix` não existia no host. Os
+  portões de coleta e destruição funcionaram — nada foi perdido e a máquina morreu — mas a descoberta custou
+  uma máquina para chegar. Os refs passam a ser resolvidos **localmente**, com `git rev-parse`, antes de existir
+  droplet: um ref que não resolve no repo local também não resolveria no host. Um `nome` sem ref é o único caso
+  não verificável daqui, e agora exige `IMAGEM_PREEXISTENTE=1` — opt-in explícito para uma aposta que antes se
+  fazia por engano. Verificado nos cinco casos, sob `bash`.
 - **`ops/bench-droplet.sh` deixava três variáveis para trás no `ssh`, em silêncio — e agora um portão
   verifica.** `SMOKE`, `OMNI_IMAGE` e `PGVECTOR_IMAGE` eram lidas pelo `bench-run.sh` e não apareciam na linha
   de invocação remota, então um override ficava no default sem erro nem aviso. É a mesma classe que já custou
