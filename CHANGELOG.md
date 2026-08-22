@@ -7,6 +7,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`ops/bench-run.sh` busca e passa o dataset que a suíte exige.** Complemento do portão abaixo: ele recusa a
+  corrida sem o dado, e isto é onde o dado chega. O script pergunta ao **registro** qual dataset a suíte exige
+  — não adivinha pelo nome —, roda `dataset fetch` (que baixa **e verifica**) e passa `--dataset`. Vale para as
+  corridas de uma via e para o head-to-head de três.
+
 ### Fixed
 - **Uma suíte nomeada por um dataset passa a EXIGI-LO — antes ela media o corpus sintético sob o nome do
   dataset.** `--dataset` diz na própria ajuda que mede um dataset verificado *"instead of the seeded synthetic

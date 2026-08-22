@@ -98,9 +98,30 @@ subir() {
     "select extname||' '||extversion from pg_extension where extname like 'theodb%'" 2>&1 | head -3 || true
 }
 
+# Qual dataset a suite EXIGE, perguntado ao registro em vez de adivinhado pelo nome.
+# Vazio = suite sintetica, que nao exige nada.
+dataset_exigido() {
+  /root/venv/bin/python -c "
+import sys
+from theodb_bench.registry import BENCHMARKS
+e = BENCHMARKS.get(sys.argv[1])
+print((e.requires_dataset or '') if e else '')
+" "$1" 2>/dev/null
+}
+
 medir() {
   local tag="$1" suite="$2" saida="$3"
   echo "=== $tag :: $suite inicio $(date -Is) ==="
+  # Uma suite nomeada por dataset mede o corpus SINTETICO se ninguem passar `--dataset` —
+  # e o bundle sai com o nome do dataset no id e sem o bloco que o identifica. O preflight
+  # do arnes agora recusa isso, entao aqui e onde o dado tem de chegar.
+  local ds; ds="$(dataset_exigido "$suite")"
+  local arg_ds=""
+  if [ -n "$ds" ]; then
+    echo "-- suite exige dataset '$ds'; buscando e verificando --"
+    /root/venv/bin/theodb-bench dataset fetch "$ds" || { echo "FALHA: fetch de $ds"; return 1; }
+    arg_ds="--dataset $ds"
+  fi
   # Sob MEM_MAX o arnes roda DENTRO de um cgroup com limite, porque e o que ele exige para marcar
   # `memory_limit` como respeitado — aplicar o limite ele mesmo pediria privilegio e teria efeito
   # colateral sobre o host, entao ele LE o limite que ja vale. `systemd-run --scope` e o mecanismo
@@ -109,12 +130,12 @@ medir() {
   if [ -n "$MEM_MAX" ] && command -v systemd-run >/dev/null 2>&1; then
     PGUSER=postgres systemd-run --scope --quiet -p "MemoryMax=$MEM_MAX" \
       /root/venv/bin/theodb-bench run "$suite" \
-      --system theodb --profile "$PROFILE" --output "$saida" \
+      --system theodb --profile "$PROFILE" --output "$saida" $arg_ds \
       ${REPS:+--repetitions "$REPS"} \
       ${CPU_SET:+--cpu-set "$CPU_SET"} --memory "$MEM_MAX"
   else
     PGUSER=postgres /root/venv/bin/theodb-bench run "$suite" \
-      --system theodb --profile "$PROFILE" --output "$saida" \
+      --system theodb --profile "$PROFILE" --output "$saida" $arg_ds \
       ${REPS:+--repetitions "$REPS"} \
       ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"}
   fi
@@ -197,6 +218,15 @@ if [ "$MODE" = "headtohead" ]; then
   esac
   subir_externo pgv "$PGVECTOR_IMAGE" 55461 || exit 1
 
+  # Mesmo contrato do `medir`: se a suite nomeia um dataset, ele e buscado e passado.
+  ARG_DS=""
+  DS_H2H="$(dataset_exigido "$SUITE")"
+  if [ -n "$DS_H2H" ]; then
+    echo "-- suite exige dataset '$DS_H2H'; buscando e verificando --"
+    /root/venv/bin/theodb-bench dataset fetch "$DS_H2H" || { echo "FALHA: fetch de $DS_H2H"; exit 1; }
+    ARG_DS="--dataset $DS_H2H"
+  fi
+
   echo "-- proveniencia dos TRES, lida de cada servidor --"
   PGUSER=postgres psql -h /var/run/postgresql -tAc "select 'theodb: '||version()" 2>&1 | head -1 || true
   PGPASSWORD=x psql -h 127.0.0.1 -p 55460 -U postgres -tAc "select 'omni:   '||version()" 2>&1 | head -1 || true
@@ -208,10 +238,10 @@ if [ "$MODE" = "headtohead" ]; then
     if [ -n "$host" ]; then
       PGHOST="$host" PGPORT="$porta" PGUSER=postgres PGPASSWORD=x \
         /root/venv/bin/theodb-bench run "$SUITE" --system "$sist" --profile "$PROFILE" \
-        --output "/root/res-$STAMP/$sist"
+        $ARG_DS --output "/root/res-$STAMP/$sist"
     else
       PGUSER=postgres /root/venv/bin/theodb-bench run "$SUITE" --system "$sist" \
-        --profile "$PROFILE" --output "/root/res-$STAMP/$sist"
+        --profile "$PROFILE" $ARG_DS --output "/root/res-$STAMP/$sist"
     fi
     echo "=== $sist fim rc=$? $(date -Is) ==="
   done
