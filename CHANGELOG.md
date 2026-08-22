@@ -8,6 +8,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`scripts/check_bench_protocol_methods.py`: método público de benchmark fora do protocolo e sem chamador
+  (B-105).** Achou três órfãos reais de primeira — `VectorWorkload.k_values`, `VectorWorkload.operation_count`
+  e `VectorBenchmark.corpus`, nenhum com chamador em `src/` ou `tests/`. **E o arquivo declara o que ele NÃO
+  pega:** casa por nome, como o `vulture`, então uma chamada a um homônimo de outra classe conta como
+  chamador — foi por isso que nem ele nem o `vulture` encontraram `RetrievalBenchmark.summary()`, cujo nome
+  aparece 27 vezes em `src/`. Cobre o caso do nome único, que é a maioria; o da colisão fica dito e aberto.
+  Veredito é AVISO e não bloqueio: um portão que reprova sobre heurística de nome gasta mais confiança do que
+  compra.
+
 - **O nDCG passa a ser guardado POR CONSULTA, e existe veredito pareado de qualidade (B-005).** O `dod` do
   item pede *"uma fusão cujo ganho sobre o vetorial puro sobreviva a teste pareado de significância"*, e isso
   era **impossível com o que o bundle trazia**: o nDCG era acumulado numa lista e mediado, e só a latência
