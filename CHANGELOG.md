@@ -7,6 +7,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`tpch --repetitions` (default 3): o comando deixa de publicar amostra única.** O primeiro head-to-head
+  contra o AlloyDB Omni teve de carregar *"uma execução por ponto, sem variância"* como ressalva, porque cada
+  query rodava exatamente uma vez — e `rigorous-perf-eval-georges-2007` recusa afirmação de performance sobre
+  amostra única, enquanto a regra 5 do projeto diz que performance é claim e não opinião. Agora o resultado traz
+  a **mediana**, o **desvio-padrão** e **todas as amostras**, para que quem lê possa recalcular e ver os
+  outliers em vez de confiar no resumo. O default é 3 porque um default tem de ser defensável sozinho: quem não
+  passa nada não publica n=1. **O oráculo passa a ser conferido em toda repetição**, e não só na primeira — uma
+  resposta que muda entre execuções é um defeito pior que uma resposta errada estável, e só aparece se alguém
+  olhar mais de uma vez. `repetitions=0` é recusado com erro tipado: zero repetição não é uma corrida barata, é
+  uma corrida que não mediu nada. Verificado por execução contra PostgreSQL real — e o desvio medido a SF=0,0005
+  foi de **30% a 45% da mediana**, o que mostra o tamanho do problema que a amostra única escondia.
+
 ### Fixed
 - **`ops/bench-droplet.sh` descobria um `TAGS` inválido só depois de criar a máquina.** `TAGS="fix"` (sem ref)
   criou um droplet, provisionou por dois minutos e só então descobriu que `theodb:fix` não existia no host. Os

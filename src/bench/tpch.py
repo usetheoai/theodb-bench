@@ -19,6 +19,7 @@ insuficiente para reivindicar "resultado TPC-H", que é marca registrada e exige
 
 from __future__ import annotations
 
+import statistics
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -376,10 +377,23 @@ class TpchMeasurement:
     seconds: float
     matches_oracle: bool
     rows_returned: int
+    #: Todas as repetições, em ordem de execução. `seconds` é a MEDIANA delas.
+    #:
+    #: Guardar só o resumo impede quem lê de recalcular e de ver um outlier — e um outlier
+    #: aqui é informação, não sujeira: uma repetição presa num checkpoint diz algo sobre o
+    #: sistema. A mediana é preferida à média pela mesma razão: ela não se move quando uma
+    #: das repetições cai numa pausa que não é do motor.
+    samples: tuple[float, ...] = ()
 
 
 def run_tpch_suite(
-    engine: Any, *, scale_factor: float, seed: int, prefix: str = "", path: str = "row"
+    engine: Any,
+    *,
+    scale_factor: float,
+    seed: int,
+    prefix: str = "",
+    path: str = "row",
+    repetitions: int = 3,
 ) -> dict[str, TpchMeasurement]:
     """Carrega o esquema e roda as queries registradas, conferindo cada resposta contra o oráculo.
 
@@ -391,6 +405,16 @@ def run_tpch_suite(
     query rápida, e comparar os motores entre si não acharia um erro que todos cometessem — é a
     mesma disciplina do `AnalyticalBenchmark` sobre tabela única, agora sobre junção.
     """
+    # Três é o piso, não uma preferência: `papers/rigorous-perf-eval-georges-2007` recusa
+    # afirmação de performance sobre amostra única, e a regra 5 do projeto diz que performance
+    # é claim e não opinião. Uma amostra só não distingue 8% de ruído de 8% de ganho — e o
+    # primeiro head-to-head contra o AlloyDB Omni teve de publicar exatamente essa ressalva.
+    if repetitions < 1:
+        raise ConfigError(
+            f"repetitions tem de ser >= 1, recebido {repetitions} — zero repetição não é uma "
+            f"corrida barata, é uma corrida que não mediu nada",
+            context=ErrorContext(phase=Phase.PREFLIGHT),
+        )
     schema = tpch_schema(prefix=prefix, path=path)
     dados = generate_tpch(scale_factor=scale_factor, seed=seed)
 
@@ -405,14 +429,24 @@ def run_tpch_suite(
     medidas: dict[str, TpchMeasurement] = {}
     for query in TPCH_QUERIES:
         esperado = expected_tpch_answer(dados, query.id)
-        inicio = time.perf_counter()
-        obtido = tuple(engine.execute_analytical_sql(tpch_sql(schema, query.id)))
-        decorrido = time.perf_counter() - inicio
+        sql = tpch_sql(schema, query.id)
+        amostras: list[float] = []
+        obtido: tuple[Any, ...] = ()
+        concorda = True
+        for _ in range(repetitions):
+            inicio = time.perf_counter()
+            obtido = tuple(engine.execute_analytical_sql(sql))
+            amostras.append(time.perf_counter() - inicio)
+            # O oráculo é conferido em TODA repetição, e não só na primeira. Uma resposta que
+            # muda entre execuções é um defeito pior que uma resposta errada estável — e só
+            # aparece se alguém olhar mais de uma vez.
+            concorda = concorda and _answers_agree(obtido, esperado)
         medidas[query.id] = TpchMeasurement(
             query_id=query.id,
-            seconds=decorrido,
-            matches_oracle=_answers_agree(obtido, esperado),
+            seconds=statistics.median(amostras),
+            matches_oracle=concorda,
             rows_returned=len(obtido),
+            samples=tuple(amostras),
         )
     return medidas
 

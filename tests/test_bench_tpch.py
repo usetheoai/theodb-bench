@@ -203,10 +203,17 @@ def test_the_suite_loads_every_table_and_runs_every_query() -> None:
             executado["sql"].append(sql)
             return ()
 
-    resultado = run_tpch_suite(_Motor(), scale_factor=0.001, seed=42)
+    resultado = run_tpch_suite(_Motor(), scale_factor=0.001, seed=42, repetitions=3)
     assert sorted(executado["load"]) == sorted(t.name for t in tpch_schema().tables)
-    assert len(executado["sql"]) == len(TPCH_QUERIES)
+    # Distintas E total: a primeira diz que toda query registrada rodou, a segunda que cada
+    # uma rodou o numero de vezes pedido. Contar so o total confundiria "tres queries uma vez"
+    # com "uma query tres vezes", que e exatamente o que a repeticao introduz.
+    assert len(set(executado["sql"])) == len(TPCH_QUERIES)
+    assert len(executado["sql"]) == 3 * len(TPCH_QUERIES)
     assert set(resultado) == {q.id for q in TPCH_QUERIES}
+    # A carga NAO se repete: os dados sao os mesmos, e recarregar por repeticao mediria o
+    # `COPY` em vez da query.
+    assert sorted(executado["load"]) == sorted(t.name for t in tpch_schema().tables)
 
 
 def test_the_suite_reports_when_an_answer_disagrees_with_the_oracle() -> None:
@@ -286,3 +293,109 @@ def test_the_path_survives_the_prefix() -> None:
 
     assert all(t.name.startswith("x_") for t in schema.tables)
     assert all(t.path == "columnar" for t in schema.tables)
+
+
+# ------------------------ B-058: uma execucao por ponto nao sustenta comparacao
+#
+# O conceito b058-tpch-headtohead-omni publicou razoes de ate 159x e teve de carregar
+# "uma execucao por ponto, sem variancia" como ressalva. `rigorous-perf-eval-georges-2007`
+# exige >= 3 corridas com media e desvio antes de qualquer afirmacao de performance, e a
+# regra 5 do projeto diz que performance e claim, nao opiniao. Uma amostra so nao permite
+# distinguir 8% de ruido de 8% de ganho.
+
+
+def _motor_com_tempos(tempos: list[float]):
+    """Motor cujo relogio avanca uma lista dada — a repeticao k gasta tempos[k]."""
+    import itertools
+    from theodb_bench.bench.tpch import expected_tpch_answer, generate_tpch, tpch_schema
+
+    dados = generate_tpch(scale_factor=0.001, seed=42)
+
+    class _Motor:
+        def __init__(self) -> None:
+            self.ciclo = itertools.cycle(tempos)
+            self.chamadas = 0
+
+        def load_analytical(self, table, rows) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def execute_analytical_sql(self, sql: str):  # type: ignore[no-untyped-def]
+            self.chamadas += 1
+            qid = next(q.id for q in TPCH_QUERIES if q.id in sql or True)
+            return expected_tpch_answer(dados, qid)
+
+    return _Motor(), dados
+
+
+def test_the_default_is_more_than_one_sample() -> None:
+    """O default tem de ser defensavel sozinho: quem nao passa nada nao publica n=1."""
+    from theodb_bench.bench.tpch import run_tpch_suite
+
+    class _Motor:
+        def __init__(self) -> None:
+            self.chamadas = 0
+
+        def load_analytical(self, table, rows) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def execute_analytical_sql(self, sql: str):  # type: ignore[no-untyped-def]
+            self.chamadas += 1
+            return ()
+
+    motor = _Motor()
+    run_tpch_suite(motor, scale_factor=0.001, seed=42)
+    assert motor.chamadas >= 3 * len(TPCH_QUERIES), (
+        f"cada query rodou {motor.chamadas / len(TPCH_QUERIES):.1f}x — "
+        "o default nao pode ser uma amostra so"
+    )
+
+
+def test_every_repetition_is_kept_not_just_the_summary() -> None:
+    """Guardar so a mediana impede quem le de recalcular ou de ver um outlier."""
+    from theodb_bench.bench.tpch import run_tpch_suite
+
+    class _Motor:
+        def load_analytical(self, table, rows) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def execute_analytical_sql(self, sql: str):  # type: ignore[no-untyped-def]
+            return ()
+
+    r = run_tpch_suite(_Motor(), scale_factor=0.001, seed=42, repetitions=5)
+    for qid, m in r.items():
+        assert len(m.samples) == 5, f"{qid}: {len(m.samples)} amostras, esperava 5"
+        assert all(s >= 0 for s in m.samples)
+
+
+def test_the_reported_seconds_is_the_median_of_the_samples() -> None:
+    """Mediana, nao media: uma repeticao presa num checkpoint nao deve mover o numero."""
+    import statistics
+    from theodb_bench.bench.tpch import run_tpch_suite
+
+    class _Motor:
+        def load_analytical(self, table, rows) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def execute_analytical_sql(self, sql: str):  # type: ignore[no-untyped-def]
+            return ()
+
+    r = run_tpch_suite(_Motor(), scale_factor=0.001, seed=42, repetitions=3)
+    for m in r.values():
+        assert m.seconds == statistics.median(m.samples)
+
+
+def test_a_repetition_count_below_one_is_refused() -> None:
+    """Zero repeticao nao e uma corrida barata — e uma corrida que nao mediu nada."""
+    import pytest as _pytest
+    from theodb_bench.bench.tpch import run_tpch_suite
+    from theodb_bench.errors import ConfigError
+
+    class _Motor:
+        def load_analytical(self, table, rows) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def execute_analytical_sql(self, sql: str):  # type: ignore[no-untyped-def]
+            return ()
+
+    with _pytest.raises(ConfigError):
+        run_tpch_suite(_Motor(), scale_factor=0.001, seed=42, repetitions=0)

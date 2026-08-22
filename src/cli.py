@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import statistics
 import sys
 from collections.abc import Sequence
 from dataclasses import replace
@@ -848,6 +849,9 @@ def build_parser() -> argparse.ArgumentParser:
     tpch.add_argument("--prefix", default="tpch_")
     # O eixo do B-058: o mesmo TPC-H, o mesmo binario, o mesmo dado — so o access
     # method muda. `row` e heap, que e o que o PostgreSQL usa sem que ninguem peca.
+    # Tres e o piso, e o default e defensavel sozinho: quem nao passa nada nao publica n=1.
+    # `rigorous-perf-eval-georges-2007` recusa afirmacao de performance sobre amostra unica.
+    tpch.add_argument("--repetitions", type=int, default=3)
     tpch.add_argument(
         "--path",
         default="row",
@@ -1110,6 +1114,7 @@ def cmd_tpch(args: argparse.Namespace) -> int:
             seed=args.seed,
             prefix=args.prefix,
             path=args.path,
+            repetitions=args.repetitions,
         )
     finally:
         adapter.stop()
@@ -1121,9 +1126,17 @@ def cmd_tpch(args: argparse.Namespace) -> int:
                 # O caminho sai no resultado porque a corrida inteira depende dele e o
                 # numero sozinho nao o revela — a mesma razao do B-102, um eixo acima.
                 "path": args.path,
+                "repetitions": args.repetitions,
                 "queries": {
                     qid: {
+                        # Mediana das repeticoes — nao a primeira, nao a melhor.
                         "seconds": m.seconds,
+                        # Todas as amostras saem no artefato, para que quem le possa
+                        # recalcular e ver os outliers em vez de confiar no resumo.
+                        "samples": list(m.samples),
+                        "stdev_seconds": (
+                            statistics.stdev(m.samples) if len(m.samples) > 1 else None
+                        ),
                         "matches_oracle": m.matches_oracle,
                         "rows_returned": m.rows_returned,
                     }
