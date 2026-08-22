@@ -225,6 +225,38 @@ class QuerySet:
         return {doc_id for doc_id, gain in self.relevance[index].items() if gain > 0}
 
 
+def _vocabulario_para(corpus_size: int) -> tuple[str, ...]:
+    """O vocabulário cresce com o corpus, para a perna lexical não perder o que ordenar.
+
+    O gerador declara que as duas pernas **concordam no documento primário** — é a situação
+    que a fusão existe para explorar. Com vocabulário FIXO essa intenção vale a corpus
+    pequeno e quebra com a escala. Medido em 2026-08-22, documentos que contêm a consulta
+    inteira, em média, com os 28 termos originais:
+
+        corpus=  200 ->  1,6        corpus= 1000 ->  3,9
+        corpus=  500 ->  3,3        corpus= 5000 -> 38,9
+
+    A 5.000 o BM25 enfrentava ~39 candidatos igualmente casados para 1 relevante, e a perna
+    lexical marcou **nDCG@10 = 0,0752** contra 0,8266 da vetorial. **Não era defeito do motor
+    lexical: era o corpus não ter sinal.** E a fusão, fundindo uma perna forte com ruído,
+    piorou a perna forte — comportamento correto do RRF sobre uma pergunta que ninguém
+    deveria fazer.
+
+    A raiz cúbica vem da forma do problema: um documento tem ~8 termos, a consulta tem ~3, e
+    a chance de conter os três cai com o cubo da razão termos-por-documento sobre vocabulário.
+    Para o número esperado de casamentos ficar constante enquanto `N` cresce, o vocabulário
+    tem de crescer com `N^(1/3)`. Os 28 termos originais continuam sendo o piso e o começo da
+    lista — corpus pequeno gera exatamente o corpus que gerava antes.
+    """
+    alvo = max(len(_VOCABULARY), int(8 * (max(corpus_size, 1) / 2) ** (1 / 3)))
+    if alvo <= len(_VOCABULARY):
+        return _VOCABULARY
+    # Termos gerados além do vocabulário natural. O corpus já se declara sintético e não
+    # parecido com linguagem natural; o que ele precisa é de poder de discriminação.
+    extras = tuple(f"termo{i:04d}" for i in range(alvo - len(_VOCABULARY)))
+    return _VOCABULARY + extras
+
+
 def generate_corpus(workload: RetrievalWorkload) -> tuple[list[Document], QuerySet]:
     """A seeded corpus, query set and judgement set.
 
@@ -238,12 +270,13 @@ def generate_corpus(workload: RetrievalWorkload) -> tuple[list[Document], QueryS
     system should be read from it.
     """
     rng = np.random.default_rng(workload.seed)
+    vocabulario = _vocabulario_para(workload.corpus_size)
     documents: list[Document] = []
     doc_terms: list[set[str]] = []
 
     for doc_id in range(workload.corpus_size):
         term_count = int(rng.integers(6, 12))
-        terms = list(rng.choice(_VOCABULARY, size=term_count, replace=True))
+        terms = list(rng.choice(vocabulario, size=term_count, replace=True))
         doc_terms.append(set(terms))
         vector = rng.standard_normal(workload.dimension).astype(np.float32)
         documents.append(Document(id=doc_id, text=" ".join(terms), vector=vector))

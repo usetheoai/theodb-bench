@@ -8,6 +8,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **O corpus sintético de retrieval perdia o sinal lexical conforme crescia, e o número que isso produzia
+  parecia um achado.** O gerador declara que *"a perna densa e a lexical concordam no documento primário — que
+  é a situação que a fusão existe para explorar"*, e o vocabulário era **fixo em 28 termos**. Documentos que
+  contêm a consulta inteira, em média: **1,6 a 200 documentos, 38,9 a 5.000**. A 5.000 o BM25 enfrentava ~39
+  candidatos igualmente casados para 1 relevante, e a perna lexical marcou **nDCG@10 = 0,0752** contra 0,8266
+  da vetorial — **não por defeito do motor lexical, mas por o corpus não ter sinal**. A fusão, fundindo uma
+  perna forte com ruído, piorava a perna forte: **0,6868**.
+  Com o vocabulário escalando por `N^(1/3)` — que é a forma do problema, já que a chance de um documento conter
+  os três termos da consulta cai com o cubo —, os mesmos três caminhos dão **0,4978 / 0,8266 / 0,8258**: a
+  fusão deixa de prejudicar e passa a **empatar** com a perna vetorial, que é o que o `m7-hybrid-recall` já
+  havia medido. Os 28 termos originais continuam sendo o piso, então corpus pequeno gera o corpus de antes.
+
 - **O resumo do `run` dizia `recall=not measured` sobre uma corrida que mediu qualidade.** Ele perguntava pela
   métrica que **ele** conhece — `recall`, do eixo vetorial — em vez da que a corrida produziu. Medido: a suíte
   `retrieval/synthetic/hybrid` imprimia *"não medido"* no terminal enquanto o bundle trazia `ndcg_at_10` de

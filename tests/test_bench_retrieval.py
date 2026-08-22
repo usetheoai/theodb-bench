@@ -238,3 +238,50 @@ def test_metric_series_expose_quality_and_latency_together() -> None:
         assert any(name.startswith("latency_") for name in series)
     finally:
         adapter.stop()
+
+
+# ------------------------ o corpus sintetico perdia o sinal lexical com a escala
+#
+# O gerador declara a intencao: "the query vector sits near the primary document, with
+# noise, so the dense leg and the lexical leg AGREE ON THE PRIMARY and disagree elsewhere
+# -- which is the situation fusion exists for."
+#
+# MEDIDO em 2026-08-22: essa intencao vale a corpus pequeno e QUEBRA com a escala, porque o
+# vocabulario era fixo em 28 termos. Documentos que contem a consulta INTEIRA, em media:
+#
+#     corpus=  200 ->  1,6      corpus= 1000 ->  3,9
+#     corpus=  500 ->  3,3      corpus= 5000 -> 38,9
+#
+# A 5.000 documentos o BM25 enfrenta ~39 candidatos igualmente casados para 1 relevante, e
+# a perna lexical marcou nDCG@10 = 0,0752 contra 0,8266 da vetorial. Nao e defeito do motor
+# lexical: e o corpus nao ter sinal. E a fusao, fundindo uma perna forte com ruido, PIOROU
+# a perna forte — o que e o comportamento correto do RRF sobre uma pergunta que ninguem
+# deveria fazer.
+
+
+def _casam_a_consulta_inteira(corpus_size: int, query_count: int = 40) -> float:
+    from theodb_bench.bench.retrieval import RetrievalWorkload, generate_corpus
+
+    docs, qs = generate_corpus(RetrievalWorkload(corpus_size=corpus_size, query_count=query_count))
+    conjuntos = [set(d.text.split()) for d in docs]
+    total = 0
+    for i in range(query_count):
+        termos = set(qs.texts[i].split())
+        total += sum(1 for c in conjuntos if termos <= c)
+    return total / query_count
+
+
+def test_the_lexical_leg_keeps_signal_as_the_corpus_grows() -> None:
+    """A discriminacao lexical nao pode evaporar quando alguem sobe o `corpus_size`.
+
+    O limite de 8 e generoso de proposito: com ~1 relevante por consulta, ate um punhado de
+    candidatos ainda deixa o BM25 ordenar. O que se recusa e a ordem de grandeza — 39
+    candidatos empatados nao e ranking, e sorteio.
+    """
+    for n in (200, 1000, 5000, 20000):
+        media = _casam_a_consulta_inteira(n)
+        assert media <= 8.0, (
+            f"corpus={n}: {media:.1f} documentos casam a consulta inteira, em media. "
+            "A perna lexical nao tem o que ordenar, e qualquer numero dela mede o corpus, "
+            "nao o motor."
+        )
