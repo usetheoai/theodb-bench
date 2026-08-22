@@ -90,3 +90,40 @@ def test_the_cli_prints_the_matrix(capsys: pytest.CaptureFixture[str]) -> None:
 
     assert main(["capabilities"]) == 0
     assert "11 of 14" in capsys.readouterr().out
+
+
+# ------------------------ B-104: declarada nao e medida, e a matriz nao distinguia
+#
+# A matriz respondia "quais adapters DECLARAM X". Nao respondia "quantas suites MEDEM X",
+# e a diferenca e a distincao central deste projeto. Medido em 2026-08-22: `hybrid` aparece
+# declarada pelo `theodb` — e nenhuma das 23 suites registradas a exercita. O
+# `retrieval/scifact/lexical` ate explica por que fica de fora ("BEIR publishes no
+# embeddings"), o que esta certo e deixa o pilar sem instrumento.
+#
+# Importa porque o ADR-0033, assinado, poe a diferenciacao AI-native como meta: o eixo em
+# que se pretende GANHAR tem zero suites, e o eixo em que a meta e EMPATAR tem 18.
+
+
+def test_the_matrix_says_how_many_suites_measure_each_capability() -> None:
+    from theodb_bench.capabilities import capability_matrix
+
+    linhas = {r.capability: r for r in capability_matrix()}
+    assert hasattr(next(iter(linhas.values())), "suites"), "a matriz nao reporta suites"
+    # O vetorial e o eixo mais medido do projeto — se ele vier zero, a derivacao esta errada.
+    assert linhas["vector_hnsw"].suites, "vector_hnsw sem suite significa derivacao quebrada"
+
+
+def test_a_capability_declared_without_a_suite_is_visible_as_such() -> None:
+    """O achado que motivou isto: capacidade declarada e nao medida tem de APARECER."""
+    from theodb_bench.capabilities import capability_matrix, render_capability_matrix
+
+    linhas = {r.capability: r for r in capability_matrix()}
+    declaradas_sem_suite = [c for c, r in linhas.items() if r.adapters and not r.suites]
+    assert "hybrid" in declaradas_sem_suite, (
+        "`hybrid` e declarada pelo theodb e nenhuma suite a mede — se este teste falhar "
+        "porque alguem acrescentou a suite, otimo: apague este assert e o item B-104 fechou"
+    )
+    texto = render_capability_matrix()
+    assert "declarada" in texto.lower() or "sem suíte" in texto.lower(), (
+        "a diferenca entre declarada e medida tem de estar dita no texto, nao so na coluna"
+    )

@@ -7,6 +7,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **A matriz de capacidades passa a dizer quantas SUÍTES medem cada capacidade, não só quais adapters a
+  declaram (B-104).** As duas colunas respondem perguntas diferentes, e a diferença é a distinção central
+  deste projeto: um adapter declarar `hybrid` diz que o sistema **sabe** fazer aquilo; nenhuma suíte
+  exercitá-lo diz que ninguém **mede**. Medido: `hybrid` é declarada pelo `theodb` e tem **zero** suítes —
+  e é justamente o eixo que o `ADR-0033`, assinado, nomeia como diferenciação. A tabela imprime
+  explicitamente a linha *"Declarada e não medida"*. A derivação vem do **registro** — `kind` do índice,
+  prefixo do id, caminho analítico declarado —, então ela não pode desatualizar quando alguém registrar uma
+  suíte nova; e o teste que compara a tabela do README com a gerada continua sendo o guarda.
+
 ### Fixed
 - **`head2head` pareava os pontos por POSIÇÃO, e a comparação entre famílias de índice depende de casá-los por
   recall (B-103).** O `zip` casava o ponto 1 de A com o ponto 1 de B. **Medido numa corrida real:** a varredura

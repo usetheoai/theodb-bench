@@ -260,24 +260,26 @@ it.
 
 **11 of 14 capabilities are reachable by a real adapter.**
 
-| capability | adapters |
-|---|---|
-| `vector_exact` | `alloydbomni`, `pgvector`, `postgres`, `theodb` |
-| `vector_hnsw` | `alloydbomni`, `pgvector`, `theodb` |
-| `vector_ivfflat` | `alloydbomni`, `pgvector`, `theodb` |
-| `vector_scann` | `alloydbomni` |
-| `vector_quantized` | `theodb` |
-| `vector_filtered` | `alloydbomni`, `pgvector`, `theodb` |
-| `lexical` | `theodb` |
-| `hybrid` | `theodb` |
-| `rerank` | — |
-| `columnar` | `alloydbomni`, `theodb` |
-| `parquet` | `theodb` |
-| `graph` | `theodb` |
-| `vectorizer` | — |
-| `ai_sql` | — |
+| capability | adapters que declaram | suítes que medem |
+|---|---|---|
+| `vector_exact` | `alloydbomni`, `pgvector`, `postgres`, `theodb` | 4 |
+| `vector_hnsw` | `alloydbomni`, `pgvector`, `theodb` | 11 |
+| `vector_ivfflat` | `alloydbomni`, `pgvector`, `theodb` | 2 |
+| `vector_scann` | `alloydbomni` | 3 |
+| `vector_quantized` | `theodb` | 3 |
+| `vector_filtered` | `alloydbomni`, `pgvector`, `theodb` | 1 |
+| `lexical` | `theodb` | 2 |
+| `hybrid` | `theodb` | **0** |
+| `rerank` | — | **0** |
+| `columnar` | `alloydbomni`, `theodb` | 2 |
+| `parquet` | `theodb` | 2 |
+| `graph` | `theodb` | 1 |
+| `vectorizer` | — | **0** |
+| `ai_sql` | — | **0** |
 
 A dash is not a gap in this table — it is the measured state. `rerank`, `vectorizer` and `ai_sql` each reach an external model, and without an endpoint there is nothing to measure; a stub would put a number where an absence belongs.
+
+**Declarada e não medida: `hybrid`.** Um adapter declara que o sistema sabe fazer aquilo, e nenhuma suíte registrada o exercita — as duas colunas dizem coisas diferentes, e a segunda é a que sustenta um número. Ver B-104.
 
 ---
 
