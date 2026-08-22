@@ -41,6 +41,17 @@ class Benchmark(Protocol):
         """
         ...
 
+    # `cross_point_payload` é OPCIONAL, e a ausência dele é a resposta certa para a maioria.
+    #
+    # `points()` devolve um ponto por configuração, e há resultados que não são sobre UM ponto:
+    # o veredito pareado entre a fusão RRF e a perna vetorial compara CAMINHOS, e não cabe num
+    # `PointResult` sem torcer a forma dele. Medido em 2026-08-22: sem este lugar, a tentativa
+    # de emitir esse veredito foi parar em `summary()` — método sem chamador de produção —, e o
+    # bundle saiu sem o campo enquanto o teste passava.
+    #
+    # Uma família que não compara caminhos simplesmente não o implementa, e o runner não emite
+    # seção alguma. Ausência continua sendo ausência, e não um objeto vazio que pareceria medida.
+
 
 @runtime_checkable
 class Workload(Protocol):

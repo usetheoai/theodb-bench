@@ -358,6 +358,19 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
         ),
     )
 
+    # O que compara CAMINHOS, quando a família tem algo assim. Opcional por desenho: uma
+    # família que não compara caminhos não implementa o método, e nenhuma seção é escrita —
+    # ausência continua sendo ausência, e não um objeto vazio que pareceria medida.
+    #
+    # Existe porque `points()` devolve um ponto por configuração, e o veredito pareado entre a
+    # fusão RRF e a perna vetorial não é sobre UM ponto. Sem este lugar ele foi parar num método
+    # sem chamador (`summary()`), e o bundle saiu sem o campo enquanto o teste passava (B-105).
+    cross = getattr(benchmark, "cross_point_payload", None)
+    if callable(cross):
+        payload_cruzado = cross(points)
+        if payload_cruzado:
+            bundle.write_raw_text("cross-point.json", _as_json(payload_cruzado))
+
     # The frontier, when the run swept enough to have one. Without it a headline
     # throughput comparison has only the other branch of the rule available --
     # a stated target quality with its interpolation method -- and nothing was

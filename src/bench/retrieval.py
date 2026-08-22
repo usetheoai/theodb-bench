@@ -759,6 +759,33 @@ class RetrievalBenchmark:
                 )
         return pontos
 
+    def cross_point_payload(self, points: Sequence[Any]) -> dict[str, Any]:
+        """O que compara CAMINHOS, e portanto não cabe num ponto.
+
+        Hoje é um campo: o veredito pareado entre a fusão RRF e a perna vetorial pura, que é a
+        pergunta do [[B-005]] — *"o ganho da fusão sobre o vetorial puro sobrevive a teste
+        pareado?"*. A unidade é a **consulta**, não a repetição: o nDCG é idêntico entre
+        repetições num corpus determinístico, e um teste pareado ali teria variância zero.
+
+        Devolve `{}` quando o par não rodou. Um dicionário vazio faz o runner não emitir seção
+        alguma, que é diferente de emitir uma seção com `null` dentro.
+        """
+        por_nome: dict[str, Any] = {}
+        for ponto in points:
+            nome = (ponto.parameters or {}).get("pipeline")
+            if nome and ponto.status == "measured" and ponto.repetitions:
+                por_nome[nome] = ponto.repetitions[0]
+        fusao, vetorial = por_nome.get(HYBRID_RRF), por_nome.get(VECTOR)
+        if fusao is None or vetorial is None:
+            return {}
+        veredito = veredito_de_qualidade(
+            HYBRID_RRF,
+            getattr(fusao, "quality_by_query", {}) or {},
+            VECTOR,
+            getattr(vetorial, "quality_by_query", {}) or {},
+        )
+        return {"paired_quality": veredito} if veredito else {}
+
     def summary(self, results: Sequence[PipelineResult]) -> dict[str, Any]:
         """A comparison across pipelines on the same corpus and query set."""
         return {

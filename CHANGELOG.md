@@ -8,6 +8,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **O protocolo ganha um lugar para resultado que compara CAMINHOS, e o veredito pareado chega ao bundle
+  (B-105).** `points()` devolve um ponto por configuração, e há resultados que não são sobre um ponto: o
+  veredito pareado entre a fusão RRF e a perna vetorial compara caminhos. **Sem esse lugar, a primeira
+  tentativa de emiti-lo foi parar em `summary()` — método sem chamador de produção — e o bundle saiu sem o
+  campo enquanto o teste passava.** Agora `cross_point_payload()` é chamado pelo runner e escreve
+  `raw/cross-point.json`. **É opcional por desenho:** uma família que não compara caminhos não o implementa,
+  e nenhuma seção é escrita — ausência continua sendo ausência, e não um objeto vazio que pareceria medida.
+  Dois testes cobrem os dois lados.
+
 - **A qualidade por consulta chega ao artefato, e com ela o teste pareado que o B-005 pede.** O runner já
   emitia `raw/latency-by-query.json` com a justificativa de que *"summaries cannot be paired, and this is the
   ONLY place the per-query values exist"* — **o mesmo argumento valia para qualidade e ninguém o tinha

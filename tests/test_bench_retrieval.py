@@ -403,3 +403,49 @@ def test_the_quality_verdict_knows_higher_is_better() -> None:
     # E o inverso, para o teste nao passar por acidente de ordem dos argumentos.
     inverso = veredito_de_qualidade("melhor", melhor, "pior", pior)
     assert inverso and "**melhor** beats **pior**" in inverso, inverso
+
+
+def test_the_cross_path_verdict_reaches_the_bundle() -> None:
+    """B-105: um veredito que ninguem le e pior que nenhum, porque parece cobertura.
+
+    O protocolo `Benchmark` declarava `load` e `points`, e `points` devolve UM ponto por
+    configuracao. Um resultado que compara CAMINHOS nao cabe ali, e foi por isso que a
+    primeira tentativa de ligar o veredito pareado morreu em `summary()`, metodo sem
+    chamador de producao.
+
+    `cross_point_payload()` e opcional: uma familia que nao compara caminhos nao a
+    implementa, e o runner nao emite secao alguma. Ausencia continua sendo ausencia.
+    """
+    from theodb_bench.adapters.fake import FakeAdapter
+    from theodb_bench.bench.retrieval import RetrievalBenchmark, RetrievalWorkload
+
+    w = RetrievalWorkload(corpus_size=400, query_count=40, pipelines=("vector", "hybrid_rrf"))
+    bench = RetrievalBenchmark(w)
+    adapter = FakeAdapter()
+    adapter.prepare()
+    adapter.start()
+    adapter.wait_ready()
+    bench.load(adapter)
+    pontos = bench.points(adapter, repetitions=1)
+
+    carga = bench.cross_point_payload(pontos)
+    assert carga, "a familia compara caminhos e nao devolve nada"
+    assert "paired_quality" in carga
+    v = carga["paired_quality"]
+    assert v and "hybrid_rrf" in v and "vector" in v, v
+    assert "faster" not in v, f"metrica de qualidade nao usa 'faster': {v}"
+
+
+def test_a_family_without_cross_point_results_emits_no_section() -> None:
+    """Ausencia continua sendo ausencia: nada de secao vazia que pareceria medida.
+
+    O contraponto do teste acima, e o que impede o slot de virar imposto: uma familia que
+    nao compara caminhos nao implementa o metodo, e o runner nao escreve nada.
+    """
+    from theodb_bench.registry import BENCHMARKS
+
+    vetorial = BENCHMARKS["vector/synthetic/smoke"].workload
+    bench = vetorial.build(None, None)
+    assert not hasattr(bench, "cross_point_payload"), (
+        "a familia vetorial nao compara caminhos e nao deveria declarar o slot"
+    )
