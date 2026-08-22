@@ -249,6 +249,20 @@ class RepetitionResult:
     #: position would misalign every sample after the first timeout.
     latency_by_query: dict[int, float] = field(default_factory=dict)
 
+    #: Qualidade por consulta, quando a família mede qualidade por consulta.
+    #:
+    #: Mesmo argumento do campo acima, no eixo de QUALIDADE: um teste pareado precisa da
+    #: mesma consulta dos dois lados, e o resumo não fornece isso. E aqui o argumento é mais
+    #: forte, porque a alternativa óbvia não existe — medido em 2026-08-22, o nDCG é
+    #: **idêntico nas cinco repetições** (0,8266 cinco vezes), já que corpus e consultas são
+    #: determinísticos. Qualidade não varia entre repetições; só a vazão varia. Um teste
+    #: pareado entre repetições teria variância zero por construção.
+    #:
+    #: Vazio para famílias cuja qualidade não é por consulta — recall de um sweep vetorial é
+    #: uma taxa sobre o conjunto, não uma medida por consulta, e um dicionário vazio ali diz
+    #: isso melhor que um zero.
+    quality_by_query: dict[int, float] = field(default_factory=dict)
+
     @property
     def throughput(self) -> float | None:
         return self.successes / self.duration_seconds if self.duration_seconds > 0 else None

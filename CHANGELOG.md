@@ -8,6 +8,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **A qualidade por consulta chega ao artefato, e com ela o teste pareado que o B-005 pede.** O runner já
+  emitia `raw/latency-by-query.json` com a justificativa de que *"summaries cannot be paired, and this is the
+  ONLY place the per-query values exist"* — **o mesmo argumento valia para qualidade e ninguém o tinha
+  aplicado**. E aqui ele é mais forte, porque a alternativa óbvia não existe: medido, o nDCG é **idêntico nas
+  cinco repetições** (0,8266 cinco vezes), já que corpus e consultas são determinísticos. Qualidade não varia
+  entre repetições; a unidade do teste pareado é a **consulta**. O campo se chama `quality_by_query` e não
+  `ndcg_by_query` porque o runner o emite sem saber de qual família veio — a vetorial reporta recall, a de
+  retrieval reporta nDCG. Ausente para famílias cuja qualidade não é por consulta, onde um mapa vazio diria
+  menos que a ausência. Verificado ponta a ponta: 300 valores por perna no artefato, e o veredito sai
+  *"**indistinguishable** (p = 0,7572, n = 300, CI [-0,003, +0,001])"*.
+
 - **`scripts/check_bench_protocol_methods.py`: método público de benchmark fora do protocolo e sem chamador
   (B-105).** Achou três órfãos reais de primeira — `VectorWorkload.k_values`, `VectorWorkload.operation_count`
   e `VectorBenchmark.corpus`, nenhum com chamador em `src/` ou `tests/`. **E o arquivo declara o que ele NÃO

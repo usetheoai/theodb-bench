@@ -317,11 +317,11 @@ def test_the_quality_is_kept_per_query_not_only_averaged() -> None:
     bench.load(adapter)
     resultado = bench.run_pipeline(adapter, "vector", 1)
 
-    assert resultado.ndcg_by_query, "o nDCG por consulta nao e guardado"
-    assert len(resultado.ndcg_by_query) == 25
-    assert all(0.0 <= v <= 1.0 for v in resultado.ndcg_by_query.values())
+    assert resultado.quality_by_query, "o nDCG por consulta nao e guardado"
+    assert len(resultado.quality_by_query) == 25
+    assert all(0.0 <= v <= 1.0 for v in resultado.quality_by_query.values())
     # A media tem de ser a media do que foi guardado — se divergirem, uma das duas mente.
-    media = sum(resultado.ndcg_by_query.values()) / len(resultado.ndcg_by_query)
+    media = sum(resultado.quality_by_query.values()) / len(resultado.quality_by_query)
     assert abs(media - (resultado.ndcg_at_10 or 0.0)) < 1e-9
 
 
@@ -339,3 +339,34 @@ def test_the_fusion_is_compared_to_the_vector_leg_by_paired_query() -> None:
     # Sem sobreposicao de consultas nao ha par: a resposta honesta e ausencia, nao zero.
     assert veredito_de_qualidade("a", {0: 0.9}, "b", {5: 0.5}) is None
     assert veredito_de_qualidade("a", {}, "b", {}) is None
+
+
+def test_the_per_query_quality_reaches_the_repetition_the_runner_emits() -> None:
+    """Sem isto o dado existe no PipelineResult e morre la — B-005 continua sem resposta.
+
+    O runner emite `raw/latency-by-query.json` a partir de `RepetitionResult.latency_by_query`,
+    e o docstring dele diz por que: "summaries cannot be paired, and this is the ONLY place
+    the per-query values exist". O mesmo argumento vale para qualidade, e a unidade do teste
+    pareado de qualidade e a consulta — nao a repeticao, cujo nDCG e identico nas cinco.
+    """
+    from theodb_bench.bench.retrieval import RetrievalBenchmark, RetrievalWorkload
+
+    w = RetrievalWorkload(corpus_size=200, query_count=12, pipelines=("vector",))
+    bench = RetrievalBenchmark(w)
+    from theodb_bench.adapters.fake import FakeAdapter
+
+    adapter = FakeAdapter()
+    adapter.prepare()
+    adapter.start()
+    adapter.wait_ready()
+    bench.load(adapter)
+    pontos = bench.points(adapter, repetitions=1)
+
+    assert pontos, "nenhum ponto"
+    for ponto in pontos:
+        for rep in ponto.repetitions:
+            assert rep.quality_by_query, (
+                f"{ponto.label}: a qualidade por consulta nao chega a repeticao, entao nao "
+                "chega ao artefato e o teste pareado continua impossivel"
+            )
+            assert len(rep.quality_by_query) == 12

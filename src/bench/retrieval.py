@@ -371,6 +371,10 @@ class PipelineResult:
     latency_by_query: dict[int, float] = field(default_factory=dict)
     #: nDCG@10 por consulta, na mesma chave que `latency_by_query`.
     #:
+    #: O nome é `quality_by_query` e não `ndcg_by_query` porque o runner o emite sem saber de
+    #: qual família veio — a família vetorial reporta recall, esta reporta nDCG, e o artefato
+    #: guarda "a qualidade que esta corrida mediu" com a métrica nomeada ao lado.
+    #:
     #: Guardado e não só mediado porque o teste pareado de QUALIDADE precisa da consulta
     #: como unidade. Medido em 2026-08-22: o nDCG é IDÊNTICO nas cinco repetições — 0,8266
     #: cinco vezes — porque corpus e consultas são determinísticos. Qualidade não varia
@@ -379,7 +383,7 @@ class PipelineResult:
     #:
     #: Com isto, `compare.pair_by_query` e `render_paired_verdict` — que já existiam e já
     #: eram usados para latência — passam a servir também para qualidade.
-    ndcg_by_query: dict[int, float] = field(default_factory=dict)
+    quality_by_query: dict[int, float] = field(default_factory=dict)
 
     @property
     def throughput(self) -> float | None:
@@ -611,7 +615,7 @@ class RetrievalBenchmark:
             relevant = self.queries.relevant_ids(index)
             ndcg_desta = ndcg_at_k(list(ranked), judgements, 10)
             ndcgs.append(ndcg_desta)
-            result.ndcg_by_query[index] = ndcg_desta
+            result.quality_by_query[index] = ndcg_desta
             recalls.append(recall_at_n(list(ranked), relevant, self.workload.k))
             reciprocal_ranks.append(mrr_at_k(list(ranked), relevant, self.workload.k))
         result.duration_seconds = time.perf_counter() - started
@@ -770,7 +774,7 @@ class RetrievalBenchmark:
             # exatamente o defeito que `assert_analytical_path` teve, e que este arnês já pagou
             # três vezes em 2026-08-22.
             #
-            # `veredito_de_qualidade` e `ndcg_by_query` existem, estão testados e servem a quem
+            # `veredito_de_qualidade` e `quality_by_query` existem, estão testados e servem a quem
             # os chame. Dar-lhes uma casa que RODE exige mexer no protocolo, e isso é trabalho
             # com desenho próprio — registrado, não improvisado.
         }

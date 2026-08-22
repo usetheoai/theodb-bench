@@ -325,6 +325,29 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
                                 "latency_ms_by_query": {
                                     str(q): v for q, v in sorted(rep.latency_by_query.items())
                                 },
+                                # A qualidade por consulta, pelo MESMO argumento da latência
+                                # acima: um teste pareado precisa da mesma consulta dos dois
+                                # lados, e o resumo não fornece isso. Aqui o argumento é mais
+                                # forte, porque a alternativa não existe — medido em
+                                # 2026-08-22, o nDCG é idêntico nas cinco repetições, já que
+                                # corpus e consultas são determinísticos. A unidade do teste
+                                # pareado de qualidade é a CONSULTA, não a repetição.
+                                #
+                                # Ausente para famílias cuja qualidade não é por consulta: o
+                                # recall de um sweep vetorial é taxa sobre o conjunto, e um
+                                # mapa vazio ali diria menos que a ausência.
+                                **(
+                                    {
+                                        "quality_by_query": {
+                                            str(q): v
+                                            for q, v in sorted(
+                                                getattr(rep, "quality_by_query", {}).items()
+                                            )
+                                        }
+                                    }
+                                    if getattr(rep, "quality_by_query", None)
+                                    else {}
+                                ),
                             }
                             for rep in point.repetitions
                         ],
