@@ -23,6 +23,12 @@ DB_REPO="${DB_REPO:-$(cd "$(dirname "$0")/../../theo-db" 2>/dev/null && pwd)}"
 BENCH_REPO="${BENCH_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 DESTINO="${DESTINO:-./resultados}"
 MANTER="${MANTER:-0}"                          # MANTER=1 nao destroi (depuracao); custa US$ 0,75/h
+# Teto para a chamada de medicao remota. MEDIDO em 2026-08-21: a corrida terminou no droplet com
+# `rc=0` e o SSH que a conduzia morreu sem devolver — o script local ficou pendurado DUAS HORAS
+# esperando, com o host ocioso cobrando US$ 0,75/h. O `trap` protege contra o script MORRER; nao
+# protege contra ele TRAVAR, e sao falhas diferentes. `ServerAliveInterval` derruba a sessao quando o
+# outro lado some; o `timeout` cobre o caso em que ele responde e nunca termina.
+MEDICAO_TIMEOUT="${MEDICAO_TIMEOUT:-14400}"   # 4 h: acima do sweep mais longo, muito abaixo de uma noite
 
 # Droplets que NAO sao de medicao e nunca se toca. Guarda explicita, nao confianca no nome que passei.
 PROIBIDOS="theo-e2e-runner theokit-website"
@@ -171,8 +177,14 @@ done
 TAGS="${NOMES# }"
 
 echo "=== medindo (suite=$SUITE tags=$TAGS) ==="
-ssh -o StrictHostKeyChecking=no "root@$IP" "SUITE='$SUITE' TAGS='$TAGS' PROFILE='$PROFILE' CPU_SET='$CPU_SET' MEM_MAX='$MEM_MAX' /root/bench-run.sh"
+timeout "$MEDICAO_TIMEOUT" ssh -o StrictHostKeyChecking=no \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+  "root@$IP" "SUITE='$SUITE' TAGS='$TAGS' PROFILE='$PROFILE' CPU_SET='$CPU_SET' MEM_MAX='$MEM_MAX' /root/bench-run.sh"
 RC=$?
+# 124 e o codigo do `timeout`. Dizer isso em vez de deixar um rc=124 solto importa: a corrida pode ter
+# TERMINADO no droplet e so a conducao ter travado — foi o que aconteceu — e nesse caso os resultados
+# existem e a coleta abaixo os traz.
+[ "$RC" -eq 124 ] && echo "!!! a conducao da medicao estourou ${MEDICAO_TIMEOUT}s; os resultados podem existir no host — a coleta segue"
 
 echo "=== fim rc=$RC $(date -Is) ==="
 exit $RC

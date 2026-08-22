@@ -44,6 +44,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - A guarda que preserva o droplet quando a coleta falha passou a distinguir "há resultado que não
   consegui copiar" de "a corrida falhou antes de produzir qualquer coisa". No segundo caso não há o
   que perder, e manter a máquina de pé só queima dinheiro — medido, aconteceu (B-098)
+- **Teto de tempo na condução da medição remota.** Medido: a corrida terminou no droplet com `rc=0` e
+  o SSH que a conduzia morreu sem devolver — o script local ficou pendurado **duas horas** com o host
+  ocioso cobrando. O `trap EXIT` protege contra o script **morrer**; não protege contra ele **travar**,
+  e são falhas diferentes. Agora há `timeout` mais `ServerAliveInterval`, e o código 124 é tratado como
+  *"pode haver resultado no host"* — que foi exatamente o caso (B-098)
 - `ops/README.md` — por que o script é a verdade e o snapshot é cache, e por que código por tarball
   limita todo veredito a `EXPLORATORY` (B-098)
 
