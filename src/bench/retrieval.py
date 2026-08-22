@@ -762,4 +762,15 @@ class RetrievalBenchmark:
                 }
                 for result in results
             },
+            # `paired_quality` NÃO entra aqui, e a razão é o motivo de este comentário existir.
+            #
+            # `summary()` tem **zero chamadores**: o runner pede ao benchmark apenas `load` e
+            # `points`, e o protocolo não tem espaço para um resultado que compara CAMINHOS em
+            # vez de descrever um ponto. Pôr o veredito aqui o tornaria invisível — que é
+            # exatamente o defeito que `assert_analytical_path` teve, e que este arnês já pagou
+            # três vezes em 2026-08-22.
+            #
+            # `veredito_de_qualidade` e `ndcg_by_query` existem, estão testados e servem a quem
+            # os chame. Dar-lhes uma casa que RODE exige mexer no protocolo, e isso é trabalho
+            # com desenho próprio — registrado, não improvisado.
         }
