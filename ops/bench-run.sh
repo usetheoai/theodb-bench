@@ -18,6 +18,13 @@ MEM_MAX="${MEM_MAX:-}"
 # tem de torna-la verdadeira. Por isso os dois regimes usam a MESMA carga e servidores com
 # `shared_buffers` diferentes — residencia em cache e o que separa os dois, nao o tamanho absoluto.
 MODE="${MODE:-suite}"
+# MODE=headtohead sobe TheoDB, AlloyDB Omni e pgvector no MESMO host e mede os tres na mesma suite.
+# O Omni ganha memoria explicita porque ele tem um matador de backends proprio (`g_term_it.cc`) que
+# encerra consultas quando JULGA a memoria critica — medido em 2026-08-22, ele matou uma consulta
+# vetorial com o backend em 16 MB numa maquina apertada. Dar folga nao e favorecer: e medir o produto
+# em vez de medir o guarda dele.
+OMNI_IMAGE="${OMNI_IMAGE:-google/alloydbomni:latest}"
+PGVECTOR_IMAGE="${PGVECTOR_IMAGE:-pgvector/pgvector:pg17}"
 # MEDIDO em 2026-08-22: 1M linhas de `(id, value)` no colunar ocupam **3.248 kB** — a compressao e
 # tao boa que o regime `exceeds-cache` com 32 MB de `shared_buffers` nao excedia NADA. Declarar um
 # regime nao o torna verdadeiro, e medir "fora do cache" com o dado inteiro dentro dele mediria a
@@ -110,6 +117,52 @@ medir() {
 }
 
 portao
+
+# ---------------------------------------------------------------- tres vias (B-059 bullet 4)
+if [ "$MODE" = "headtohead" ]; then
+  subir_externo() {
+    local nome="$1" imagem="$2" porta="$3"
+    docker rm -f "$nome" >/dev/null 2>&1 || true
+    docker run -d --name "$nome" -e POSTGRES_PASSWORD=x -e POSTGRES_HOST_AUTH_METHOD=trust \
+      -p "$porta":5432 --shm-size=4g "$imagem" >/dev/null || { echo "FALHA: docker run $nome"; return 1; }
+    for _ in $(seq 1 120); do
+      docker exec "$nome" pg_isready -U postgres >/dev/null 2>&1 && return 0
+      sleep 3
+    done
+    echo "FALHA: $nome nao subiu"; docker logs "$nome" 2>&1 | tail -15; return 1
+  }
+
+  docker pull "$OMNI_IMAGE" >/dev/null 2>&1 || { echo "FALHA: pull do Omni"; exit 1; }
+  docker pull "$PGVECTOR_IMAGE" >/dev/null 2>&1 || { echo "FALHA: pull do pgvector"; exit 1; }
+
+  # TheoDB pelo socket unix (como as outras suites); os outros dois por TCP, um porto cada.
+  subir "${TAGS%% *}" || exit 1
+  subir_externo omni "$OMNI_IMAGE" 55460 || exit 1
+  subir_externo pgv "$PGVECTOR_IMAGE" 55461 || exit 1
+
+  echo "-- proveniencia dos TRES, lida de cada servidor --"
+  PGUSER=postgres psql -h /var/run/postgresql -tAc "select 'theodb: '||version()" 2>&1 | head -1 || true
+  PGPASSWORD=x psql -h 127.0.0.1 -p 55460 -U postgres -tAc "select 'omni:   '||version()" 2>&1 | head -1 || true
+  PGPASSWORD=x psql -h 127.0.0.1 -p 55461 -U postgres -tAc "select 'pgv:    '||version()" 2>&1 | head -1 || true
+
+  for alvo in "theodb::" "alloydbomni:127.0.0.1:55460" "pgvector:127.0.0.1:55461"; do
+    sist="${alvo%%:*}"; resto="${alvo#*:}"; host="${resto%%:*}"; porta="${resto#*:}"
+    echo "=== $sist :: $SUITE inicio $(date -Is) ==="
+    if [ -n "$host" ]; then
+      PGHOST="$host" PGPORT="$porta" PGUSER=postgres PGPASSWORD=x \
+        /root/venv/bin/theodb-bench run "$SUITE" --system "$sist" --profile "$PROFILE" \
+        --output "/root/res-$STAMP/$sist"
+    else
+      PGUSER=postgres /root/venv/bin/theodb-bench run "$SUITE" --system "$sist" \
+        --profile "$PROFILE" --output "/root/res-$STAMP/$sist"
+    fi
+    echo "=== $sist fim rc=$? $(date -Is) ==="
+  done
+  echo "$STAMP" > /root/ULTIMA_CORRIDA
+  echo "=== FIM $(date -Is) resultados em /root/res-$STAMP ==="
+  touch /root/PRONTO
+  exit 0
+fi
 
 # ---------------------------------------------------------------- contencao (B-058 bullet 3)
 if [ "$MODE" = "contention" ]; then
