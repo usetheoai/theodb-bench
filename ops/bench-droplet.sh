@@ -14,6 +14,14 @@ SSH_KEY="${SSH_KEY:-58598100}"
 SUITE="${SUITE:-analytical/crossover/row-count}"
 PROFILE="${PROFILE:-research}"
 MODE="${MODE:-suite}"
+# Fatores de escala do MODE=tpch. Precisa existir AQUI, e nao so no bench-run, porque o
+# ambiente nao atravessa o ssh sozinho: toda variavel que o script remoto le tem de ser
+# citada na linha de invocacao. Foi assim que uma corrida de contencao declarou 10M e
+# rodou 40M — CONT_LINHAS existia dos dois lados e nao era repassada.
+SFS="${SFS:-0.01 0.1}"
+SMOKE="${SMOKE:-}"
+OMNI_IMAGE="${OMNI_IMAGE:-}"
+PGVECTOR_IMAGE="${PGVECTOR_IMAGE:-}"
 # Parametros do modo contencao. Precisam estar AQUI e serem encaminhados abaixo: o `bench-run.sh` roda
 # no host remoto, e uma variavel exportada aqui nao atravessa o `ssh`. MEDIDO em 2026-08-22: declarei
 # `CONT_LINHAS=10000000` na linha de comando, ela nao foi encaminhada, e o executor remoto usou o
@@ -185,10 +193,30 @@ for spec in $TAGS; do
 done
 TAGS="${NOMES# }"
 
+# PORTAO: toda variavel que o bench-run.sh le tem de aparecer na invocacao remota.
+#
+# Manter isto como lista na cabeca ja falhou uma vez — CONT_LINHAS existia dos dois lados,
+# nao era repassada, e uma corrida declarou 10M enquanto rodava 40M. A lista nao e o
+# conserto; o portao e. Ele le o proprio bench-run.sh e compara.
+FALTANDO=$(python3 - "$(dirname "$0")/bench-run.sh" "$0" <<'PYEOF'
+import re, sys
+lidas = set(re.findall(r'^(\w+)="\$\{\1:-', open(sys.argv[1], encoding="utf-8").read(), re.M))
+linhas = [l for l in open(sys.argv[2], encoding="utf-8") if "/root/bench-run.sh" in l]
+linha = max(linhas, key=len) if linhas else ""
+passadas = set(re.findall(r"(\w+)='\$", linha))
+print(" ".join(sorted(lidas - passadas)))
+PYEOF
+)
+if [ -n "$FALTANDO" ]; then
+  echo "FALHA: o bench-run.sh le variaveis que a invocacao remota nao repassa: $FALTANDO"
+  echo "       elas ficariam no default silenciosamente, e a corrida mediria outra coisa."
+  exit 1
+fi
+
 echo "=== medindo (suite=$SUITE tags=$TAGS) ==="
 timeout "$MEDICAO_TIMEOUT" ssh -o StrictHostKeyChecking=no \
   -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
-  "root@$IP" "SUITE='$SUITE' TAGS='$TAGS' PROFILE='$PROFILE' CPU_SET='$CPU_SET' MEM_MAX='$MEM_MAX' MODE='$MODE' CONT_LINHAS='$CONT_LINHAS' CONT_LEITORES='$CONT_LEITORES' CONT_ESCRITORES='$CONT_ESCRITORES' /root/bench-run.sh"
+  "root@$IP" "SUITE='$SUITE' TAGS='$TAGS' PROFILE='$PROFILE' CPU_SET='$CPU_SET' MEM_MAX='$MEM_MAX' MODE='$MODE' CONT_LINHAS='$CONT_LINHAS' CONT_LEITORES='$CONT_LEITORES' CONT_ESCRITORES='$CONT_ESCRITORES' SFS='$SFS' SMOKE='$SMOKE' OMNI_IMAGE='$OMNI_IMAGE' PGVECTOR_IMAGE='$PGVECTOR_IMAGE' /root/bench-run.sh"
 RC=$?
 # 124 e o codigo do `timeout`. Dizer isso em vez de deixar um rc=124 solto importa: a corrida pode ter
 # TERMINADO no droplet e so a conducao ter travado — foi o que aconteceu — e nesse caso os resultados

@@ -8,6 +8,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **`ops/bench-droplet.sh` deixava três variáveis para trás no `ssh`, em silêncio — e agora um portão
+  verifica.** `SMOKE`, `OMNI_IMAGE` e `PGVECTOR_IMAGE` eram lidas pelo `bench-run.sh` e não apareciam na linha
+  de invocação remota, então um override ficava no default sem erro nem aviso. É a mesma classe que já custou
+  uma corrida: `CONT_LINHAS` existia dos dois lados, não era repassada, e a corrida declarou 10M enquanto
+  rodava 40M. O conserto não é a lista corrigida — é o portão que lê o próprio `bench-run.sh`, extrai toda
+  variável com default e falha se alguma não estiver na invocação. Verificado nos dois sentidos: aprova o
+  estado atual e reprova uma variável nova não repassada.
 - **`ops/bench-run.sh` esperava o servidor errado, e o head-to-head com o AlloyDB Omni não rodava por causa
   disso (B-058).** A espera usava `docker exec pg_isready`, que responde "accepting" contra o servidor
   **temporário** que o entrypoint sobe durante o init — e que escuta só no socket unix. Amostrado a cada 3 s no
