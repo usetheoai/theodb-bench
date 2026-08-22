@@ -8,6 +8,11 @@ set -uo pipefail
 
 SUITE="${SUITE:-analytical/crossover/row-count}"
 PROFILE="${PROFILE:-research}"
+# Repeticoes por ponto. Vazio = o `default_repetitions` da suite decide, que e o
+# comportamento que existia. Precisa ser exposto porque o perfil `release` — o UNICO que o
+# projeto define como publicavel — exige >= 5, e nao havia por onde pedir: medido no acervo em
+# 2026-08-22, 18 bundles, 15 `research`, 3 `nightly`, ZERO `release`.
+REPS="${REPS:-}"
 # Isolamento DECLARADO. Os perfis `nightly` e `release` exigem `cpu_limit` e `memory_limit`, e sem
 # declaracao eles saem UNAVAILABLE e invalidam a corrida — em qualquer hardware. Vazio = nao declara,
 # que e legitimo em `research` e honesto: inventar um default esconderia que nada foi declarado.
@@ -105,10 +110,12 @@ medir() {
     PGUSER=postgres systemd-run --scope --quiet -p "MemoryMax=$MEM_MAX" \
       /root/venv/bin/theodb-bench run "$suite" \
       --system theodb --profile "$PROFILE" --output "$saida" \
+      ${REPS:+--repetitions "$REPS"} \
       ${CPU_SET:+--cpu-set "$CPU_SET"} --memory "$MEM_MAX"
   else
     PGUSER=postgres /root/venv/bin/theodb-bench run "$suite" \
       --system theodb --profile "$PROFILE" --output "$saida" \
+      ${REPS:+--repetitions "$REPS"} \
       ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"}
   fi
   local rc=$?
