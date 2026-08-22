@@ -17,7 +17,7 @@ model's stage separately, so the database's contribution stays visible.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -257,6 +257,33 @@ def _vocabulario_para(corpus_size: int) -> tuple[str, ...]:
     return _VOCABULARY + extras
 
 
+def veredito_de_qualidade(
+    nome_a: str,
+    ndcg_a: Mapping[int, float],
+    nome_b: str,
+    ndcg_b: Mapping[int, float],
+) -> str | None:
+    """Teste pareado de qualidade entre dois caminhos, com a CONSULTA como unidade.
+
+    É o que o [[B-005]] pede — *"uma fusão cujo ganho sobre o vetorial puro sobreviva a
+    teste pareado de significância"* — e não era possível enquanto o nDCG por consulta era
+    descartado. A repetição não serve de unidade: o nDCG é idêntico nas cinco repetições
+    porque corpus e consultas são determinísticos.
+
+    Reusa `compare.pair_by_query` e `render_paired_verdict`, que já existiam e já eram
+    usados para latência. A única coisa que faltava era o dado.
+
+    Devolve `None` quando não há consulta em comum — ausência de par é ausência de
+    resposta, e um zero ali leria como empate medido.
+    """
+    from theodb_bench.compare import render_paired_verdict
+
+    comuns = set(ndcg_a) & set(ndcg_b)
+    if not comuns:
+        return None
+    return render_paired_verdict(nome_a, dict(ndcg_a), nome_b, dict(ndcg_b), metric="ndcg_at_10")
+
+
 def generate_corpus(workload: RetrievalWorkload) -> tuple[list[Document], QuerySet]:
     """A seeded corpus, query set and judgement set.
 
@@ -342,6 +369,17 @@ class PipelineResult:
     #: corridas so pode usar agregado, e agregado nao tem par. Este campo faltava, e a familia
     #: inteira estava orfa, entao nada nunca o pediu.
     latency_by_query: dict[int, float] = field(default_factory=dict)
+    #: nDCG@10 por consulta, na mesma chave que `latency_by_query`.
+    #:
+    #: Guardado e não só mediado porque o teste pareado de QUALIDADE precisa da consulta
+    #: como unidade. Medido em 2026-08-22: o nDCG é IDÊNTICO nas cinco repetições — 0,8266
+    #: cinco vezes — porque corpus e consultas são determinísticos. Qualidade não varia
+    #: entre repetições; só a vazão varia. Um teste pareado entre repetições teria variância
+    #: zero por construção, e o [[B-005]] pede justamente um teste pareado.
+    #:
+    #: Com isto, `compare.pair_by_query` e `render_paired_verdict` — que já existiam e já
+    #: eram usados para latência — passam a servir também para qualidade.
+    ndcg_by_query: dict[int, float] = field(default_factory=dict)
 
     @property
     def throughput(self) -> float | None:
@@ -571,7 +609,9 @@ class RetrievalBenchmark:
 
             judgements = self.queries.relevance[index]
             relevant = self.queries.relevant_ids(index)
-            ndcgs.append(ndcg_at_k(list(ranked), judgements, 10))
+            ndcg_desta = ndcg_at_k(list(ranked), judgements, 10)
+            ndcgs.append(ndcg_desta)
+            result.ndcg_by_query[index] = ndcg_desta
             recalls.append(recall_at_n(list(ranked), relevant, self.workload.k))
             reciprocal_ranks.append(mrr_at_k(list(ranked), relevant, self.workload.k))
         result.duration_seconds = time.perf_counter() - started

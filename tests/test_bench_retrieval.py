@@ -285,3 +285,57 @@ def test_the_lexical_leg_keeps_signal_as_the_corpus_grows() -> None:
             "A perna lexical nao tem o que ordenar, e qualquer numero dela mede o corpus, "
             "nao o motor."
         )
+
+
+# ------------------------ B-005: o teste pareado de QUALIDADE precisa do dado por consulta
+#
+# O `dod` do B-005 pede "uma fusao cujo ganho sobre o vetorial puro sobreviva a teste
+# pareado de significancia". MEDIDO em 2026-08-22: o nDCG e IDENTICO nas cinco repeticoes
+# (0,8266 cinco vezes) porque o corpus e as consultas sao deterministicos — qualidade nao
+# varia entre repeticoes, so a vazao varia. Um teste pareado ENTRE REPETICOES tem variancia
+# zero por construcao e nao diz nada.
+#
+# A unidade certa e a CONSULTA: 300 pares (fusao, vetorial) sobre as mesmas consultas. O
+# arnes guardava `latency_by_query` e descartava o nDCG por consulta, entao o teste que o
+# item pede era impossivel de fazer com o que o bundle trazia.
+#
+# E `compare.py` ja tem `pair_by_query` e `render_paired_verdict`, usados para latencia.
+# Faltava o dado.
+
+
+def test_the_quality_is_kept_per_query_not_only_averaged() -> None:
+    from theodb_bench.adapters.fake import FakeAdapter
+    from theodb_bench.bench.retrieval import RetrievalBenchmark, RetrievalWorkload, generate_corpus
+
+    w = RetrievalWorkload(corpus_size=300, query_count=25, pipelines=("vector",))
+    docs, qs = generate_corpus(w)
+    adapter = FakeAdapter()
+    adapter.prepare()
+    adapter.start()
+    adapter.wait_ready()
+    bench = RetrievalBenchmark(w, documents=docs, queries=qs)
+    bench.load(adapter)
+    resultado = bench.run_pipeline(adapter, "vector", 1)
+
+    assert resultado.ndcg_by_query, "o nDCG por consulta nao e guardado"
+    assert len(resultado.ndcg_by_query) == 25
+    assert all(0.0 <= v <= 1.0 for v in resultado.ndcg_by_query.values())
+    # A media tem de ser a media do que foi guardado — se divergirem, uma das duas mente.
+    media = sum(resultado.ndcg_by_query.values()) / len(resultado.ndcg_by_query)
+    assert abs(media - (resultado.ndcg_at_10 or 0.0)) < 1e-9
+
+
+def test_the_fusion_is_compared_to_the_vector_leg_by_paired_query() -> None:
+    """O que o B-005 pede, e agora e possivel: 300 pares (fusao, vetorial) nas MESMAS consultas."""
+    from theodb_bench.bench.retrieval import veredito_de_qualidade
+
+    # Fusao ganha em 3 de 4 consultas, e a diferenca e grande.
+    ganha = veredito_de_qualidade(
+        "hybrid_rrf", {0: 0.9, 1: 0.8, 2: 0.7, 3: 0.2},
+        "vector", {0: 0.5, 1: 0.4, 2: 0.3, 3: 0.6},
+    )
+    assert ganha and "hybrid_rrf" in ganha
+
+    # Sem sobreposicao de consultas nao ha par: a resposta honesta e ausencia, nao zero.
+    assert veredito_de_qualidade("a", {0: 0.9}, "b", {5: 0.5}) is None
+    assert veredito_de_qualidade("a", {}, "b", {}) is None

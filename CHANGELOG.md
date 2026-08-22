@@ -7,6 +7,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **O nDCG passa a ser guardado POR CONSULTA, e existe veredito pareado de qualidade (B-005).** O `dod` do
+  item pede *"uma fusão cujo ganho sobre o vetorial puro sobreviva a teste pareado de significância"*, e isso
+  era **impossível com o que o bundle trazia**: o nDCG era acumulado numa lista e mediado, e só a latência
+  ficava por consulta. Pior, a unidade óbvia não serve — medido: o nDCG é **idêntico nas cinco repetições**
+  (0,8266 cinco vezes), porque corpus e consultas são determinísticos. Qualidade não varia entre repetições;
+  só a vazão varia, e um teste pareado ali teria variância zero por construção. A unidade certa é a
+  **consulta**. `veredito_de_qualidade` reusa `pair_by_query` e `render_paired_verdict`, que já existiam e já
+  serviam à latência — **faltava o dado**. Sem consulta em comum ele devolve ausência, não zero.
+
 ### Fixed
 - **O corpus sintético de retrieval perdia o sinal lexical conforme crescia, e o número que isso produzia
   parecia um achado.** O gerador declara que *"a perna densa e a lexical concordam no documento primário — que
