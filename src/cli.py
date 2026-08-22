@@ -987,10 +987,9 @@ def cmd_contention(args: argparse.Namespace) -> int:
         regime=Regime(args.regime),
     )
 
-    def novo_cliente() -> Any:
-        # `.build()` constroi o adapter; `get_adapter` devolve a ENTRADA do registro. Confundir os
-        # dois produz `AttributeError` no primeiro uso, e foi o que aconteceu.
-        return get_adapter(args.system).build()
+    # `.build()` constroi o adapter; `get_adapter` devolve a ENTRADA do registro. Confundir os
+    # dois produz `AttributeError` no primeiro uso, e foi o que aconteceu.
+    novo_cliente = _contention_client_factory(lambda: get_adapter(args.system).build())
 
     def ler(cliente: Any, index: int) -> None:
         cliente.execute_analytical(tabela, _contention_probe(index))
@@ -1007,6 +1006,30 @@ def cmd_contention(args: argparse.Namespace) -> int:
     )
     print(json.dumps(resultado.as_dict(), indent=2, default=str))
     return EXIT_OK
+
+
+def _contention_client_factory(construir: Any) -> Any:
+    """Envolve o construtor do adapter para entregar um cliente **conectado**.
+
+    MEDIDO em 2026-08-22: `measure_contention` chama `make_reader()`/`make_writer()` e usa o
+    resultado direto — ele **não** inicia o cliente. A fábrica anterior fazia apenas `.build()`, que
+    constrói o adapter sem conectar; toda operação levantava e o contador registrava `0/200` sem que
+    o erro aparecesse em lugar nenhum. A tabela existia, a sonda resolvia, e as duas operações
+    funcionavam quando chamadas à mão — porque à mão eu chamava `prepare`/`start`/`wait_ready`, que é
+    um caminho que o código de produção não percorria.
+
+    Cada chamada entrega um cliente NOVO de propósito: a contenção que se mede é entre sessões, e
+    clientes compartilhando conexão mediriam serialização do cliente em vez do servidor.
+    """
+
+    def fabrica() -> Any:
+        cliente = construir()
+        cliente.prepare()
+        cliente.start()
+        cliente.wait_ready()
+        return cliente
+
+    return fabrica
 
 
 def _contention_probe(index: int) -> Any:
