@@ -208,9 +208,18 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
             # The rerank depth is swept together with the leaves because the two
             # trade against each other, and pinning it at its -1 default would
             # measure a quantization-error ceiling instead of a frontier.
+            #
+            # It used to say this and then declare `(100,)` -- a single value. A
+            # frontier measured with the rerank depth PINNED is not a frontier: it is
+            # one operating point reported three times under different leaf labels,
+            # and it is exactly what B-069 bullet 2 asked to stop doing.
+            #
+            # The three values bracket the useful range against `k=10`: the depth is
+            # meaningless below k, so 25 is 2.5x k, 100 is the value that was pinned,
+            # and 400 is 40x k -- far enough that the QPS it costs shows up.
             search_sweep={
                 "num_leaves_to_search": (5, 20, 80),
-                "pre_reordering_num_neighbors": (100,),
+                "pre_reordering_num_neighbors": (25, 100, 400),
             },
         ),
         default_repetitions=3,
@@ -250,9 +259,12 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
             k=10,
             warmup_queries=50,
             indexes=(IndexSpec(kind="scann", parameters={"num_leaves": 1000, "quantizer": "AH"}),),
+            # Mesma razao da suite acima: profundidade fixa nao produz fronteira.
+            # Dois pontos de profundidade em vez de tres porque esta suite ja usa
+            # `num_leaves: 1000` e o produto cartesiano cresce rapido.
             search_sweep={
                 "num_leaves_to_search": (20, 80),
-                "pre_reordering_num_neighbors": (100,),
+                "pre_reordering_num_neighbors": (100, 400),
             },
         ),
         default_repetitions=3,

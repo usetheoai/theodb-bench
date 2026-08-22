@@ -8,6 +8,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **As suítes ScaNN diziam varrer a profundidade de rerank e a fixavam num valor (B-069, bullet 2).** O
+  comentário acima delas afirma que *"a profundidade de rerank é varrida junto com as folhas, porque as duas
+  se trocam entre si"* — e o código declarava `pre_reordering_num_neighbors: (100,)`, **um valor**. Uma
+  fronteira medida com a profundidade fixa não é uma fronteira: é **um ponto de operação reportado três vezes**
+  sob rótulos diferentes de `num_leaves_to_search`. Agora `(25, 100, 400)` na suíte SIFT e `(100, 400)` na de
+  SIFT1M — os valores enquadram a faixa útil contra `k=10`, já que a profundidade não significa nada abaixo
+  de `k`. Dois testes novos: um exige que **alguma** suíte registrada varra o botão (que é o que o item pede),
+  outro que **quem declara** a profundidade não a fixe.
+
 - **A suíte TPC-H não provava o caminho que declarava (B-058).** Ela carregava com `--path columnar` e
   cronometrava sem perguntar se as tabelas estavam mesmo lá — o mesmo defeito que `bench/analytical.py` já
   havia consertado, e cujo comentário registra que `assert_analytical_path` chegou a existir com **zero
