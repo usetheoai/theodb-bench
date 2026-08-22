@@ -13,6 +13,14 @@ PROFILE="${PROFILE:-research}"
 # que e legitimo em `research` e honesto: inventar um default esconderia que nada foi declarado.
 CPU_SET="${CPU_SET:-}"
 MEM_MAX="${MEM_MAX:-}"
+# MODE=contention roda o executor de contencao escrita x scan em vez de uma suite registrada.
+# O `theodb-bench contention` ASSUME a tabela pronta e trata `--regime` como DECLARACAO: quem roda
+# tem de torna-la verdadeira. Por isso os dois regimes usam a MESMA carga e servidores com
+# `shared_buffers` diferentes — residencia em cache e o que separa os dois, nao o tamanho absoluto.
+MODE="${MODE:-suite}"
+CONT_LINHAS="${CONT_LINHAS:-1000000}"
+CONT_LEITORES="${CONT_LEITORES:-4}"
+CONT_ESCRITORES="${CONT_ESCRITORES:-2}"
 SMOKE="${SMOKE:-analytical/synthetic/paths}"
 TAGS="${TAGS:-base fix}"
 PARQUET_DIR=/var/lib/postgresql/theodb-bench-parquet
@@ -97,6 +105,45 @@ medir() {
 }
 
 portao
+
+# ---------------------------------------------------------------- contencao (B-058 bullet 3)
+if [ "$MODE" = "contention" ]; then
+  for regime in memory-resident exceeds-cache; do
+    # `exceeds-cache` nao vem de mais dados, vem de MENOS cache: mesma tabela, `shared_buffers`
+    # pequeno. Declarar o regime e faze-lo valer sao coisas diferentes, e o arnes so registra a
+    # declaracao — torna-la verdadeira e responsabilidade de quem mede.
+    case "$regime" in
+      memory-resident) SB=16GB ;;
+      exceeds-cache)   SB=32MB ;;
+    esac
+    echo "=== contencao :: $regime (shared_buffers=$SB) inicio $(date -Is) ==="
+    docker rm -f theodb >/dev/null 2>&1 || true
+    docker run -d --name theodb -e POSTGRES_HOST_AUTH_METHOD=trust \
+      -v /var/run/postgresql:/var/run/postgresql --shm-size=8g \
+      "theodb:${TAGS%% *}" -c shared_buffers=$SB -c work_mem=64MB >/dev/null || { echo "FALHA: docker run"; exit 1; }
+    pronto=""
+    for _ in $(seq 1 120); do
+      pg_isready -h /var/run/postgresql -U postgres >/dev/null 2>&1 && { pronto=1; break; }
+      sleep 2
+    done
+    [ -n "$pronto" ] || { echo "FALHA: servidor nao subiu"; exit 1; }
+
+    PGUSER=postgres psql -h /var/run/postgresql -q -c \
+      "CREATE TABLE bench_contention (id bigint, value bigint) USING theodb_columnar;
+       INSERT INTO bench_contention SELECT g, g FROM generate_series(1,$CONT_LINHAS) g;" \
+      || { echo "FALHA: carga"; exit 1; }
+    echo "-- $regime: $CONT_LINHAS linhas, shared_buffers=$SB --"
+    PGUSER=postgres psql -h /var/run/postgresql -tAc "SELECT pg_size_pretty(pg_total_relation_size('bench_contention'))" || true
+
+    PGUSER=postgres /root/venv/bin/theodb-bench contention --system theodb \
+      --table bench_contention --path columnar \
+      --readers "$CONT_LEITORES" --writers "$CONT_ESCRITORES" \
+      --read-ops 200 --write-ops 200 --regime "$regime"
+    echo "=== contencao :: $regime fim rc=$? $(date -Is) ==="
+  done
+  echo "=== FIM $(date -Is) ==="
+  exit 0
+fi
 
 # SMOKE PRIMEIRO. Exercita heap+colunar+parquet+oraculo num unico N, em poucos minutos. Se o
 # pipeline estiver quebrado, descobre-se aqui — e nao depois de carregar 2 milhoes de linhas
