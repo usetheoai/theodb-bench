@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from theodb_bench.adapters.base import CAPABILITIES
+from theodb_bench.bench.retrieval import PIPELINE_CAPABILITY
 from theodb_bench.registry import ADAPTERS, BENCHMARKS
 
 #: Adapters that exist to exercise the harness rather than a system.
@@ -93,8 +94,13 @@ def suites_by_capability() -> dict[str, tuple[str, ...]]:
         for path in getattr(workload, "paths", ()) or ():
             if path in ("columnar", "parquet"):
                 marcar(path, suite)
-        if suite.startswith("retrieval/"):
-            marcar("lexical", suite)
+        # As pernas que a suite DECLARA, e nao o prefixo do id. `retrieval/scifact/lexical`
+        # comeca com `retrieval/` e declara so a perna lexical — conta-la como medindo
+        # `hybrid` seria exatamente o defeito que esta coluna existe para expor.
+        for perna in getattr(workload, "pipelines", ()) or ():
+            capability = PIPELINE_CAPABILITY.get(perna)
+            if capability:
+                marcar(capability, suite)
         if suite.startswith("graph/"):
             marcar("graph", suite)
     return {capability: tuple(nomes) for capability, nomes in encontrado.items()}

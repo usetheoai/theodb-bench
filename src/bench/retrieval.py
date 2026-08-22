@@ -54,7 +54,11 @@ HYBRID_RRF_RERANK: Final[str] = "hybrid_rrf_rerank"
 
 PIPELINES: Final[tuple[str, ...]] = (LEXICAL, VECTOR, HYBRID_RRF, HYBRID_RRF_RERANK)
 
-_CAPABILITY: Final[dict[str, str]] = {
+#: Qual capacidade cada perna exercita. Publico porque a matriz de capacidades deriva dele:
+#: contar uma suite como medindo `hybrid` pelo PREFIXO do id acertaria por acidente e erraria
+#: no dia em que uma suite `retrieval/*` declarasse so a perna lexical — que e o caso do
+#: `scifact`. A declaracao nao mente; o nome e convencao.
+PIPELINE_CAPABILITY: Final[dict[str, str]] = {
     LEXICAL: "lexical",
     VECTOR: "vector_exact",
     HYBRID_RRF: "hybrid",
@@ -426,7 +430,7 @@ class RetrievalBenchmark:
         sistema rapido.
         """
         result = PipelineResult(pipeline=pipeline, repetition=repetition)
-        capability = _CAPABILITY[pipeline]
+        capability = PIPELINE_CAPABILITY[pipeline]
         if not adapter.supports(capability):
             result.status = "unsupported"
             result.status_detail = f"{adapter.system_id} does not support {capability}"
@@ -498,7 +502,7 @@ class RetrievalBenchmark:
         """One timed pass of one pipeline over the whole query set."""
         result = PipelineResult(pipeline=pipeline, repetition=repetition)
 
-        capability = _CAPABILITY[pipeline]
+        capability = PIPELINE_CAPABILITY[pipeline]
         if not adapter.supports(capability):
             result.status = "unsupported"
             result.status_detail = f"{adapter.system_id} does not support {capability}"

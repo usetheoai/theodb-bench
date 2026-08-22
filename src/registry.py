@@ -353,6 +353,30 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     # SÓ A PERNA LEXICAL, e isso é declarado e não uma limitação escondida: o BEIR publica texto e
     # julgamentos, não embeddings. Preencher os vetores com ruído faria as pernas densa e híbrida
     # RODAREM e os números PARECEREM medidos.
+    "retrieval/synthetic/hybrid": BenchmarkEntry(
+        id="retrieval/synthetic/hybrid",
+        description=(
+            "The RRF fusion against the vector and lexical legs it fuses, on a seeded "
+            "corpus whose ground truth is CONSTRUCTED: each query is built from the terms "
+            "of a small set of documents and exactly those are graded relevant. The three "
+            "legs answer the same queries over the same corpus, so the fusion's gain over "
+            "the vector leg is a paired difference rather than a comparison of two setups. "
+            "Synthetic, and the number means what a synthetic corpus can mean: it measures "
+            "the FUSION MECHANISM, not retrieval quality on natural language."
+        ),
+        workload=RetrievalWorkload(
+            corpus_size=5000,
+            query_count=300,
+            dimension=64,
+            k=10,
+            # `hybrid_rrf_rerank` fica de fora: o rerank alcanca um modelo EXTERNO, e a
+            # matriz de capacidades ja registra que nenhum adapter o alcanca sem endpoint.
+            # Incluir a perna produziria uma linha que nunca roda, ou pior, um numero de
+            # stub — que e a coisa que o `scifact` recusa fazer com os embeddings do BEIR.
+            pipelines=("lexical", "vector", "hybrid_rrf"),
+        ),
+        default_repetitions=3,
+    ),
     "retrieval/scifact/lexical": BenchmarkEntry(
         id="retrieval/scifact/lexical",
         requires_dataset="beir-scifact",

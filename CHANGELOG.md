@@ -8,6 +8,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`retrieval/synthetic/hybrid`: o pilar híbrido passa a ter suíte (B-104 / B-005).** Ele era o único
+  **declarado e não medido** — `hybrid` aparecia como capacidade do `theodb` e nenhuma das 23 suítes a
+  exercitava. **A maquinaria já existia inteira:** `bench/retrieval.py` declara as quatro pernas, o adapter
+  implementa `execute_hybrid` chamando `ai.hybrid_search_rrf`, e o gerador sintético produz corpus com texto
+  **e** vetores com ground truth construído. Faltava uma entrada de registro. As três pernas — lexical, vetor
+  e fusão RRF — respondem as mesmas consultas sobre o mesmo corpus, então o ganho da fusão sobre a perna
+  vetorial é **diferença pareada**, não comparação de dois arranjos. `hybrid_rrf_rerank` fica de fora: o
+  rerank alcança modelo externo, e incluir a perna produziria uma linha que nunca roda ou um número de stub.
+  **O corpus é sintético e o número significa o que um corpus sintético pode significar:** ele mede o
+  MECANISMO da fusão, não qualidade de retrieval em linguagem natural.
+
+### Changed
+- **A matriz de capacidades deriva das PERNAS declaradas, não do prefixo do id da suíte.**
+  `retrieval/scifact/lexical` começa com `retrieval/` e declara só a perna lexical — contá-la como medindo
+  `hybrid` seria o defeito que a coluna existe para expor. `PIPELINE_CAPABILITY` deixou de ser privado
+  porque é a declaração autoritativa; nome de suíte é convenção, e convenção mente.
+
 - **A matriz de capacidades passa a dizer quantas SUÍTES medem cada capacidade, não só quais adapters a
   declaram (B-104).** As duas colunas respondem perguntas diferentes, e a diferença é a distinção central
   deste projeto: um adapter declarar `hybrid` diz que o sistema **sabe** fazer aquilo; nenhuma suíte

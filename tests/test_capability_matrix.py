@@ -119,11 +119,48 @@ def test_a_capability_declared_without_a_suite_is_visible_as_such() -> None:
 
     linhas = {r.capability: r for r in capability_matrix()}
     declaradas_sem_suite = [c for c, r in linhas.items() if r.adapters and not r.suites]
-    assert "hybrid" in declaradas_sem_suite, (
-        "`hybrid` e declarada pelo theodb e nenhuma suite a mede — se este teste falhar "
-        "porque alguem acrescentou a suite, otimo: apague este assert e o item B-104 fechou"
-    )
+    # `hybrid` estava nesta lista quando o teste foi escrito, e SAIU quando a suite
+    # `retrieval/synthetic/hybrid` foi registrada no mesmo dia. O assert que a nomeava
+    # cumpriu seu papel e foi removido; o que fica e a propriedade GERAL, que continua
+    # valendo para a proxima capacidade que alguem declarar sem medir.
     texto = render_capability_matrix()
-    assert "declarada" in texto.lower() or "sem suíte" in texto.lower(), (
-        "a diferenca entre declarada e medida tem de estar dita no texto, nao so na coluna"
-    )
+    if declaradas_sem_suite:
+        assert "declarada e não medida" in texto.lower(), (
+            f"ha capacidade declarada e nao medida ({declaradas_sem_suite}) e o texto nao "
+            "diz isso — a coluna sozinha nao e lida"
+        )
+    else:
+        assert "declarada e não medida" not in texto.lower(), (
+            "nenhuma capacidade esta declarada-sem-suite e o texto ainda avisa que ha"
+        )
+
+
+def test_the_hybrid_capability_has_a_suite_measuring_it() -> None:
+    """B-104/B-005: o pilar que a meta assinada chama de diferenciacao tem de ser medivel.
+
+    A maquinaria ja existia inteira — `retrieval.py` declara as pernas lexical, vector,
+    hybrid_rrf e hybrid_rrf_rerank, o adapter implementa `execute_hybrid` chamando
+    `ai.hybrid_search_rrf`, e o gerador sintetico produz corpus com texto E vetores com
+    ground truth construido. O que faltava era UMA entrada de registro.
+    """
+    from theodb_bench.capabilities import capability_matrix
+
+    linha = {r.capability: r for r in capability_matrix()}["hybrid"]
+    assert linha.suites, "nenhuma suite registrada mede `hybrid`"
+    assert not linha.declared_unmeasured
+
+
+def test_the_derivation_uses_the_declared_pipelines_not_the_suite_name() -> None:
+    """Nome de suite e convencao; `pipelines` e declaracao. A segunda nao mente.
+
+    `retrieval.py` ja mapeia perna->capacidade em PIPELINE_CAPABILITY, e derivar dali e
+    exato: uma suite que declare so a perna lexical NAO deve contar como medindo `hybrid`
+    so porque o id dela comeca com `retrieval/`.
+    """
+    from theodb_bench.capabilities import suites_by_capability
+    from theodb_bench.registry import BENCHMARKS
+
+    medindo = suites_by_capability()
+    for suite in medindo.get("hybrid", ()):
+        pernas = getattr(BENCHMARKS[suite].workload, "pipelines", ())
+        assert "hybrid_rrf" in pernas, f"{suite} conta como hibrida sem declarar a perna"

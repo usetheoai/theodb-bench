@@ -262,14 +262,14 @@ it.
 
 | capability | adapters que declaram | suítes que medem |
 |---|---|---|
-| `vector_exact` | `alloydbomni`, `pgvector`, `postgres`, `theodb` | 4 |
+| `vector_exact` | `alloydbomni`, `pgvector`, `postgres`, `theodb` | 5 |
 | `vector_hnsw` | `alloydbomni`, `pgvector`, `theodb` | 11 |
 | `vector_ivfflat` | `alloydbomni`, `pgvector`, `theodb` | 2 |
 | `vector_scann` | `alloydbomni` | 3 |
 | `vector_quantized` | `theodb` | 3 |
 | `vector_filtered` | `alloydbomni`, `pgvector`, `theodb` | 1 |
-| `lexical` | `theodb` | 2 |
-| `hybrid` | `theodb` | **0** |
+| `lexical` | `theodb` | 3 |
+| `hybrid` | `theodb` | 1 |
 | `rerank` | — | **0** |
 | `columnar` | `alloydbomni`, `theodb` | 2 |
 | `parquet` | `theodb` | 2 |
@@ -278,9 +278,6 @@ it.
 | `ai_sql` | — | **0** |
 
 A dash is not a gap in this table — it is the measured state. `rerank`, `vectorizer` and `ai_sql` each reach an external model, and without an endpoint there is nothing to measure; a stub would put a number where an absence belongs.
-
-**Declarada e não medida: `hybrid`.** Um adapter declara que o sistema sabe fazer aquilo, e nenhuma suíte registrada o exercita — as duas colunas dizem coisas diferentes, e a segunda é a que sustenta um número. Ver B-104.
-
 ---
 
 ## Profiles
