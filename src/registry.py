@@ -142,6 +142,51 @@ class BenchmarkEntry:
     workload: Workload
     default_repetitions: int = 3
 
+    #: O id do dataset que esta suite EXIGE, quando o nome dela promete um.
+    #:
+    #: `--dataset` diz, na propria ajuda, que ele mede um dataset verificado "instead of the
+    #: seeded synthetic corpus". Logo, uma suite chamada `vector/sift1m/hnsw` rodada sem ele
+    #: mede o corpus sintetico e produz um bundle que diz `sift1m` no id e nao traz bloco
+    #: `dataset` — so quem abre o artefato percebe, e `ops/bench-run.sh` nunca passou o flag.
+    #:
+    #: Importa mais no eixo vetorial que em qualquer outro: descritores SIFT sao features reais
+    #: de imagem, com anisotropia e clusterizacao que vetor sintetico semeado nao tem. O
+    #: quantizador AH que o ADR-0035 credita pelo gap de ~25x e ANISOTROPICO — medi-lo em dado
+    #: sintetico mede outra coisa e a rotula com o nome do dataset.
+    #:
+    #: E um CAMPO e nao uma heuristica sobre o nome de proposito: casar `sift` por substring
+    #: acertaria hoje e erraria no dia em que alguem registrar `vector/synthetic/sift-like`.
+    requires_dataset: str | None = None
+
+
+def require_declared_dataset(entrada: BenchmarkEntry, dataset_id: str | None) -> None:
+    """Recusa a corrida quando a suite nomeia um dataset e ele nao foi dado — ou e outro.
+
+    RECUSA, e nao aviso, porque o dano e silencioso: a corrida TERMINA, o bundle sai com
+    `sift1m` no id e sem bloco `dataset`, e o numero entra num conceito com o nome do
+    dataset. Um aviso no stdout de uma corrida remota de quarenta minutos nao e lido por
+    ninguem — e `ops/bench-run.sh` nunca passou `--dataset`, entao esta era a corrida que
+    se ia fazer.
+
+    O caso "veio outro dataset" tambem recusa. Medir SIFT sob o nome de BEIR e o mesmo
+    defeito com os rotulos trocados.
+    """
+    exigido = entrada.requires_dataset
+    if exigido is None:
+        return
+    if dataset_id is None:
+        raise ConfigError(
+            f"a suite {entrada.id!r} mede o dataset {exigido!r} e nenhum foi dado: sem "
+            f"`--dataset` ela mediria o corpus sintetico semeado e o bundle sairia com o "
+            f"nome do dataset no id e sem o bloco que o identifica",
+            context=ErrorContext(phase=Phase.PREFLIGHT, details={"benchmark": entrada.id}),
+        )
+    if dataset_id != exigido:
+        raise ConfigError(
+            f"a suite {entrada.id!r} mede o dataset {exigido!r} e recebeu {dataset_id!r}",
+            context=ErrorContext(phase=Phase.PREFLIGHT, details={"benchmark": entrada.id}),
+        )
+
 
 BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     "vector/synthetic/smoke": BenchmarkEntry(
@@ -193,6 +238,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     # about AH with it.
     "vector/sift/scann-ah": BenchmarkEntry(
         id="vector/sift/scann-ah",
+        requires_dataset="sift-128-euclidean",
         description=(
             "SIFT descriptors against AlloyDB's scann access method with its "
             "anisotropic AH quantizer, which is the configuration ADR-0035's gap "
@@ -226,6 +272,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     ),
     "vector/sift/hnsw": BenchmarkEntry(
         id="vector/sift/hnsw",
+        requires_dataset="sift-128-euclidean",
         description=(
             "SIFT descriptors against an hnsw access method at the same corpus "
             "size, queries and k as vector/sift/scann-ah, so the two frontiers "
@@ -248,6 +295,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     # a 1M ratio would compare two different experiments.
     "vector/sift1m/scann-ah": BenchmarkEntry(
         id="vector/sift1m/scann-ah",
+        requires_dataset="sift-128-euclidean",
         description=(
             "SIFT1M in full against AlloyDB's scann access method with the AH "
             "quantizer and exact-distance rescoring. The scale ADR-0035 measured."
@@ -271,6 +319,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     ),
     "vector/sift1m/hnsw": BenchmarkEntry(
         id="vector/sift1m/hnsw",
+        requires_dataset="sift-128-euclidean",
         description=(
             "SIFT1M in full against an hnsw access method, at the same corpus "
             "size, queries and k as vector/sift1m/scann-ah."
@@ -306,6 +355,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     # RODAREM e os números PARECEREM medidos.
     "retrieval/scifact/lexical": BenchmarkEntry(
         id="retrieval/scifact/lexical",
+        requires_dataset="beir-scifact",
         description=(
             "SciFact (BEIR) against the lexical pipeline, scored by nDCG@10 "
             "against human qrels rather than against a computed oracle. Dense "
@@ -338,6 +388,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     # registra `build_seconds` e `index_size_bytes` por ponto.
     "vector/sift1m/frontier": BenchmarkEntry(
         id="vector/sift1m/frontier",
+        requires_dataset="sift-128-euclidean",
         description=(
             "SIFT1M across a wide ef_search sweep, so two engines can be read at "
             "MATCHED RECALL instead of at matched ef -- which is not the same "
@@ -368,6 +419,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     # esta (o que o default custa). `wiki/benchmarks/b018-planner-hnsw-juncao.md`.
     "vector/sift1m/ef-default": BenchmarkEntry(
         id="vector/sift1m/ef-default",
+        requires_dataset="sift-128-euclidean",
         description=(
             "SIFT1M against theodb_hnsw at the two ef_search DEFAULTS in dispute "
             "-- 40 (pgvector's) and 64 (ours). Measures what lowering the default "
@@ -392,6 +444,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     # reranking pipeline asks for.
     "vector/sift1m/k-sweep": BenchmarkEntry(
         id="vector/sift1m/k-sweep",
+        requires_dataset="sift-128-euclidean",
         description=(
             "SIFT1M against theodb_hnsw at k in {1, 10, 100}. The oracle is "
             "computed once at the largest k and sliced."
@@ -414,6 +467,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     # "fast and crossing the filter".
     "vector/sift1m/filtered": BenchmarkEntry(
         id="vector/sift1m/filtered",
+        requires_dataset="sift-128-euclidean",
         description=(
             "SIFT1M partitioned into 100 tenants, every query filtered to one, "
             "and recall scored against a filtered oracle."
@@ -434,6 +488,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     # issues, and it is where per-query overhead stops dominating.
     "vector/sift1m/batch": BenchmarkEntry(
         id="vector/sift1m/batch",
+        requires_dataset="sift-128-euclidean",
         description=(
             "SIFT1M with 10 probes per round trip. Throughput is batches per "
             "second; a batch that costs as much as ten singles has no batching."
@@ -467,6 +522,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     #   between the two latencies IS the queue.
     "vector/sift1m/concurrency": BenchmarkEntry(
         id="vector/sift1m/concurrency",
+        requires_dataset="sift-128-euclidean",
         description=(
             "SIFT1M against theodb_hnsw with a client population, closed loop. "
             "Sweeps the client count to find where throughput stops scaling."
@@ -485,6 +541,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     ),
     "vector/sift1m/saturation": BenchmarkEntry(
         id="vector/sift1m/saturation",
+        requires_dataset="sift-128-euclidean",
         description=(
             "SIFT1M against theodb_hnsw under Poisson arrivals at a fixed client "
             "count. Finds where the queue starts, which a closed loop cannot see."
@@ -521,6 +578,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     # point completes. Widen it once there is a build time on record.
     "vector/bigann20m/hnsw": BenchmarkEntry(
         id="vector/bigann20m/hnsw",
+        requires_dataset="bigann-20m-euclidean",
         description=(
             "20 000 000 real SIFT descriptors from BIGANN against theodb_hnsw. The "
             "reference scale: one order of magnitude past SIFT1M, with the corpus "
@@ -543,6 +601,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     # where the build is measurable in hours.
     "vector/bigann20m/load": BenchmarkEntry(
         id="vector/bigann20m/load",
+        requires_dataset="bigann-20m-euclidean",
         description=(
             "The streamed load of 20 000 000 real SIFT descriptors, with no index "
             "built. Isolates the load path from the build."
@@ -573,6 +632,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     # identical.
     "vector/sift/pg-scann": BenchmarkEntry(
         id="vector/sift/pg-scann",
+        requires_dataset="sift-128-euclidean",
         description=(
             "SIFT descriptors against TheoDB's own ScaNN-class path: theodb_ivfflat "
             "with the anisotropic quantizer, LUT16 codes and the exact-distance "
@@ -619,6 +679,7 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
     # instead of assuming it.
     "vector/sift/pg-scann-quantizer": BenchmarkEntry(
         id="vector/sift/pg-scann-quantizer",
+        requires_dataset="sift-128-euclidean",
         description=(
             "SIFT descriptors against TheoDB's pg_scann path at three quantizer "
             "widths, to locate the operating point before any cross-engine "
@@ -745,6 +806,7 @@ BENCHMARKS["graph/synthetic/vs-recursive-sql"] = BenchmarkEntry(
 # um gerador so, nao separa as duas.
 BENCHMARKS["retrieval/scifact/concurrency"] = BenchmarkEntry(
     id="retrieval/scifact/concurrency",
+    requires_dataset="beir-scifact",
     description=(
         "SciFact lexical under a client population, closed loop, sweeping the client "
         "count to find where throughput stops scaling. Quality is not reported under "

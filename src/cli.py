@@ -52,7 +52,7 @@ from theodb_bench.formats import (
 )
 from theodb_bench.interleaved import interleave
 from theodb_bench.profiles import PROFILES, ProfileName, get_profile
-from theodb_bench.registry import ADAPTERS, BENCHMARKS, get_adapter, get_benchmark
+from theodb_bench.registry import ADAPTERS, BENCHMARKS, get_adapter, get_benchmark, require_declared_dataset
 from theodb_bench.report import render_comparison, write_report
 from theodb_bench.runner import RunRequest, run_benchmark
 from theodb_bench.schemas import SCHEMA_NAMES, read_validated
@@ -329,6 +329,13 @@ def adapter_overrides(build_timeout: int | None) -> dict[str, Any]:
 
 def cmd_run(args: argparse.Namespace) -> int:
     entry = get_benchmark(args.benchmark)
+    # ANTES de qualquer preparo: a suite nomeia um dataset e ele foi dado?
+    #
+    # Sem isto, `theodb-bench run vector/sift1m/hnsw` mede o corpus sintetico semeado e
+    # produz um bundle que diz `sift1m` no id e nao traz bloco `dataset`. O flag diz na
+    # propria ajuda que mede um dataset "instead of the seeded synthetic corpus", e
+    # `ops/bench-run.sh` nunca o passou — entao essa era a corrida que se ia fazer.
+    require_declared_dataset(entry, args.dataset)
     adapter = get_adapter(args.system)
     profile = get_profile(args.profile)
     repetitions = args.repetitions if args.repetitions is not None else entry.default_repetitions

@@ -8,6 +8,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Uma suíte nomeada por um dataset passa a EXIGI-LO — antes ela media o corpus sintético sob o nome do
+  dataset.** `--dataset` diz na própria ajuda que mede um dataset verificado *"instead of the seeded synthetic
+  corpus"*, e `ops/bench-run.sh` **nunca o passou**. Uma corrida de `vector/sift1m/hnsw` por ali terminaria
+  normalmente e produziria um bundle com `sift1m` no id e **sem o bloco `dataset`** — só quem abrisse o
+  artefato perceberia. Importa mais no eixo vetorial que em qualquer outro: descritores SIFT são features
+  reais de imagem, com anisotropia e clusterização que vetor sintético semeado não tem, e o quantizador AH
+  que o ADR-0035 credita pelo gap de ~25× é **anisotrópico**. As 17 suítes cujo id nomeia um dataset passam a
+  declará-lo em `requires_dataset`, e a corrida é **recusada** no preflight quando ele falta ou vem trocado.
+  A declaração é um **campo**, não heurística sobre o nome: casar `sift` por substring acertaria hoje e
+  erraria no dia em que alguém registrar `vector/synthetic/sift-like`.
+
 - **As suítes ScaNN diziam varrer a profundidade de rerank e a fixavam num valor (B-069, bullet 2).** O
   comentário acima delas afirma que *"a profundidade de rerank é varrida junto com as folhas, porque as duas
   se trocam entre si"* — e o código declarava `pre_reordering_num_neighbors: (100,)`, **um valor**. Uma
