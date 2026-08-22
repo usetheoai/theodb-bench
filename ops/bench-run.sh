@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# Executor de medicao. Roda no HOST DE BENCH, nao na maquina de desenvolvimento.
+#
+# Regra que organiza o arquivo inteiro, e que custou uma sessao inteira para ser escrita:
+#   o que MEDE aborta em erro; o que apenas REGISTRA nunca aborta.
+# Toda morte prematura desta sessao foi um comando de registro derrubando a corrida.
+set -uo pipefail
+
+SUITE="${SUITE:-analytical/crossover/row-count}"
+PROFILE="${PROFILE:-research}"
+# Isolamento DECLARADO. Os perfis `nightly` e `release` exigem `cpu_limit` e `memory_limit`, e sem
+# declaracao eles saem UNAVAILABLE e invalidam a corrida — em qualquer hardware. Vazio = nao declara,
+# que e legitimo em `research` e honesto: inventar um default esconderia que nada foi declarado.
+CPU_SET="${CPU_SET:-}"
+MEM_MAX="${MEM_MAX:-}"
+# MODE=contention roda o executor de contencao escrita x scan em vez de uma suite registrada.
+# O `theodb-bench contention` ASSUME a tabela pronta e trata `--regime` como DECLARACAO: quem roda
+# tem de torna-la verdadeira. Por isso os dois regimes usam a MESMA carga e servidores com
+# `shared_buffers` diferentes — residencia em cache e o que separa os dois, nao o tamanho absoluto.
+MODE="${MODE:-suite}"
+# MEDIDO em 2026-08-22: 1M linhas de `(id, value)` no colunar ocupam **3.248 kB** — a compressao e
+# tao boa que o regime `exceeds-cache` com 32 MB de `shared_buffers` nao excedia NADA. Declarar um
+# regime nao o torna verdadeiro, e medir "fora do cache" com o dado inteiro dentro dele mediria a
+# mesma coisa duas vezes com rotulos diferentes. 40M linhas dao ~130 MB, que excede os 32 MB com
+# folga; o regime residente usa a mesma carga com 16 GB, onde ela cabe inteira.
+CONT_LINHAS="${CONT_LINHAS:-40000000}"
+CONT_LEITORES="${CONT_LEITORES:-4}"
+CONT_ESCRITORES="${CONT_ESCRITORES:-2}"
+SMOKE="${SMOKE:-analytical/synthetic/paths}"
+TAGS="${TAGS:-base fix}"
+PARQUET_DIR=/var/lib/postgresql/theodb-bench-parquet
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+
+exec > >(tee -a /root/bench-run.log) 2>&1
+echo "=== bench-run inicio $(date -Is) suite=$SUITE tags='$TAGS' stamp=$STAMP ==="
+
+# ---------------------------------------------------------------- portao de capacidades
+# TODAS as capacidades de uma vez, ANTES de qualquer trabalho caro. Cada linha existe porque a
+# ausencia dela ja custou uma corrida:
+#   buildx   -> `COPY <<EOF` falha no passo 26/28, DEPOIS de compilar a extensao (~40 min perdidos)
+#   psycopg  -> adapter theodb recusa no bootstrap (3 s, mas depois de 18 min de build)
+#   schemas  -> arnes nao le o schema de ambiente e invalida a corrida inteira
+portao() {
+  local falhas=0
+  command -v docker >/dev/null || { echo "PORTAO: docker ausente"; falhas=1; }
+  docker buildx version >/dev/null 2>&1 || { echo "PORTAO: buildx ausente"; falhas=1; }
+  /root/venv/bin/python -c "import psycopg" 2>/dev/null || { echo "PORTAO: psycopg ausente"; falhas=1; }
+  /root/venv/bin/python - <<'PY' || falhas=1
+import pathlib, sys, theodb_bench
+raiz = pathlib.Path(theodb_bench.__file__).resolve().parent.parent
+alvo = raiz / "schemas" / "environment.schema.json"
+if not alvo.exists():
+    print(f"PORTAO: schema de ambiente ausente em {alvo}"); sys.exit(1)
+PY
+  [ "$falhas" -eq 0 ] || { echo "=== PORTAO REPROVOU — nada caro foi executado ==="; exit 1; }
+  echo "=== portao ok $(date -Is) ==="
+}
+
+subir() {
+  local tag="$1"
+  docker rm -f theodb >/dev/null 2>&1 || true
+  docker run -d --name theodb -e POSTGRES_HOST_AUTH_METHOD=trust \
+    -v /var/run/postgresql:/var/run/postgresql --shm-size=8g \
+    "theodb:$tag" \
+    -c shared_buffers=16GB -c maintenance_work_mem=8GB \
+    -c max_parallel_maintenance_workers=8 -c work_mem=256MB -c max_wal_size=8GB >/dev/null \
+    || { echo "FALHA: docker run $tag"; return 1; }
+
+  local pronto=""
+  for _ in $(seq 1 120); do
+    pg_isready -h /var/run/postgresql -U postgres >/dev/null 2>&1 && { pronto=1; break; }
+    sleep 2
+  done
+  [ -n "$pronto" ] || { echo "FALHA: servidor $tag nao subiu"; docker logs theodb 2>&1 | tail -20; return 1; }
+
+  # O diretorio de Parquet e escrito pelo processo SERVIDOR: existe DENTRO do conteiner e pertence
+  # ao usuario do banco. Sem ele `write_parquet` falha, e o arnes reporta `sut_alive` FAIL — culpando
+  # o servidor por uma falha que foi de uma consulta. O runbook nao cria este diretorio.
+  docker exec -u root theodb mkdir -p "$PARQUET_DIR" || { echo "FALHA: mkdir parquet"; return 1; }
+  docker exec -u root theodb chown postgres:postgres "$PARQUET_DIR" || { echo "FALHA: chown parquet"; return 1; }
+
+  # Proveniencia LIDA DO SERVIDOR, nunca da tag da imagem (B-069). Registro puro: nada aborta.
+  echo "-- proveniencia $tag --"
+  PGUSER=postgres psql -h /var/run/postgresql -tAc "select version()" 2>&1 | head -1 || true
+  PGUSER=postgres psql -h /var/run/postgresql -tAc \
+    "select extname||' '||extversion from pg_extension where extname like 'theodb%'" 2>&1 | head -3 || true
+}
+
+medir() {
+  local tag="$1" suite="$2" saida="$3"
+  echo "=== $tag :: $suite inicio $(date -Is) ==="
+  # Sob MEM_MAX o arnes roda DENTRO de um cgroup com limite, porque e o que ele exige para marcar
+  # `memory_limit` como respeitado — aplicar o limite ele mesmo pediria privilegio e teria efeito
+  # colateral sobre o host, entao ele LE o limite que ja vale. `systemd-run --scope` e o mecanismo
+  # nativo para criar esse cgroup (degrau 3 da parsimony ladder), e sem ele os perfis `nightly` e
+  # `release` sao inalcancaveis.
+  if [ -n "$MEM_MAX" ] && command -v systemd-run >/dev/null 2>&1; then
+    PGUSER=postgres systemd-run --scope --quiet -p "MemoryMax=$MEM_MAX" \
+      /root/venv/bin/theodb-bench run "$suite" \
+      --system theodb --profile "$PROFILE" --output "$saida" \
+      ${CPU_SET:+--cpu-set "$CPU_SET"} --memory "$MEM_MAX"
+  else
+    PGUSER=postgres /root/venv/bin/theodb-bench run "$suite" \
+      --system theodb --profile "$PROFILE" --output "$saida" \
+      ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"}
+  fi
+  local rc=$?
+  echo "=== $tag :: $suite fim rc=$rc $(date -Is) ==="
+  return $rc
+}
+
+portao
+
+# ---------------------------------------------------------------- contencao (B-058 bullet 3)
+if [ "$MODE" = "contention" ]; then
+  for regime in memory-resident exceeds-cache; do
+    # `exceeds-cache` nao vem de mais dados, vem de MENOS cache: mesma tabela, `shared_buffers`
+    # pequeno. Declarar o regime e faze-lo valer sao coisas diferentes, e o arnes so registra a
+    # declaracao — torna-la verdadeira e responsabilidade de quem mede.
+    case "$regime" in
+      memory-resident) SB=16GB ;;
+      exceeds-cache)   SB=32MB ;;
+    esac
+    echo "=== contencao :: $regime (shared_buffers=$SB) inicio $(date -Is) ==="
+    docker rm -f theodb >/dev/null 2>&1 || true
+    docker run -d --name theodb -e POSTGRES_HOST_AUTH_METHOD=trust \
+      -v /var/run/postgresql:/var/run/postgresql --shm-size=8g \
+      "theodb:${TAGS%% *}" -c shared_buffers=$SB -c work_mem=64MB >/dev/null || { echo "FALHA: docker run"; exit 1; }
+    pronto=""
+    for _ in $(seq 1 120); do
+      pg_isready -h /var/run/postgresql -U postgres >/dev/null 2>&1 && { pronto=1; break; }
+      sleep 2
+    done
+    [ -n "$pronto" ] || { echo "FALHA: servidor nao subiu"; exit 1; }
+
+    # `-v ON_ERROR_STOP=1` NAO e detalhe. Sem ele o `psql` devolve 0 mesmo quando o SQL falha, e a
+    # carga "tem sucesso" com a tabela inexistente — foi o que aconteceu em 2026-08-22: os dois
+    # regimes rodaram, leram 0/200, e o erro real nunca apareceu. E a MESMA armadilha que derrubou
+    # uma corrida mais cedo hoje, com o nome da extensao, reintroduzida em codigo novo.
+    if ! PGUSER=postgres psql -h /var/run/postgresql -v ON_ERROR_STOP=1 -q -c \
+      "CREATE TABLE bench_contention (id bigint, value bigint) USING theodb_columnar;
+       INSERT INTO bench_contention SELECT g, g FROM generate_series(1,$CONT_LINHAS) g;"; then
+      echo "FALHA: carga de $CONT_LINHAS linhas nao completou (erro acima)"; exit 1
+    fi
+    echo "-- $regime: $CONT_LINHAS linhas, shared_buffers=$SB --"
+    # O tamanho REAL contra o `shared_buffers` declarado — sem isto, "exceeds-cache" e so um rotulo.
+    tam=$(PGUSER=postgres psql -h /var/run/postgresql -v ON_ERROR_STOP=1 -tAc \
+      "SELECT pg_total_relation_size('bench_contention')" 2>&1)
+    # Vazio ou nao-numerico significa que a consulta falhou — e um `-lt` contra vazio e FALSO, entao
+    # a guarda de regime passaria calada. Tratar aqui e o que a torna guarda.
+    case "$tam" in
+      ''|*[!0-9]*) echo "FALHA: nao consegui medir o tamanho da tabela (psql disse: $tam)"; exit 1 ;;
+    esac
+    echo "   tabela: $((tam / 1048576)) MiB contra shared_buffers=$SB"
+    if [ "$regime" = "exceeds-cache" ] && [ "$tam" -lt 33554432 ]; then
+      echo "FALHA: o dado ($((tam / 1048576)) MiB) NAO excede os 32 MB de cache — o regime seria falso"; exit 1
+    fi
+
+    PGUSER=postgres /root/venv/bin/theodb-bench contention --system theodb \
+      --table bench_contention --path columnar \
+      --readers "$CONT_LEITORES" --writers "$CONT_ESCRITORES" \
+      --read-ops 200 --write-ops 200 --regime "$regime"
+    echo "=== contencao :: $regime fim rc=$? $(date -Is) ==="
+  done
+  echo "=== FIM $(date -Is) ==="
+  exit 0
+fi
+
+# SMOKE PRIMEIRO. Exercita heap+colunar+parquet+oraculo num unico N, em poucos minutos. Se o
+# pipeline estiver quebrado, descobre-se aqui — e nao depois de carregar 2 milhoes de linhas
+# seis vezes, duas vezes.
+PRIMEIRA="${TAGS%% *}"
+subir "$PRIMEIRA" || exit 1
+if ! medir "$PRIMEIRA" "$SMOKE" "/root/res-$STAMP/smoke"; then
+  echo "=== SMOKE REPROVOU — o sweep caro NAO foi executado ==="
+  exit 1
+fi
+echo "=== smoke ok $(date -Is) ==="
+
+for tag in $TAGS; do
+  subir "$tag" || exit 1
+  medir "$tag" "$SUITE" "/root/res-$STAMP/$tag" || echo "AVISO: $tag terminou nao-zero (bundle preservado)"
+done
+
+# Registra QUAL corrida acabou de rodar. Sem isto a coleta faz `tar /root/res-*` e varre tambem os
+# resultados de corridas anteriores — inclusive os que vieram DENTRO do snapshot, porque ele foi
+# tirado de um host que ja tinha medido. Colher resultado velho junto com novo e pior que nao colher:
+# parece completo.
+echo "$STAMP" > /root/ULTIMA_CORRIDA
+
+echo "=== FIM $(date -Is) resultados em /root/res-$STAMP ==="
+touch /root/PRONTO

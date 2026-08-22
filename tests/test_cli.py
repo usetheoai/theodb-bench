@@ -171,3 +171,77 @@ def test_a_negative_budget_is_refused() -> None:
 
     with pytest.raises(Exception, match="positive"):
         adapter_overrides(build_timeout=0)
+
+
+# --- isolamento declarado pela CLI -------------------------------------------------
+#
+# MEDIDO em 2026-08-21, rodando o arnes num host dedicado: os perfis `nightly` e `release`
+# declaram `isolation_required`, e com ele `cpu_limit` e `memory_limit` viram checks OBRIGATORIOS.
+# A CLI nunca construia um `IsolationPlan`, entao `RunRequest.isolation` ficava no default vazio,
+# os dois checks saiam `UNAVAILABLE` e a corrida era `INVALID` — em QUALQUER hardware.
+#
+# Ou seja: dois dos cinco perfis do arnes eram inalcancaveis pelo seu proprio ponto de entrada.
+# Nao e limitacao de maquina; e superficie faltando.
+
+
+def test_a_cli_aceita_declaracao_de_cpu_set() -> None:
+    from theodb_bench.cli import build_parser
+
+    args = build_parser().parse_args(
+        ["run", "vector/synthetic/smoke", "--system", "fake", "--cpu-set", "2-5"]
+    )
+
+    assert args.cpu_set == "2-5"
+
+
+def test_a_cli_aceita_declaracao_de_limite_de_memoria() -> None:
+    from theodb_bench.cli import build_parser
+
+    args = build_parser().parse_args(
+        ["run", "vector/synthetic/smoke", "--system", "fake", "--memory", "8GiB"]
+    )
+
+    assert args.memory == "8GiB"
+
+
+def test_o_isolamento_declarado_CHEGA_ao_plano() -> None:
+    """Uma flag lida e descartada e pior que nenhuma flag — a corrida passa a parecer
+    configurada e o portao continua reprovando sem que ninguem entenda por que.
+
+    Este teste existe porque o defeito original era exatamente esse: o plano nunca
+    era construido, e o unico sintoma visivel era um `INVALID` no fim da corrida.
+    """
+    from theodb_bench.cli import build_isolation_plan
+    from theodb_bench.isolation import parse_cpu_set
+
+    plano = build_isolation_plan(cpu_set="2-5", memory="8GiB", numa_node=None)
+
+    assert plano.cpu_set == parse_cpu_set("2-5")
+    assert plano.memory_bytes == 8 * 1024**3
+
+
+def test_um_plano_sem_declaracao_permanece_vazio() -> None:
+    """Nao declarar continua sendo legitimo: o perfil `research` nao exige isolamento,
+    e inventar um default esconderia do usuario que nada foi declarado."""
+    from theodb_bench.cli import build_isolation_plan
+
+    plano = build_isolation_plan(cpu_set=None, memory=None, numa_node=None)
+
+    assert plano.cpu_set is None
+    assert plano.memory_bytes is None
+
+
+def test_sufixo_simples_segue_systemd_e_docker_base_1024() -> None:
+    """MEDIDO em 2026-08-21, e custou uma corrida: `systemd-run -p MemoryMax=48G` cria um cgroup de
+    48 GiB (systemd usa base 1024 para K/M/G/T), enquanto este parser usava base 1000. O cgroup
+    ficava em 51,5 GB, a declaracao em 48,0 GB, e o arnes reportava — corretamente — que o cgroup
+    permitia MAIS que o declarado.
+
+    O mesmo texto ia para os dois lugares e significava coisas diferentes. Alinhar com systemd e
+    docker e o que remove a armadilha; as formas explicitas continuam sem ambiguidade.
+    """
+    from theodb_bench.cli import parse_memory_size
+
+    assert parse_memory_size("48G") == 48 * 1024**3   # como systemd e docker leem
+    assert parse_memory_size("48GiB") == 48 * 1024**3
+    assert parse_memory_size("48GB") == 48 * 1000**3  # SI explicito continua SI

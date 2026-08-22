@@ -261,3 +261,67 @@ def test_cgroup_probe_states_why_it_is_unusable_when_it_is() -> None:
     assert support.detail
     if not support.usable:
         assert "not writable" in support.detail or "not mounted" in support.detail
+
+
+# ------------------------------------------- limite de memoria vindo de fora
+#
+# MEDIDO em 2026-08-21: `apply_isolation` NUNCA marcava `memory_limit_applied = True`. Os dois ramos
+# devolviam `unavailable`, um deles dizendo "run under an externally created cgroup instead" — um
+# conselho que o proprio arnes nunca verificava. Como `memory_limit` e obrigatorio sob
+# `isolation_required`, os perfis `nightly` e `release` eram inalcancaveis POR CONSTRUCAO, em
+# qualquer hardware.
+#
+# A correcao nao implementa delegacao de cgroup (que exigiria privilegio e teria efeito colateral
+# sobre o host). Ela faz o que o conselho ja pedia: LER o limite do cgroup em que o processo ja roda,
+# e comparar com o declarado.
+
+
+def test_um_limite_externo_menor_ou_igual_ao_declarado_respeita_a_declaracao(tmp_path) -> None:
+    from theodb_bench.isolation import read_effective_memory_limit
+
+    (tmp_path / "memory.max").write_text("8589934592\n", encoding="utf-8")  # 8 GiB
+
+    assert read_effective_memory_limit(tmp_path) == 8 * 1024**3
+
+
+def test_cgroup_sem_limite_reporta_ausencia_e_nao_zero(tmp_path) -> None:
+    """`max` significa SEM limite. Devolver 0 ou um numero grande faria um cgroup irrestrito
+    passar por restrito — que e pior que reprovar, porque a corrida pareceria isolada."""
+    from theodb_bench.absent import Absent
+    from theodb_bench.isolation import read_effective_memory_limit
+
+    (tmp_path / "memory.max").write_text("max\n", encoding="utf-8")
+
+    assert isinstance(read_effective_memory_limit(tmp_path), Absent)
+
+
+def test_sem_arquivo_de_cgroup_reporta_ausencia(tmp_path) -> None:
+    from theodb_bench.absent import Absent
+    from theodb_bench.isolation import read_effective_memory_limit
+
+    assert isinstance(read_effective_memory_limit(tmp_path), Absent)
+
+
+def test_o_plano_e_respeitado_quando_o_cgroup_externo_e_mais_apertado(tmp_path) -> None:
+    """O check se chama "Declared memory bound was respected". Um cgroup de 8 GiB com 16 GiB
+    declarados RESPEITA a declaracao — ele a cumpre com folga."""
+    from theodb_bench.isolation import IsolationPlan, apply_isolation
+
+    (tmp_path / "memory.max").write_text("8589934592\n", encoding="utf-8")
+    aplicado = apply_isolation(
+        IsolationPlan(memory_bytes=16 * 1024**3), cgroup_path=tmp_path
+    )
+
+    assert aplicado.memory_limit_applied is True
+
+
+def test_o_plano_NAO_e_respeitado_quando_o_cgroup_externo_e_mais_frouxo(tmp_path) -> None:
+    from theodb_bench.absent import Absent
+    from theodb_bench.isolation import IsolationPlan, apply_isolation
+
+    (tmp_path / "memory.max").write_text("34359738368\n", encoding="utf-8")  # 32 GiB
+    aplicado = apply_isolation(
+        IsolationPlan(memory_bytes=8 * 1024**3), cgroup_path=tmp_path
+    )
+
+    assert isinstance(aplicado.memory_limit_applied, Absent)

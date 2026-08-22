@@ -7,6 +7,51 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`run --cpu-set` / `--memory` / `--numa-node`: os perfis `nightly` e `release` deixam de ser
+  inalcançáveis pelo próprio ponto de entrada do arnês.** Eles declaram `isolation_required`, o que
+  torna `cpu_limit` e `memory_limit` obrigatórios — e a CLI **nunca construía um `IsolationPlan`**,
+  então `RunRequest.isolation` ficava no default vazio, os dois checks saíam `UNAVAILABLE` e a corrida
+  era `INVALID` **em qualquer hardware**. Dois dos cinco perfis não eram limitação de máquina: era
+  superfície faltando (B-098)
+- `parse_memory_size` distingue `GiB` de `GB` deliberadamente — um limite declarado errado por 7% é um
+  limite errado, e o arnês compara o uso observado contra o valor **declarado** (B-098)
+- `ops/provision.sh` — provisiona um host de bench e, com `--verify`, **reprova em ~2 s** se faltar
+  qualquer capacidade, antes de qualquer trabalho caro. É a fonte de verdade do que a máquina precisa
+  ter; o snapshot da nuvem passa a ser cache derivado dele (B-098)
+- `ops/bench-run.sh` — executor com ordem imposta: portão de capacidades → servidor (criando o
+  diretório de Parquet dentro do contêiner) → proveniência lida do servidor → **smoke barato** →
+  sweep. Um pipeline quebrado é descoberto em 35 s, não depois de carregar 2 milhões de linhas seis
+  vezes (B-098)
+- `ops/bench-droplet.sh` — uma corrida ponta a ponta da máquina de desenvolvimento: cria o host,
+  roda o portão, mede, colhe os bundles e **destrói por `trap EXIT`**. A garantia importa mais que
+  parece: o desperdício medido não veio de droplet caro, veio de droplet ocioso — um `delete` no fim
+  do caminho feliz não roda quando o script morre (B-098)
+- Coleta verificada: um `scp` bem-sucedido de arquivo vazio ou corrompido deixava de contar como
+  colhido, e o droplet era destruído com o resultado dentro. Agora confere tamanho e integridade do
+  arquivo antes de afirmar que colheu (B-098)
+- Coleta escopada à corrida atual: `bench-run.sh` registra qual corrida acabou de rodar, e a coleta
+  leva só essa. Um snapshot carrega o que estava no disco do host de origem, então varrer `res-*`
+  misturava corrida velha com nova — pior que não colher, porque parece completo (B-098)
+- `provision.sh` instala uma regra `tmpfiles.d` para `/var/run/postgresql`. Medido: `/var/run` é
+  tmpfs, foi a única das nove capacidades que não sobreviveu ao snapshot, e o mecanismo nativo do
+  systemd resolve sem reprovisionar (B-098)
+- O arnês chega ao host como **repositório git** (`git bundle` + `git clone`), não tarball. Medido: o
+  portão `clean_source_tree` roda `git status` na árvore DO ARNÊS, e um tarball não leva `.git` — com
+  bundle o portão passa (`rc=0`, HEAD conhecido, árvore limpa), **sem credencial e sem rede**. A ideia
+  de que isso exigia deploy key do GitHub estava errada (B-098)
+- `PROFILE` parametrizável em `bench-run.sh` e `bench-droplet.sh` (default `research`) (B-098)
+- A guarda que preserva o droplet quando a coleta falha passou a distinguir "há resultado que não
+  consegui copiar" de "a corrida falhou antes de produzir qualquer coisa". No segundo caso não há o
+  que perder, e manter a máquina de pé só queima dinheiro — medido, aconteceu (B-098)
+- **Teto de tempo na condução da medição remota.** Medido: a corrida terminou no droplet com `rc=0` e
+  o SSH que a conduzia morreu sem devolver — o script local ficou pendurado **duas horas** com o host
+  ocioso cobrando. O `trap EXIT` protege contra o script **morrer**; não protege contra ele **travar**,
+  e são falhas diferentes. Agora há `timeout` mais `ServerAliveInterval`, e o código 124 é tratado como
+  *"pode haver resultado no host"* — que foi exatamente o caso (B-098)
+- `ops/README.md` — por que o script é a verdade e o snapshot é cache, e por que código por tarball
+  limita todo veredito a `EXPLORATORY` (B-098)
+
 ## [0.7.0] - 2026-08-21
 
 ### Added

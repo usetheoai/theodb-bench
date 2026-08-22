@@ -42,6 +42,7 @@ from theodb_bench.datasets import (
 from theodb_bench.doctor import render_report, run_doctor
 from theodb_bench.environment import capture_environment
 from theodb_bench.errors import BenchError, ConfigError, ErrorContext, Phase
+from theodb_bench.isolation import IsolationPlan, parse_cpu_set
 from theodb_bench.formats import (
     AnnDataset,
     StreamedAnnDataset,
@@ -425,6 +426,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             dataset_id=dataset_id,
             dataset_version=dataset_version,
             dataset_sha256=dataset_sha256,
+            isolation=build_isolation_plan(args.cpu_set, args.memory, args.numa_node),
         )
     )
     write_report(outcome.bundle)
@@ -685,6 +687,64 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# Sufixo SIMPLES (K/M/G/T) segue systemd e docker: base 1024. Nao e a convencao SI, e e deliberado —
+# o mesmo texto vai para `systemd-run -p MemoryMax=` e para `--memory`, e se cada lado o lesse numa
+# base o cgroup ficaria mais frouxo que a declaracao. Medido: `48G` virava 51,5 GB de um lado e
+# 48,0 GB do outro, e o portao reprovava com razao. As formas explicitas nao tem ambiguidade.
+_UNIDADES: dict[str, int] = {
+    "": 1, "b": 1,
+    "k": 1024, "kb": 1000, "kib": 1024,
+    "m": 1024**2, "mb": 1000**2, "mib": 1024**2,
+    "g": 1024**3, "gb": 1000**3, "gib": 1024**3,
+    "t": 1024**4, "tb": 1000**4, "tib": 1024**4,
+}
+
+
+def parse_memory_size(texto: str) -> int:
+    """Converte '8GiB', '16G' ou '1024' em bytes.
+
+    Distingue GiB de GB de proposito: um limite de memoria declarado errado por 7% e um
+    limite errado, e o arnes compara o uso observado contra o valor DECLARADO.
+    """
+    limpo = texto.strip().lower().replace(" ", "")
+    i = 0
+    while i < len(limpo) and (limpo[i].isdigit() or limpo[i] == "."):
+        i += 1
+    numero, sufixo = limpo[:i], limpo[i:]
+    if not numero:
+        raise ConfigError(
+            f"tamanho de memoria invalido: {texto!r}; use algo como '8GiB' ou '16G'",
+            context=ErrorContext(phase=Phase.PREFLIGHT),
+        )
+    if sufixo not in _UNIDADES:
+        raise ConfigError(
+            f"unidade de memoria desconhecida em {texto!r}: {sufixo!r}; "
+            f"conhecidas: {', '.join(sorted(u for u in _UNIDADES if u))}",
+            context=ErrorContext(phase=Phase.PREFLIGHT),
+        )
+    return int(float(numero) * _UNIDADES[sufixo])
+
+
+def build_isolation_plan(
+    cpu_set: str | None, memory: str | None, numa_node: int | None
+) -> IsolationPlan:
+    """Traduz o que o usuario DECLAROU num plano de isolamento.
+
+    Existe como funcao propria, e nao inline no `run`, porque o defeito que ela conserta era
+    justamente um plano que nunca era construido: a CLI aceitava a corrida, o
+    `RunRequest.isolation` ficava no default vazio, e `cpu_limit`/`memory_limit` saiam
+    UNAVAILABLE — tornando `nightly` e `release` inalcancaveis em QUALQUER hardware.
+
+    Nao declarar continua legitimo: `research` nao exige isolamento, e inventar um default
+    esconderia do usuario que nada foi declarado.
+    """
+    return IsolationPlan(
+        cpu_set=parse_cpu_set(cpu_set) if cpu_set else None,
+        memory_bytes=parse_memory_size(memory) if memory else None,
+        numa_node=numa_node,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="theodb-bench",
@@ -823,6 +883,28 @@ def build_parser() -> argparse.ArgumentParser:
         "declare regression_gate record that no detection happened without one.",
     )
     run.add_argument(
+        "--cpu-set",
+        default=None,
+        metavar="LIST",
+        help="CPUs the measurement is confined to, as a Linux CPU list (e.g. '2-5' or "
+        "'0,2,4'). Os perfis `nightly` e `release` exigem isolamento declarado: sem esta "
+        "flag o check `cpu_limit` fica UNAVAILABLE e a corrida e INVALID nesses perfis.",
+    )
+    run.add_argument(
+        "--memory",
+        default=None,
+        metavar="SIZE",
+        help="upper bound on memory for the measurement (e.g. '8GiB', '16G', ou bytes). "
+        "Mesma razao do --cpu-set: sem declaracao o check `memory_limit` fica UNAVAILABLE.",
+    )
+    run.add_argument(
+        "--numa-node",
+        type=int,
+        default=None,
+        metavar="N",
+        help="NUMA node the measurement is pinned to. Irrelevante num host de no unico.",
+    )
+    run.add_argument(
         "--build-timeout",
         type=int,
         default=None,
@@ -905,10 +987,9 @@ def cmd_contention(args: argparse.Namespace) -> int:
         regime=Regime(args.regime),
     )
 
-    def novo_cliente() -> Any:
-        # `.build()` constroi o adapter; `get_adapter` devolve a ENTRADA do registro. Confundir os
-        # dois produz `AttributeError` no primeiro uso, e foi o que aconteceu.
-        return get_adapter(args.system).build()
+    # `.build()` constroi o adapter; `get_adapter` devolve a ENTRADA do registro. Confundir os
+    # dois produz `AttributeError` no primeiro uso, e foi o que aconteceu.
+    novo_cliente = _contention_client_factory(lambda: get_adapter(args.system).build())
 
     def ler(cliente: Any, index: int) -> None:
         cliente.execute_analytical(tabela, _contention_probe(index))
@@ -927,16 +1008,53 @@ def cmd_contention(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _contention_client_factory(construir: Any) -> Any:
+    """Envolve o construtor do adapter para entregar um cliente **conectado**.
+
+    MEDIDO em 2026-08-22: `measure_contention` chama `make_reader()`/`make_writer()` e usa o
+    resultado direto — ele **não** inicia o cliente. A fábrica anterior fazia apenas `.build()`, que
+    constrói o adapter sem conectar; toda operação levantava e o contador registrava `0/200` sem que
+    o erro aparecesse em lugar nenhum. A tabela existia, a sonda resolvia, e as duas operações
+    funcionavam quando chamadas à mão — porque à mão eu chamava `prepare`/`start`/`wait_ready`, que é
+    um caminho que o código de produção não percorria.
+
+    Cada chamada entrega um cliente NOVO de propósito: a contenção que se mede é entre sessões, e
+    clientes compartilhando conexão mediriam serialização do cliente em vez do servidor.
+    """
+
+    def fabrica() -> Any:
+        cliente = construir()
+        cliente.prepare()
+        cliente.start()
+        cliente.wait_ready()
+        return cliente
+
+    return fabrica
+
+
 def _contention_probe(index: int) -> Any:
     """A consulta que o lado de leitura emite, um agregado — que é o que um scan analítico faz.
 
     `expected` fica `None` de propósito: aqui o que se mede é CONTENÇÃO, não correção, e um oráculo
     exigiria conhecer o conteúdo da tabela no meio de uma carga que está escrevendo nela. A
     correção do resultado analítico é medida pela suíte analítica, que roda sem escritor.
+
+    O `id` é `total_rows` e NÃO `contention-{index}`. MEDIDO em 2026-08-22, na primeira corrida
+    contra um servidor de verdade: o adapter real resolve o SQL por `ANALYTICAL_SQL[query.id]`, e um
+    id inventado nunca está lá — toda leitura levantava `unknown analytical query`, e os dois regimes
+    fecharam com `0/200`. Os testes do executor não pegaram porque usavam o adapter `fake`, que não
+    consulta esse mapa e aceita qualquer id: suíte verde sobre um caminho que não existe.
+
+    `total_rows` (`SELECT count(*)`) é o agregado que serve aqui por duas razões: ele varre a tabela
+    inteira, que é o que contende com o escritor, e não nomeia coluna nenhuma — a tabela de contenção
+    é `(id, value)`, e um agregado sobre `amount` resolveria o template e só falharia no servidor.
+
+    O `index` continua no parâmetro porque ele identifica a OPERAÇÃO para quem lê o log; ele não entra
+    mais no id da consulta, que é o que precisa ser resolvível.
     """
     from theodb_bench.adapters.base import AnalyticalQuery
 
-    return AnalyticalQuery(id=f"contention-{index}", description="scan sob contenção")
+    return AnalyticalQuery(id="total_rows", description=f"scan sob contenção (op {index})")
 
 
 def cmd_tpch(args: argparse.Namespace) -> int:
