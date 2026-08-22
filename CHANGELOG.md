@@ -7,7 +7,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`ops/bench-run.sh` esperava o servidor errado, e o head-to-head com o AlloyDB Omni não rodava por causa
+  disso (B-058).** A espera usava `docker exec pg_isready`, que responde "accepting" contra o servidor
+  **temporário** que o entrypoint sobe durante o init — e que escuta só no socket unix. Amostrado a cada 3 s no
+  Omni: aos **18 s** `docker exec` diz SIM e o TCP diz não; aos **21 s** o `docker exec` volta a dizer não,
+  porque o init derrubou o temporário; só aos **27 s** os dois dizem SIM. Um script que avança aos 18 s aplica
+  `ALTER SYSTEM` num servidor que será descartado, e a configuração some sem erro. A espera passa a ser por
+  **TCP**, que só o servidor real publica.
+
 ### Added
+- **O engine colunar do Omni é ligado e VERIFICADO antes da corrida analítica (B-058).**
+  `google_columnar_engine.enabled` vem desligado e é de contexto `postmaster` — não há `SET` de sessão que o
+  ligue. Sem isso toda consulta colunar cai para heap e o portão do adapter aborta a corrida, o que é o portão
+  funcionando, mas custa um droplet inteiro para descobrir. O script agora faz `ALTER SYSTEM` + restart e
+  **lê o valor de volta do servidor** — verificado por execução: `off` → `on`, com `Memory Used (MB) = 0`
+  logo após, que é o estado que o portão do adapter espera antes do `google_columnar_engine_add()`.
+
 - **O bundle passa a declarar a configuração de sessão em que o número analítico foi obtido (B-102).**
   O arnês liga `theodb.enable_columnar_agg` para medir o colunar com o pushdown — o que é correto e está
   justificado — mas **verificava a GUC e descartava a resposta**, então o artefato lia exatamente como se o

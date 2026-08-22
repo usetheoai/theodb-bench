@@ -125,11 +125,53 @@ if [ "$MODE" = "headtohead" ]; then
     docker rm -f "$nome" >/dev/null 2>&1 || true
     docker run -d --name "$nome" -e POSTGRES_PASSWORD=x -e POSTGRES_HOST_AUTH_METHOD=trust \
       -p "$porta":5432 --shm-size=4g "$imagem" >/dev/null || { echo "FALHA: docker run $nome"; return 1; }
+    # Prontidao lida de FORA, por TCP — nao por `docker exec pg_isready`.
+    #
+    # Medido no Omni em 2026-08-22, amostrando os dois predicados a cada 3 s:
+    #
+    #   18s  docker exec: SIM   tcp: nao   <- servidor TEMPORARIO do entrypoint,
+    #                                         que so escuta no socket unix
+    #   21s  docker exec: nao   tcp: nao   <- o init derruba o temporario
+    #   27s  docker exec: SIM   tcp: SIM   <- servidor real
+    #
+    # Um script que avanca aos 18 s conversa com um servidor que vai ser DESCARTADO:
+    # o `ALTER SYSTEM` some junto e ninguem reclama. Foi assim que o primeiro teste
+    # desta funcao falhou. O porto TCP so e publicado pelo servidor real, entao ele
+    # e o unico dos dois que responde a pergunta que se quis fazer.
     for _ in $(seq 1 120); do
-      docker exec "$nome" pg_isready -U postgres >/dev/null 2>&1 && return 0
+      PGPASSWORD=x pg_isready -h 127.0.0.1 -p "$porta" -U postgres >/dev/null 2>&1 && return 0
       sleep 3
     done
     echo "FALHA: $nome nao subiu"; docker logs "$nome" 2>&1 | tail -15; return 1
+  }
+
+  # O engine colunar do Omni vem DESLIGADO e o GUC e de contexto `postmaster`: nao ha
+  # SET de sessao que o ligue. Sem isto toda consulta colunar cai para heap, e o portao
+  # do adapter aborta a corrida com essa mensagem exata — que e o portao funcionando,
+  # mas custa um droplet inteiro para descobrir. Ligar aqui e a metade facil; a metade
+  # que importa e VERIFICAR no servidor, porque `ALTER SYSTEM` sem restart nao aplica e
+  # nao reclama (B-058).
+  ligar_colunar_omni() {
+    docker exec -u postgres omni psql -q -c \
+      "ALTER SYSTEM SET google_columnar_engine.enabled = on" >/dev/null 2>&1 \
+      || { echo "FALHA: ALTER SYSTEM do google_columnar_engine"; return 1; }
+    docker restart omni >/dev/null 2>&1 || { echo "FALHA: restart do omni"; return 1; }
+    local pronto=nao
+    for _ in $(seq 1 120); do
+      # TCP, pelo mesmo motivo medido em `subir_externo`.
+      PGPASSWORD=x pg_isready -h 127.0.0.1 -p 55460 -U postgres >/dev/null 2>&1 \
+        && { pronto=sim; break; }
+      sleep 3
+    done
+    [ "$pronto" = sim ] || { echo "FALHA: omni nao voltou apos restart"; return 1; }
+    local v
+    v=$(docker exec -u postgres omni psql -tAc \
+      "SHOW google_columnar_engine.enabled" 2>/dev/null | tr -d '[:space:]')
+    [ "$v" = "on" ] || {
+      echo "FALHA: google_columnar_engine.enabled = '${v:-<vazio>}' depois de ALTER SYSTEM + restart"
+      return 1
+    }
+    echo "-- omni: google_columnar_engine.enabled = on (lido do servidor) --"
   }
 
   docker pull "$OMNI_IMAGE" >/dev/null 2>&1 || { echo "FALHA: pull do Omni"; exit 1; }
@@ -138,6 +180,11 @@ if [ "$MODE" = "headtohead" ]; then
   # TheoDB pelo socket unix (como as outras suites); os outros dois por TCP, um porto cada.
   subir "${TAGS%% *}" || exit 1
   subir_externo omni "$OMNI_IMAGE" 55460 || exit 1
+  # So para as suites analiticas: ligar o engine custa memoria e um restart, e uma
+  # corrida vetorial nao o usa.
+  case "$SUITE" in
+    analytical/*) ligar_colunar_omni || exit 1 ;;
+  esac
   subir_externo pgv "$PGVECTOR_IMAGE" 55461 || exit 1
 
   echo "-- proveniencia dos TRES, lida de cada servidor --"
