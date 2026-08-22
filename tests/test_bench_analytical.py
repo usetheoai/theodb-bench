@@ -261,3 +261,36 @@ def test_the_reference_scan_gives_a_floor_and_the_right_answer() -> None:
     seconds, answer = timed_reference_scan(rows, "sum_amount")
     assert seconds > 0
     assert answer == expected_answer(rows, "sum_amount")
+
+
+# ------------------------ B-102: o ponto declara a configuracao em que foi medido
+
+
+def test_the_point_carries_the_analytical_gucs_that_were_applied() -> None:
+    """Sem este fio o acessor existe e nao registra nada — o bundle le como o default.
+
+    Espelha `bench/vector.py`, que ja faz o mesmo com `effective_search_parameters()`.
+    """
+    adapter = _ready()
+    adapter.effective_analytical_settings = lambda: {"theodb.enable_columnar_agg": "on"}  # type: ignore[method-assign]
+    benchmark = AnalyticalBenchmark(_workload(paths=(COLUMNAR,), queries=QUERIES[:1], row_count=500))
+
+    benchmark.load(adapter)
+    points = benchmark.points(adapter, 1)
+
+    assert points, "a corrida nao produziu ponto algum"
+    for point in points:
+        assert point.parameters.get("theodb.enable_columnar_agg") == "on"
+
+
+def test_a_system_that_applies_no_analytical_guc_adds_nothing_to_the_point() -> None:
+    """Ausencia continua ausente: nada de chave vazia poluindo o artefato."""
+    adapter = _ready()
+    benchmark = AnalyticalBenchmark(_workload(paths=(ROW,), queries=QUERIES[:1], row_count=500))
+
+    benchmark.load(adapter)
+    points = benchmark.points(adapter, 1)
+
+    assert points
+    for point in points:
+        assert not [k for k in point.parameters if k.startswith("theodb.")]

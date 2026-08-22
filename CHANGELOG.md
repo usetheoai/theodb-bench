@@ -8,6 +8,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **O bundle passa a declarar a configuração de sessão em que o número analítico foi obtido (B-102).**
+  O arnês liga `theodb.enable_columnar_agg` para medir o colunar com o pushdown — o que é correto e está
+  justificado — mas **verificava a GUC e descartava a resposta**, então o artefato lia exatamente como se o
+  default tivesse rodado. Medido em 2026-08-22, mesma tabela e mesmo servidor: `count(*)` a 2M custa
+  **911 ms** no default e **74 ms** com ela ligada. O recurso é opt-in e vem DESLIGADO no produto, de modo
+  que todo número colunar já publicado descreve uma configuração que o leitor não roda. Agora
+  `effective_analytical_settings()` leva as GUCs confirmadas até `points[].parameters`, pelo mesmo caminho
+  que `effective_search_parameters()` já usava para os botões de busca.
+
 - **`run --cpu-set` / `--memory` / `--numa-node`: os perfis `nightly` e `release` deixam de ser
   inalcançáveis pelo próprio ponto de entrada do arnês.** Eles declaram `isolation_required`, o que
   torna `cpu_limit` e `memory_limit` obrigatórios — e a CLI **nunca construía um `IsolationPlan`**,

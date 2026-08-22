@@ -485,6 +485,12 @@ class AnalyticalBenchmark:
                             },
                         ),
                     )
+                    # A configuracao em que o ponto foi medido, e nao a que o produto
+                    # traz por default. Mesmo tratamento que `bench/vector.py` da aos
+                    # botoes de busca, e pela mesma razao: sem isto o artefato le como
+                    # se o default tivesse rodado (B-102). Chaveado pelo nome da GUC,
+                    # que ja e inequivoco e nao pede mudanca de schema.
+                    point.parameters.update(adapter.effective_analytical_settings())
                     if measurement.status != "measured" or measurement.latency is None:
                         # `invalid` e vocabulario INTERNO desta familia; o artefato conhece
                         # `measured | unsupported | skipped | failed`. Uma medida invalidada —

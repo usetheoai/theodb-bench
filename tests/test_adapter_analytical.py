@@ -420,3 +420,39 @@ def test_the_plan_proof_is_per_query_not_per_table() -> None:
         adapter.assert_analytical_path(
             table, AnalyticalQuery(id="group_by_category", description="")
         )
+
+
+# ------------------------ B-102: verificar e nao registrar e o mesmo dano ao contrario
+#
+# O bloco acima explica por que a GUC e LIGADA. Isto cobre a outra metade: liga-la
+# sem que o artefato diga que ela estava ligada. Medido em 2026-08-22, mesma tabela,
+# mesmo servidor: count(*) a 2M custa 911 ms no default e 74 ms com ela ligada.
+# O `system.json` de uma corrida publicada trazia 14 GUCs de servidor e nenhuma de
+# sessao, e dos 53 conceitos que publicam numero colunar, 3 mencionavam a GUC.
+#
+# O caminho vetorial ja resolvia isso: `_verified_search_settings` era ATRIBUIDO a
+# `_effective_search_parameters` e chegava em `points[].parameters` por
+# `bench/vector.py`. No caminho analitico o mesmo valor era verificado e DESCARTADO.
+
+
+def test_theodb_reports_the_analytical_guc_it_actually_applied() -> None:
+    """A GUC verificada tem de ficar legivel — verificar e jogar fora nao registra nada."""
+    server = _AnalyticalStub(relam="theodb_columnar")
+    server.settings["theodb.enable_columnar_agg"] = ("on", "session")
+    adapter = _wire(TheoDBAdapter(), server)
+    table = AnalyticalTable(name="bench_analytical_columnar", columns=COLUMNS, path="columnar")
+
+    adapter.load_analytical(table, ROWS)
+
+    assert adapter.effective_analytical_settings() == {"theodb.enable_columnar_agg": "on"}
+
+
+def test_heap_reports_no_analytical_guc_because_it_applies_none() -> None:
+    """Ausencia registrada como ausencia: heap nao liga nada, e o artefato diz isso."""
+    server = _AnalyticalStub(relam="heap")
+    adapter = _wire(TheoDBAdapter(), server)
+    table = AnalyticalTable(name="bench_analytical_row", columns=COLUMNS, path="row")
+
+    adapter.load_analytical(table, ROWS)
+
+    assert adapter.effective_analytical_settings() == {}

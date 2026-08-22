@@ -208,6 +208,7 @@ class PostgresAdapter(SystemAdapter):
         self._row_count: int = 0
         self._search_parameters: dict[str, Any] = {}
         self._effective_search_parameters: dict[str, str] = {}
+        self._effective_analytical_settings: dict[str, str] = {}
         self._built_indexes: set[str] = set()
         #: Tables whose BM25 index was built in this session. Searching one that
         #: was never built is refused rather than answered with zero rows.
@@ -646,6 +647,18 @@ class PostgresAdapter(SystemAdapter):
             effective[guc] = setting
         return effective
 
+    def effective_analytical_settings(self) -> dict[str, str]:
+        """As GUCs de sessao que o caminho analitico aplicou E teve confirmadas.
+
+        Simetrico a :meth:`effective_search_parameters`. Existe porque
+        `theodb.enable_columnar_agg` vem DESLIGADA no produto e o arnes a liga para
+        medir o colunar com o pushdown -- o que e correto e esta justificado em
+        `ANALYTICAL_SESSION_SETTINGS`. O que nao era correto e ligar sem que o
+        artefato dissesse: quem le o bundle nao tinha como saber que o numero
+        descreve uma configuracao que NAO e o default do produto (B-102).
+        """
+        return dict(self._effective_analytical_settings)
+
     def effective_search_parameters(self) -> dict[str, str]:
         """The search settings verified in force, keyed by GUC name.
 
@@ -977,8 +990,11 @@ class PostgresAdapter(SystemAdapter):
             return
         for guc, literal in mapping.items():
             self._execute(f"SET {guc} = {literal}")
-        # Same verification the search knobs get, and for the same reason.
-        self._verified_search_settings(mapping)
+        # Same verification the search knobs get, and for the same reason -- and the
+        # result is KEPT, not discarded. Verifying a GUC and then throwing the answer
+        # away registers nothing: the bundle reads exactly as if the default had run
+        # (B-102). The vector path already did this via `_effective_search_parameters`.
+        self._effective_analytical_settings = self._verified_search_settings(mapping)
 
     def append_analytical_row_sql(
         self, table: AnalyticalTable, row: Sequence[Any]

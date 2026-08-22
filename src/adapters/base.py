@@ -598,6 +598,24 @@ class SystemAdapter(ABC):
         """
         return None
 
+    def effective_analytical_settings(self) -> dict[str, str]:
+        """As GUCs de sessao que o caminho ANALITICO aplicou e teve confirmadas.
+
+        Irma de :meth:`effective_search_parameters`, e pelo mesmo motivo. A diferenca
+        que a justifica: um botao de busca e pedido pelo experimento, enquanto estas
+        sao ligadas pelo ADAPTER para que o caminho seja o caminho -- o que e correto
+        e esta justificado em `ANALYTICAL_SESSION_SETTINGS`, mas torna o silencio pior:
+        quem le o bundle nao pediu nada e nao tem como saber que houve mudanca.
+
+        `theodb.enable_columnar_agg` vem DESLIGADA no produto. Medido em 2026-08-22,
+        mesma tabela e mesmo servidor: `count(*)` a 2M custa 911 ms no default e 74 ms
+        com ela ligada. Um artefato que nao a declara descreve uma configuracao que o
+        leitor nao roda (B-102).
+
+        Um sistema que nao liga nada devolve um mapa vazio, que e resposta honesta.
+        """
+        return {}
+
     def effective_search_parameters(self) -> dict[str, str]:
         """The tuning verified to be in force, as the system reports it.
 
