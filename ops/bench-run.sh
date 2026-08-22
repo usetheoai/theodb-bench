@@ -442,13 +442,25 @@ if [ "$MODE" = "contention" ]; then
       echo "FALHA: o dado ($((tam / 1048576)) MiB) NAO excede os 32 MB de cache — o regime seria falso"; exit 1
     fi
 
+    # `tee`, e nao so stdout. Medido em 2026-08-22: os dois regimes mediram, imprimiram o
+    # JSON, e a coleta do `bench-droplet.sh` reportou "nenhum resultado foi produzido" e
+    # destruiu a maquina — CERTO, sobre uma ausencia real, porque nada tinha sido escrito em
+    # /root/res-$STAMP. Os numeros so sobreviveram porque estavam no log local de quem
+    # lancou, e tiveram de ser recortados dele.
+    #
+    # Isto NAO transforma a contencao numa suite: ela continua sem bundle validado, e o
+    # [[B-104]] registra isso. O que muda e que o resultado passa a ser COLHIDO.
+    mkdir -p "/root/res-$STAMP"
     PGUSER=postgres /root/venv/bin/theodb-bench contention --system theodb \
       --table bench_contention --path columnar \
       --readers "$CONT_LEITORES" --writers "$CONT_ESCRITORES" \
-      --read-ops 200 --write-ops 200 --regime "$regime"
-    echo "=== contencao :: $regime fim rc=$? $(date -Is) ==="
+      --read-ops 200 --write-ops 200 --regime "$regime" \
+      | tee "/root/res-$STAMP/contencao-$regime.json"
+    echo "=== contencao :: $regime fim rc=${PIPESTATUS[0]} $(date -Is) ==="
   done
-  echo "=== FIM $(date -Is) ==="
+  echo "$STAMP" > /root/ULTIMA_CORRIDA
+  echo "=== FIM $(date -Is) resultados em /root/res-$STAMP ==="
+  touch /root/PRONTO
   exit 0
 fi
 

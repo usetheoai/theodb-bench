@@ -7,6 +7,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **O `MODE=contention` media, imprimia e não guardava nada — a corrida inteira era colhida como vazia.** Ele
+  escrevia o JSON só em stdout, sem tocar em `/root/res-$STAMP` nem marcar `ULTIMA_CORRIDA`, que é o que a
+  coleta lê. **Medido em 2026-08-22:** os dois regimes mediram, o portão reportou *"nenhum resultado foi
+  produzido"* e destruiu a máquina — **corretamente, sobre uma ausência real** —, e os números só
+  sobreviveram porque estavam no log local de quem lançou, de onde tiveram de ser recortados. Agora ele
+  escreve `contencao-<regime>.json`, marca a corrida e emite `PRONTO`. O `rc` passa a vir de
+  `PIPESTATUS[0]`: com `| tee`, um `$?` reportaria o status do `tee` e **esconderia uma corrida falha**.
+  Isso não transforma a contenção numa suíte — ela continua sem bundle validado, e o B-104 registra isso —,
+  mas o resultado passa a ser colhido.
+
 ### Added
 - **O protocolo ganha um lugar para resultado que compara CAMINHOS, e o veredito pareado chega ao bundle
   (B-105).** `points()` devolve um ponto por configuração, e há resultados que não são sobre um ponto: o
