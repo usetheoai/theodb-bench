@@ -173,6 +173,55 @@ subir_externo() {
 
 portao
 
+# ------------------------------------------------- casado por recall, DUAS familias (B-057)
+#
+# POR QUE ESTE MODO EXISTE, e por que o `headtohead` acima nao serve para isto. Aquele roda
+# UMA suite contra tres sistemas, que e o certo quando os tres aceitam os mesmos botoes. Nao
+# e o caso entre familias de indice: o nosso e o do pgvector sao GRAFO e tomam `ef_search`;
+# o do AlloyDB Omni e ARVORE e toma `num_leaves_to_search`. Medido em 2026-08-22, ao rodar
+# `vector/sift/hnsw` contra os tres: a perna do Omni voltou `run_not_refused` — o arnes
+# recusou-se a medir, corretamente, porque nao sabe aplicar o botao pedido.
+#
+# O comando `head2head` do arnes JA tem a forma certa (`--benchmark-a` e `--benchmark-b`,
+# uma suite por sistema) e eu construi o modo errado sem olhar. Este modo so o invoca.
+if [ "$MODE" = "recall-casado" ]; then
+  SUITE_A="${SUITE_A:-vector/sift/hnsw}"
+  SUITE_B="${SUITE_B:-vector/sift/scann-ah}"
+  SIST_A="${SIST_A:-theodb}"
+  SIST_B="${SIST_B:-alloydbomni}"
+
+  docker pull "$OMNI_IMAGE" >/dev/null 2>&1 || { echo "FALHA: pull do Omni"; exit 1; }
+  subir "${TAGS%% *}" || exit 1
+  subir_externo omni "$OMNI_IMAGE" 55460 || exit 1
+
+  echo "-- proveniencia, lida de cada servidor --"
+  PGUSER=postgres psql -h /var/run/postgresql -tAc "select 'theodb: '||version()" 2>&1 | head -1 || true
+  PGPASSWORD=x psql -h 127.0.0.1 -p 55460 -U postgres -tAc "select 'omni:   '||version()" 2>&1 | head -1 || true
+
+  ARG_DS=""
+  DS="$(dataset_exigido "$SUITE_A")"
+  if [ -n "$DS" ]; then
+    echo "-- suite exige dataset '$DS'; buscando e verificando --"
+    /root/venv/bin/theodb-bench dataset fetch "$DS" || { echo "FALHA: fetch de $DS"; exit 1; }
+    ARG_DS="--dataset $DS"
+  fi
+
+  mkdir -p "/root/res-$STAMP"
+  echo "=== recall-casado $SIST_A($SUITE_A) x $SIST_B($SUITE_B) inicio $(date -Is) ==="
+  /root/venv/bin/theodb-bench head2head \
+    --system-a "$SIST_A" --dsn-a "postgresql:///postgres?host=/var/run/postgresql&user=postgres" \
+    --benchmark-a "$SUITE_A" \
+    --system-b "$SIST_B" --dsn-b "postgresql://postgres:x@127.0.0.1:55460/postgres" \
+    --benchmark-b "$SUITE_B" \
+    $ARG_DS | tee "/root/res-$STAMP/recall-casado.txt"
+  echo "=== recall-casado fim rc=$? $(date -Is) ==="
+
+  echo "$STAMP" > /root/ULTIMA_CORRIDA
+  echo "=== FIM $(date -Is) resultados em /root/res-$STAMP ==="
+  touch /root/PRONTO
+  exit 0
+fi
+
 # ---------------------------------------------------------------- tres vias (B-059 bullet 4)
 if [ "$MODE" = "headtohead" ]; then
   # Perfil que exige isolamento sem isolamento declarado produz bundle INVALID depois de
