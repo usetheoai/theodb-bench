@@ -231,6 +231,10 @@ class QueryMeasurement:
     engine_counters: dict[str, int] = field(default_factory=dict)
     """Contadores de EFEITO do motor sobre o scan medido — o que ele FEZ, não o que o
     catálogo declara. Vazio para motores que não expõem nenhum; vazio **não é zero**."""
+
+    admit_declines: tuple[str, ...] = ()
+    """Por que o motor recusou o caminho rápido NESTA query. Um caminho vetorizado que
+    não admite a query é indistinguível, pelo relógio, de um que admite e é lento."""
     bytes_read: int | None = None
     rows_per_second: float | None = None
     bytes_per_second: float | None = None
@@ -361,6 +365,7 @@ class AnalyticalBenchmark:
         measurement.wall_seconds = min(latencies) / 1000.0 if latencies else None
         if last is not None:
             measurement.engine_counters = dict(last.engine_counters)
+            measurement.admit_declines = tuple(last.admit_declines)
             measurement.rows_processed = last.rows_processed
             measurement.bytes_read = last.bytes_read
             measurement.stage_seconds = dict(last.stage_seconds)
@@ -501,6 +506,10 @@ class AnalyticalBenchmark:
                     # leitor do bundle o veria.
                     for nome, valor in (measurement.engine_counters or {}).items():
                         point.parameters[f"engine.{nome}"] = valor
+                    if measurement.admit_declines:
+                        point.parameters["engine.admit_decline"] = "; ".join(
+                            dict.fromkeys(measurement.admit_declines)
+                        )
                     if measurement.status != "measured" or measurement.latency is None:
                         # `invalid` e vocabulario INTERNO desta familia; o artefato conhece
                         # `measured | unsupported | skipped | failed`. Uma medida invalidada —

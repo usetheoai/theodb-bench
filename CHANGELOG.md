@@ -8,6 +8,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **O motivo de recusa do colunar era emitido e descartado em silêncio — medido: a primeira corrida com
+  `ADMIT_TRACE=1` produziu ZERO linhas, com o trace funcionando o tempo todo.** `admit_trace` emite via
+  `pgrx::warning!`, e um WARNING do Postgres vai ao log do servidor **e** ao cliente como *notice*. O adapter
+  não instalava handler de notice, então o lado cliente jogava fora. Agora há **dois** canais independentes:
+  um handler que atribui cada recusa **à query que a causou** (`engine.admit_decline` no bundle) e a coleta
+  do log do servidor em `admit-decline.log`. A atribuição por query é o que o [[B-106]] pede — o log do
+  servidor dá uma lista plana, e uma lista plana não diz qual das 43 queries do ClickBench foi recusada por
+  quê. **Verificado por teste unitário contra uma conexão falsa; contra servidor real, só na próxima corrida.**
 - **`perf` estava desligado em TODA corrida, por duas causas empilhadas — medido: 0 de 18 bundles do acervo
   têm `perf.cycles`.** (1) O `PerfStatCollector` tinha a **própria cópia** da dedução
   `perf_event_paranoid <= 2`, a mesma que foi corrigida em `environment.py` no dia anterior — root contorna a

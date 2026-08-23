@@ -8,6 +8,7 @@ invariants live. Behaviour that needs a live server is marked `integration`.
 from __future__ import annotations
 
 import struct
+from types import SimpleNamespace
 from typing import ClassVar
 
 import numpy as np
@@ -1035,3 +1036,45 @@ def test_assert_index_used_still_refuses_a_plan_without_the_index(
     with pytest.raises(AdapterError) as excinfo:
         adapter.assert_index_used(query, "bench_idx")
     assert "bench_idx" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------- admit-trace
+
+
+class _NoticeConexao:
+    """Conexao falsa que emite um notice durante a execucao, como o servidor faz."""
+
+    def __init__(self, notices: list[str]) -> None:
+        self._notices = notices
+        self._handler = None
+        self.autocommit = True
+
+    def add_notice_handler(self, handler) -> None:  # noqa: ANN001
+        self._handler = handler
+
+    def emitir(self) -> None:
+        for texto in self._notices:
+            if self._handler is not None:
+                self._handler(SimpleNamespace(message_primary=texto))
+
+
+def test_o_adapter_atribui_cada_recusa_de_admissao_a_query_que_a_causou() -> None:
+    """B-106: o log do servidor da uma lista plana; o dod pede por-query.
+
+    `pgrx::warning!` chega ao cliente como notice. Sem handler ele e descartado em
+    silencio — foi por isso que a primeira corrida com ADMIT_TRACE=1 rendeu zero linhas.
+    """
+    from src.adapters.postgres import PostgresAdapter
+
+    adapter = PostgresAdapter.__new__(PostgresAdapter)
+    adapter._admit_declines = []
+    conexao = _NoticeConexao(
+        ["theodb_admit_decline: aggregate over an expression", "some other notice"]
+    )
+    adapter._install_notice_handler(conexao)
+
+    conexao.emitir()
+
+    assert adapter._drain_admit_declines() == ("aggregate over an expression",)
+    # drenar zera: a proxima query nao herda a recusa da anterior.
+    assert adapter._drain_admit_declines() == ()

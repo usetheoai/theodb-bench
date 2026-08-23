@@ -334,6 +334,14 @@ class AnalyticalResult:
     """Where a scan spent its time: metadata, pruning, read, decode, filter,
     aggregate. A single wall time cannot say which of those a change moved."""
 
+    admit_declines: tuple[str, ...] = ()
+    """Motivos pelos quais o motor RECUSOU o caminho rapido nesta query.
+
+    Um caminho vetorizado que existe e nao admite a query e indistinguivel, pelo relogio,
+    de um que admite e e lento — e a diferenca decide o que consertar. Vazio quando o trace
+    esta desligado (o normal) ou quando nada foi recusado; as duas leituras se distinguem
+    pelo parametro do bundle que declara se o trace estava ligado."""
+
     engine_counters: dict[str, int] = field(default_factory=dict)
     """Contadores de EFEITO que o motor expõe sobre o scan que acabou de rodar.
 

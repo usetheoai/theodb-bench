@@ -215,11 +215,43 @@ class PostgresAdapter(SystemAdapter):
         self._lexical_built: set[str] = set()
         #: Edge relations whose persisted CSR was folded in this session.
         self._graphs_built: set[str] = set()
+        #: Recusas de admissao colhidas por notice desde a ultima query (ver
+        #: `_install_notice_handler`). Por-query, e nao acumulado: o log do servidor
+        #: da a lista plana, e a atribuicao a query e o que decide o que consertar.
+        self._admit_declines: list[str] = []
 
     # ------------------------------------------------------------ capabilities
 
     def capabilities(self) -> dict[str, bool]:
         return {"vector_exact": True}
+
+    # ------------------------------------------------------------- admit trace
+
+    #: Prefixo que `admit_trace` emite via `pgrx::warning!` (columnar_agg.rs).
+    ADMIT_DECLINE_PREFIX = "theodb_admit_decline:"
+
+    def _install_notice_handler(self, connection: Any) -> None:
+        """Escuta os notices do servidor para nao perder o motivo da recusa.
+
+        Um WARNING do Postgres vai ao log do servidor E ao cliente. Sem handler, o
+        lado cliente descarta em silencio — medido em 2026-08-23: a primeira corrida
+        com ADMIT_TRACE=1 rendeu ZERO linhas com o trace funcionando o tempo todo.
+        """
+
+        def colher(diag: Any) -> None:
+            texto = str(getattr(diag, "message_primary", "") or "")
+            if texto.startswith(self.ADMIT_DECLINE_PREFIX):
+                self._admit_declines.append(
+                    texto[len(self.ADMIT_DECLINE_PREFIX) :].strip()
+                )
+
+        connection.add_notice_handler(colher)
+
+    def _drain_admit_declines(self) -> tuple[str, ...]:
+        """Devolve as recusas desta query e zera — a proxima nao herda as anteriores."""
+        colhidas = tuple(self._admit_declines)
+        self._admit_declines.clear()
+        return colhidas
 
     # --------------------------------------------------------------- lifecycle
 
@@ -234,6 +266,7 @@ class PostgresAdapter(SystemAdapter):
                 autocommit=True,
                 application_name=self.config.application_name,
             )
+            self._install_notice_handler(self._connection)
         except Exception as exc:  # psycopg raises a family of connection errors
             raise SystemUnavailableError(
                 f"could not connect to {self.system_id}",
@@ -1086,6 +1119,7 @@ class PostgresAdapter(SystemAdapter):
         self, table: AnalyticalTable, query: AnalyticalQuery
     ) -> AnalyticalResult:
         sql = self._analytical_query_sql(table, query)
+        self._drain_admit_declines()  # descarta o que sobrou do preparo desta query
         started = time.perf_counter()
         rows = self._fetch_all(sql)
         elapsed = time.perf_counter() - started
@@ -1096,6 +1130,7 @@ class PostgresAdapter(SystemAdapter):
             rows=tuple(tuple(row) for row in rows),
             wall_seconds=elapsed,
             engine_counters=contadores,
+            admit_declines=self._drain_admit_declines(),
         )
 
     def assert_analytical_path(
