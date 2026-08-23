@@ -27,6 +27,7 @@ SUITE_A="${SUITE_A:-}"
 SUITE_B="${SUITE_B:-}"
 SIST_A="${SIST_A:-}"
 SIST_B="${SIST_B:-}"
+ADMIT_TRACE="${ADMIT_TRACE:-}"
 # Parametros do modo contencao. Precisam estar AQUI e serem encaminhados abaixo: o `bench-run.sh` roda
 # no host remoto, e uma variavel exportada aqui nao atravessa o `ssh`. MEDIDO em 2026-08-22: declarei
 # `CONT_LINHAS=10000000` na linha de comando, ela nao foi encaminhada, e o executor remoto usou o
@@ -251,7 +252,7 @@ fi
 echo "=== medindo (suite=$SUITE tags=$TAGS) ==="
 timeout "$MEDICAO_TIMEOUT" ssh -o StrictHostKeyChecking=no \
   -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
-  "root@$IP" "SUITE='$SUITE' TAGS='$TAGS' PROFILE='$PROFILE' CPU_SET='$CPU_SET' MEM_MAX='$MEM_MAX' MODE='$MODE' CONT_LINHAS='$CONT_LINHAS' CONT_LEITORES='$CONT_LEITORES' CONT_ESCRITORES='$CONT_ESCRITORES' SFS='$SFS' SMOKE='$SMOKE' OMNI_IMAGE='$OMNI_IMAGE' PGVECTOR_IMAGE='$PGVECTOR_IMAGE' REPS='$REPS' SUITE_A='$SUITE_A' SUITE_B='$SUITE_B' SIST_A='$SIST_A' SIST_B='$SIST_B' /root/bench-run.sh"
+  "root@$IP" "SUITE='$SUITE' TAGS='$TAGS' PROFILE='$PROFILE' CPU_SET='$CPU_SET' MEM_MAX='$MEM_MAX' MODE='$MODE' CONT_LINHAS='$CONT_LINHAS' CONT_LEITORES='$CONT_LEITORES' CONT_ESCRITORES='$CONT_ESCRITORES' SFS='$SFS' SMOKE='$SMOKE' OMNI_IMAGE='$OMNI_IMAGE' PGVECTOR_IMAGE='$PGVECTOR_IMAGE' REPS='$REPS' SUITE_A='$SUITE_A' SUITE_B='$SUITE_B' SIST_A='$SIST_A' SIST_B='$SIST_B' ADMIT_TRACE='$ADMIT_TRACE' /root/bench-run.sh"
 RC=$?
 # 124 e o codigo do `timeout`. Dizer isso em vez de deixar um rc=124 solto importa: a corrida pode ter
 # TERMINADO no droplet e so a conducao ter travado — foi o que aconteceu — e nesse caso os resultados

@@ -68,10 +68,19 @@ PY
   echo "=== portao ok $(date -Is) ==="
 }
 
+# `THEODB_ADMIT_TRACE=1` faz o motor DIZER por que recusou cada candidato ao agregado colunar
+# (`am/columnar_agg.rs`), em vez de deixar a recusa invisivel no plano. Precisa chegar ao SERVIDOR
+# e nao ao cliente: quem emite o aviso e o backend.
+#
+# Vazio por default: o proprio codigo avisa que a resolucao da variavel cai no caminho quente do
+# planner, e ligar isso numa corrida de medicao mediria o trace junto.
+ADMIT_TRACE="${ADMIT_TRACE:-}"
+
 subir() {
   local tag="$1"
   docker rm -f theodb >/dev/null 2>&1 || true
   docker run -d --name theodb -e POSTGRES_HOST_AUTH_METHOD=trust \
+    ${ADMIT_TRACE:+-e THEODB_ADMIT_TRACE=1} \
     -v /var/run/postgresql:/var/run/postgresql --shm-size=8g \
     "theodb:$tag" \
     -c shared_buffers=16GB -c maintenance_work_mem=8GB \
