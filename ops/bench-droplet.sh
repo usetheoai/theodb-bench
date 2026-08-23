@@ -147,6 +147,33 @@ for spec in $TAGS; do
   }
 done
 
+RUN_SCRIPT="$(dirname "$0")/bench-run.sh"
+
+# PORTAO: toda funcao chamada em bench-run.sh existe em bench-run.sh.
+#
+# `bash -n` NAO cobre isto — bash so resolve nome de funcao na hora de executar, entao um
+# script com uma chamada a funcao inexistente passa na checagem de sintaxe e falha em
+# producao, com `command not found` no meio de um log de milhares de linhas.
+#
+# MEDIDO em 2026-08-23, e custou uma corrida inteira: `colher_admit_trace` foi "adicionada"
+# num patch que morreu antes de gravar; um segundo patch inseriu so a CHAMADA. `bash -n`
+# aprovou, o droplet rodou, e o artefato que a funcao existia para colher simplesmente nao
+# apareceu — indistinguivel de "nao houve nada para colher".
+faltantes=$(
+  grep -oE '^[[:space:]]*[a-z_][a-z0-9_]*[[:space:]]+"' "$RUN_SCRIPT" \
+    | tr -d ' "' | sort -u \
+    | while read -r f; do
+        grep -qE "^[[:space:]]*${f}\(\)" "$RUN_SCRIPT" && continue
+        command -v "$f" >/dev/null 2>&1 && continue
+        echo "$f"
+      done
+)
+if [ -n "$faltantes" ]; then
+  echo "FALHA: bench-run.sh chama funcao(oes) que nao define e que nao sao comando:"
+  echo "$faltantes" | sed 's/^/       /'
+  exit 1
+fi
+
 echo "=== criando $NOME ($TAMANHO, $REGIAO) $(date -Is) ==="
 IMAGEM="ubuntu-24-04-x64"
 if [ -n "$SNAPSHOT" ]; then

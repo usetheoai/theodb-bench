@@ -181,7 +181,10 @@ class AlloyDBOmniAdapter(PgvectorAdapter):
         self._execute(f"SELECT google_columnar_engine_add({_literal(table.name)})")
 
     def assert_analytical_path(
-        self, table: AnalyticalTable, query: AnalyticalQuery | None = None
+        self,
+        table: AnalyticalTable,
+        query: AnalyticalQuery | None = None,
+        probe_sql: str | None = None,
     ) -> None:
         """Prove the columnar engine is on, loaded, and actually in the plan.
 
@@ -238,11 +241,14 @@ class AlloyDBOmniAdapter(PgvectorAdapter):
         # Probed with the query about to run, when there is one: pushdown coverage
         # depends on the query shape here as much as on ours, and proving it once
         # per table would call an unsupported shape supported.
-        sql = (
-            self._analytical_query_sql(table, query)
-            if query is not None
-            else f"SELECT count(*) FROM {_identifier(table.name)}"  # noqa: S608
-        )
+        # `probe_sql` primeiro: quando quem chama JA TEM o SQL da carga (o TPC-H tem — ele o
+        # constroi na linha de cima), sondar com outra coisa responde outra pergunta.
+        if probe_sql is not None:
+            sql = probe_sql
+        elif query is not None:
+            sql = self._analytical_query_sql(table, query)
+        else:
+            sql = f"SELECT count(*) FROM {_identifier(table.name)}"  # noqa: S608
         plan = self._fetch_one(f"EXPLAIN (COSTS OFF) {sql}")
         plan_text = str(plan[0]) if plan and plan[0] else ""
         if "columnar scan" not in plan_text:

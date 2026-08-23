@@ -84,6 +84,24 @@ ADMIT_TRACE="${ADMIT_TRACE:-}"
 # `--perf`. Consertar a primeira sem a segunda nao mudaria nada.
 PERF="${PERF:-}"
 
+# Colhe as linhas de `theodb_admit_decline` do LOG DO SERVIDOR.
+#
+# `pgrx::warning!` manda ao cliente como *notice* E ao log do servidor. Este e o canal que
+# nao depende de handler nenhum. O outro canal (handler de notice no adapter) da a atribuicao
+# POR QUERY, que este nao da — os dois existem porque respondem perguntas diferentes.
+#
+# MEDIDO em 2026-08-23: esta funcao ja tinha sido "adicionada" uma vez e nao existia. O patch
+# morreu num assert antes de gravar, o segundo inseriu so a CHAMADA, e `bash -n` passou —
+# bash nao resolve nome de funcao em tempo de parse. Validade sintatica nao e existencia.
+colher_admit_trace() {
+  local destino="$1"
+  [ -n "$ADMIT_TRACE" ] || return 0
+  mkdir -p "$destino"
+  docker logs theodb 2>&1 | grep -F "theodb_admit_decline:" > "$destino/admit-decline.log" || true
+  local n; n=$(wc -l < "$destino/admit-decline.log" 2>/dev/null || echo 0)
+  echo "-- admit-trace: $n recusa(s) no log do servidor --"
+}
+
 subir() {
   local tag="$1"
   docker rm -f theodb >/dev/null 2>&1 || true

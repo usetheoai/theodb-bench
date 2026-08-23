@@ -1228,6 +1228,14 @@ def cmd_tpch(args: argparse.Namespace) -> int:
                         ),
                         "matches_oracle": m.matches_oracle,
                         "rows_returned": m.rows_returned,
+                        # So sai quando ha recusa: um campo vazio em toda query treinaria
+                        # quem le a pular a linha, e e justamente a linha que diz POR QUE
+                        # o caminho rapido nao rodou.
+                        **(
+                            {"admit_declines": list(m.admit_declines)}
+                            if m.admit_declines
+                            else {}
+                        ),
                     }
                     for qid, m in medidas.items()
                 },

@@ -8,6 +8,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **A sonda do portão de residência não usava a query que ia ser medida, e isso matou a perna colunar do
+  AlloyDB Omni nos dois fatores de escala.** O `run_tpch_suite` chamava o portão sem SQL, então ele caía no
+  default `count(*)` — que o planner do Omni não roteia para colunar num store de 1 MB. O portão abortou
+  dizendo *"residency is necessary and not sufficient"*, e estava **certo sobre a sonda e mudo sobre
+  q1/q6/q18**. O comentário no código declarava esse limite como inevitável (*"o SQL do TPC-H é construído
+  pela suíte"*) — e ele é construído **três linhas abaixo**, por `tpch_sql`. A sonda passa a ser a q18, que
+  junta as três tabelas. Uma sonda que não representa a carga aprova ou recusa a coisa errada; qual das duas
+  é sorte.
+- **`colher_admit_trace` foi "adicionada" ao `bench-run.sh` e não existia — e `bash -n` aprovou.** O patch
+  morreu num assert antes de gravar; o seguinte inseriu só a **chamada**. Bash não resolve nome de função em
+  tempo de parse, então validade sintática não é existência, e o artefato que a função existia para colher
+  simplesmente não apareceu — indistinguível de "não havia o que colher". Agora a função existe **e** o
+  `bench-droplet.sh` tem portão que recusa a corrida quando `bench-run.sh` chama função que não define
+  (provado por injeção: passa no script real, pega a chamada órfã).
+- **A instrumentação de recusa não alcançava o TPC-H, que é a carga que a motivou.** `run_tpch_suite` usa
+  `execute_analytical_sql`, que não passa por `execute_analytical` — onde a colheita tinha sido ligada. O
+  motivo agora é drenado por query e sai em `admit_declines` no JSON, só quando há recusa ([[B-106]]).
 - **O motivo de recusa do colunar era emitido e descartado em silêncio — medido: a primeira corrida com
   `ADMIT_TRACE=1` produziu ZERO linhas, com o trace funcionando o tempo todo.** `admit_trace` emite via
   `pgrx::warning!`, e um WARNING do Postgres vai ao log do servidor **e** ao cliente como *notice*. O adapter

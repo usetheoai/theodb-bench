@@ -650,7 +650,10 @@ class SystemAdapter(ABC):
         return {}
 
     def assert_analytical_path(
-        self, table: AnalyticalTable, query: AnalyticalQuery | None = None
+        self,
+        table: AnalyticalTable,
+        query: AnalyticalQuery | None = None,
+        probe_sql: str | None = None,
     ) -> None:
         """Provar que a consulta analítica medida usou MESMO o caminho que ela declara.
 

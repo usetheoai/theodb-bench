@@ -426,7 +426,7 @@ def test_the_suite_proves_the_declared_path_before_timing_it() -> None:
         def load_analytical(self, table, rows) -> None:  # type: ignore[no-untyped-def]
             pass
 
-        def assert_analytical_path(self, table, query=None) -> None:  # type: ignore[no-untyped-def]
+        def assert_analytical_path(self, table, query=None, probe_sql=None) -> None:  # type: ignore[no-untyped-def]
             provados.append(table.name)
 
         def execute_analytical_sql(self, sql: str):  # type: ignore[no-untyped-def]
@@ -449,7 +449,7 @@ def test_a_path_that_cannot_be_proven_aborts_instead_of_publishing() -> None:
         def load_analytical(self, table, rows) -> None:  # type: ignore[no-untyped-def]
             pass
 
-        def assert_analytical_path(self, table, query=None) -> None:  # type: ignore[no-untyped-def]
+        def assert_analytical_path(self, table, query=None, probe_sql=None) -> None:  # type: ignore[no-untyped-def]
             raise AdapterError(
                 "o store nao esta residente",
                 context=ErrorContext(phase=Phase.MEASUREMENT, system="x"),
@@ -475,3 +475,63 @@ def test_an_adapter_without_the_gate_still_runs() -> None:
 
     r = run_tpch_suite(_MotorMinimo(), scale_factor=0.001, seed=42, repetitions=1)
     assert set(r) == {q.id for q in TPCH_QUERIES}
+
+
+def test_the_residency_gate_probes_with_the_query_it_is_about_to_measure() -> None:
+    """Uma sonda que nao representa a carga recusa (ou aprova) a coisa errada.
+
+    Medido em 2026-08-23: a perna colunar do Omni abortou porque a sonda era `count(*)`
+    sobre 1 MB, que o planner dele nao roteia para colunar. Isso nao diz nada sobre
+    q1/q6/q18 — a recusa estava certa sobre a sonda e errada sobre a corrida.
+    """
+    from theodb_bench.bench.tpch import run_tpch_suite
+
+    sondas: list[str | None] = []
+
+    class _Motor:
+        def load_analytical(self, table, rows) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def execute_analytical_sql(self, sql: str):  # type: ignore[no-untyped-def]
+            return ()
+
+        def assert_analytical_path(self, table, query=None, probe_sql=None):  # type: ignore[no-untyped-def]
+            sondas.append(probe_sql)
+
+    run_tpch_suite(_Motor(), scale_factor=0.001, seed=42, repetitions=1)
+
+    assert sondas, "o portao nao foi chamado"
+    assert all(sql is not None for sql in sondas), (
+        f"o portao foi sondado sem o SQL da carga: {sondas}"
+    )
+    # A sonda tem de ser SQL do TPC-H, e nao um count(*) generico.
+    assert all("select" in (sql or "").lower() for sql in sondas), sondas
+    assert any("lineitem" in (sql or "").lower() for sql in sondas), sondas
+
+
+def test_the_tpch_run_records_why_the_fast_path_was_declined() -> None:
+    """O B-106 pergunta POR QUE o colunar perde, e o relogio nao responde isso.
+
+    `run_tpch_suite` chama `execute_analytical_sql`, que nao passa por
+    `execute_analytical` — entao a colheita de recusas feita la nao alcanca esta carga.
+    Sem isto, a instrumentacao existe e nao cobre justamente a medicao que a motivou.
+    """
+    from theodb_bench.bench.tpch import run_tpch_suite
+
+    class _MotorQueRecusa:
+        def load_analytical(self, table, rows) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def execute_analytical_sql(self, sql: str):  # type: ignore[no-untyped-def]
+            return ()
+
+        def drain_admit_declines(self):  # type: ignore[no-untyped-def]
+            return ("agg over an expression",)
+
+    medidas = run_tpch_suite(
+        _MotorQueRecusa(), scale_factor=0.001, seed=42, repetitions=1
+    )
+
+    assert medidas
+    for qid, m in medidas.items():
+        assert m.admit_declines == ("agg over an expression",), (qid, m)

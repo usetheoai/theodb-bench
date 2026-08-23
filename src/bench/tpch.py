@@ -372,7 +372,6 @@ def tpch_sql(schema: AnalyticalSchema, query_id: str) -> str:
 @dataclass(frozen=True)
 class TpchMeasurement:
     """O que uma query registrada produziu, e se ela produziu a coisa certa."""
-
     query_id: str
     seconds: float
     matches_oracle: bool
@@ -384,6 +383,12 @@ class TpchMeasurement:
     #: sistema. A mediana é preferida à média pela mesma razão: ela não se move quando uma
     #: das repetições cai numa pausa que não é do motor.
     samples: tuple[float, ...] = ()
+
+    admit_declines: tuple[str, ...] = ()
+    """Por que o motor recusou o caminho rápido nesta query.
+
+    Um caminho vetorizado que RECUSA e um que admite e é lento são indistinguíveis pelo
+    relógio, e mandam consertar coisas opostas. Vazio quando o trace está desligado."""
 
 
 def run_tpch_suite(
@@ -443,18 +448,29 @@ def run_tpch_suite(
     # inteira de números com rótulo errado. `bench/analytical.py` invalida em vez de abortar
     # porque lá os caminhos são independentes e derrubar tudo perderia heap e Parquet.
     #
-    # LIMITE DECLARADO: prova-se RESIDÊNCIA, não o plano. O plano exigiria o SQL registrado em
-    # `ANALYTICAL_SQL`, e o do TPC-H é construído pela suíte a partir do esquema. Residência diz
-    # onde as linhas estão; só o plano diria o que rodou.
+    # O limite declarado aqui era "prova-se RESIDÊNCIA, não o plano, porque o SQL do TPC-H é
+    # construído pela suíte". Ele **caiu**: o SQL é construído logo abaixo por `tpch_sql`, e
+    # nada impedia passá-lo à sonda. MEDIDO em 2026-08-23, e custou uma perna inteira: a perna
+    # colunar do AlloyDB Omni abortou nos dois fatores de escala porque a sonda default é
+    # `count(*)`, que o planner dele não roteia para colunar num store de 1 MB. A recusa estava
+    # CERTA sobre a sonda e não dizia nada sobre q1/q6/q18 — que é o oposto de medir.
+    #
+    # Uma sonda que não representa a carga aprova ou recusa a coisa errada; qual das duas ela
+    # faz é sorte.
     provar = getattr(engine, "assert_analytical_path", None)
     if callable(provar):
+        # A query que mais toca tabela é a que melhor representa a carga; q18 junta as três.
+        sonda_sql = tpch_sql(schema, "q18")
         for nome_logico in ordem:
-            provar(schema.table(f"{prefix}{nome_logico}"))
+            provar(schema.table(f"{prefix}{nome_logico}"), probe_sql=sonda_sql)
 
     medidas: dict[str, TpchMeasurement] = {}
     for query in TPCH_QUERIES:
         esperado = expected_tpch_answer(dados, query.id)
         sql = tpch_sql(schema, query.id)
+        dreno_previo = getattr(engine, "drain_admit_declines", None)
+        if callable(dreno_previo):
+            dreno_previo()  # descarta o que sobrou do preparo — a atribuicao e por query
         amostras: list[float] = []
         obtido: tuple[Any, ...] = ()
         concorda = True
@@ -466,8 +482,11 @@ def run_tpch_suite(
             # muda entre execuções é um defeito pior que uma resposta errada estável — e só
             # aparece se alguém olhar mais de uma vez.
             concorda = concorda and _answers_agree(obtido, esperado)
+        dreno = getattr(engine, "drain_admit_declines", None)
+        recusas = tuple(dict.fromkeys(dreno())) if callable(dreno) else ()
         medidas[query.id] = TpchMeasurement(
             query_id=query.id,
+            admit_declines=recusas,
             seconds=statistics.median(amostras),
             matches_oracle=concorda,
             rows_returned=len(obtido),

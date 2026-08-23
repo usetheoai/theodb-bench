@@ -1075,6 +1075,6 @@ def test_o_adapter_atribui_cada_recusa_de_admissao_a_query_que_a_causou() -> Non
 
     conexao.emitir()
 
-    assert adapter._drain_admit_declines() == ("aggregate over an expression",)
+    assert adapter.drain_admit_declines() == ("aggregate over an expression",)
     # drenar zera: a proxima query nao herda a recusa da anterior.
-    assert adapter._drain_admit_declines() == ()
+    assert adapter.drain_admit_declines() == ()

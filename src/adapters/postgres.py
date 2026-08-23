@@ -247,7 +247,7 @@ class PostgresAdapter(SystemAdapter):
 
         connection.add_notice_handler(colher)
 
-    def _drain_admit_declines(self) -> tuple[str, ...]:
+    def drain_admit_declines(self) -> tuple[str, ...]:
         """Devolve as recusas desta query e zera — a proxima nao herda as anteriores."""
         colhidas = tuple(self._admit_declines)
         self._admit_declines.clear()
@@ -1119,7 +1119,7 @@ class PostgresAdapter(SystemAdapter):
         self, table: AnalyticalTable, query: AnalyticalQuery
     ) -> AnalyticalResult:
         sql = self._analytical_query_sql(table, query)
-        self._drain_admit_declines()  # descarta o que sobrou do preparo desta query
+        self.drain_admit_declines()  # descarta o que sobrou do preparo desta query
         started = time.perf_counter()
         rows = self._fetch_all(sql)
         elapsed = time.perf_counter() - started
@@ -1130,11 +1130,14 @@ class PostgresAdapter(SystemAdapter):
             rows=tuple(tuple(row) for row in rows),
             wall_seconds=elapsed,
             engine_counters=contadores,
-            admit_declines=self._drain_admit_declines(),
+            admit_declines=self.drain_admit_declines(),
         )
 
     def assert_analytical_path(
-        self, table: AnalyticalTable, query: AnalyticalQuery | None = None
+        self,
+        table: AnalyticalTable,
+        query: AnalyticalQuery | None = None,
+        probe_sql: str | None = None,
     ) -> None:
         """Prove the rows are really in the path the label claims.
 
@@ -1164,7 +1167,10 @@ class PostgresAdapter(SystemAdapter):
         self._assert_plan_uses_the_path(table, query)
 
     def _assert_plan_uses_the_path(
-        self, table: AnalyticalTable, query: AnalyticalQuery | None = None
+        self,
+        table: AnalyticalTable,
+        query: AnalyticalQuery | None = None,
+        probe_sql: str | None = None,
     ) -> None:
         """Residency proves where the rows are; only the plan proves what ran.
 
@@ -1193,7 +1199,10 @@ class PostgresAdapter(SystemAdapter):
         # morreu com `column "amount" does not exist` sobre `tpch_customer`. O portão nunca
         # tinha sido exercitado fora do esquema para o qual foi escrito, e quem o ligou
         # (eu) supôs que fosse genérico.
-        if query is not None:
+        if probe_sql is not None:
+            probe_id = "carga"
+            sql = probe_sql
+        elif query is not None:
             probe_id = query.id
             sql = self._analytical_query_sql(table, query)
         else:
