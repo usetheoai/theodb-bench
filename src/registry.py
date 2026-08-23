@@ -285,7 +285,18 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
             k=10,
             warmup_queries=50,
             indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
-            search_sweep={"ef_search": (16, 64, 256)},
+            # M170 — a varredura ia so ate 256, e ali ela ACABAVA antes da pergunta.
+            #
+            # MEDIDO em 2026-08-23 contra o pgvector, mesmo `m=16` e mesmo corpus: no MESMO `ef` o
+            # grafo deles entrega mais recall (0,8824/0,9856/0,9998 contra 0,8720/0,9610/0,9952) e o
+            # nosso entrega mais vazao. E um trade-off consistente, e a comparacao honesta e a
+            # recall CASADO — mas a nossa curva terminava em 0,9952 e a deles chegava a 0,9998.
+            #
+            # Com isso nao da para distinguir "temos teto de recall" de "nao varremos alto o
+            # suficiente", e as duas coisas sao muito diferentes: a primeira e achado de
+            # arquitetura, a segunda e lacuna de medicao. 512/1024/2048 levam a curva ate onde a
+            # pergunta se resolve.
+            search_sweep={"ef_search": (16, 64, 256, 512, 1024, 2048)},
         ),
         default_repetitions=3,
     ),

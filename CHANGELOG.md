@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **A varredura de `ef_search` do `vector/sift/hnsw` vai até 2048, porque em 256 ela acabava antes da
+  pergunta.** Medido contra o pgvector no mesmo `m=16`: no mesmo knob o grafo deles entrega mais recall e o
+  nosso mais vazão — trade-off consistente —, mas a nossa curva terminava em 0,9952 e a deles chegava a
+  0,9998. Com isso não dava para distinguir **"temos teto de recall"** de **"não varremos alto o
+  suficiente"**, e a primeira é achado de arquitetura enquanto a segunda é lacuna de medição ([[B-057]]).
+
 ### Fixed
 - **A contenção media sem provar o caminho, e o `dod` do [[B-058]] exige o oposto.** Ela aplicava a sessão
   analítica — ligando `theodb.enable_columnar_agg` — e nunca verificava que o plano usava o caminho
