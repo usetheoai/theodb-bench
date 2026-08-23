@@ -94,6 +94,17 @@ ADMIT_TRACE="${ADMIT_TRACE:-}"
 # de `perf_event_paranoid` (consertado — root contorna a politica), e nenhum script passava
 # `--perf`. Consertar a primeira sem a segunda nao mudaria nada.
 PERF="${PERF:-}"
+# Sistema medido pelo `MODE=suite`. Ele cravava `--system theodb`, e com isso TRES suites do
+# registro — `vector/sift/scann-ah`, `vector/sift1m/scann-ah`, `vector/synthetic/scann-sweep` — eram
+# ESTRUTURALMENTE inalcancaveis: elas medem o access method `scann` do AlloyDB Omni, que o TheoDB nao
+# tem. MEDIDO em 2026-08-23: rodei a varredura do `pre_reordering` e os nove pontos vieram
+# `not measured`, com o bundle nomeado `...-scann-ah-theodb-...`. O arnes nao errou; ele mediu
+# exatamente o que lhe foi pedido, contra o sistema errado.
+SISTEMA="${SISTEMA:-theodb}"
+# O DSN acompanha o sistema: `theodb` roda no socket local; qualquer externo roda no contêiner que
+# `subir_externo` levanta na 55460. Resolver aqui, e nao no `medir()`, mantem os dois em UM lugar.
+ARG_DSN=""
+[ "$SISTEMA" != "theodb" ] && ARG_DSN="--dsn postgresql://postgres:x@127.0.0.1:55460/postgres"
 
 
 subir() {
@@ -159,12 +170,12 @@ medir() {
   if [ -n "$MEM_MAX" ] && command -v systemd-run >/dev/null 2>&1; then
     PGUSER=postgres systemd-run --scope --quiet -p "MemoryMax=$MEM_MAX" \
       /root/venv/bin/theodb-bench run "$suite" \
-      --system theodb --profile "$PROFILE" --output "$saida" $arg_ds \
+      --system "$SISTEMA" $ARG_DSN --profile "$PROFILE" --output "$saida" $arg_ds \
       ${REPS:+--repetitions "$REPS"} ${PERF:+--perf} \
       ${CPU_SET:+--cpu-set "$CPU_SET"} --memory "$MEM_MAX"
   else
     PGUSER=postgres /root/venv/bin/theodb-bench run "$suite" \
-      --system theodb --profile "$PROFILE" --output "$saida" $arg_ds \
+      --system "$SISTEMA" $ARG_DSN --profile "$PROFILE" --output "$saida" $arg_ds \
       ${REPS:+--repetitions "$REPS"} ${PERF:+--perf} \
       ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"}
   fi
@@ -498,11 +509,26 @@ fi
 # seis vezes, duas vezes.
 PRIMEIRA="${TAGS%% *}"
 subir "$PRIMEIRA" || exit 1
-if ! medir "$PRIMEIRA" "$SMOKE" "/root/res-$STAMP/smoke"; then
-  echo "=== SMOKE REPROVOU — o sweep caro NAO foi executado ==="
-  exit 1
+
+# Sistema externo: sobe o conteiner ANTES de medir, do mesmo jeito que os modos comparativos ja
+# faziam. Sem isto, `--system alloydbomni` mede contra um servidor que nao existe.
+if [ "$SISTEMA" != "theodb" ]; then
+  docker pull "$OMNI_IMAGE" >/dev/null 2>&1 || { echo "FALHA: pull do Omni"; exit 1; }
+  subir_externo omni "$OMNI_IMAGE" 55460 || exit 1
+  PGPASSWORD=x psql -h 127.0.0.1 -p 55460 -U postgres -tAc "select 'omni: '||version()" 2>&1 | head -1 || true
 fi
-echo "=== smoke ok $(date -Is) ==="
+
+# O smoke exercita heap+colunar+parquet+oraculo do TheoDB. Contra um sistema externo ele reprovaria
+# por motivo CERTO (o Omni nao tem `theodb_columnar`) e derrubaria a corrida antes do que interessa.
+if [ "$SISTEMA" = "theodb" ]; then
+  if ! medir "$PRIMEIRA" "$SMOKE" "/root/res-$STAMP/smoke"; then
+    echo "=== SMOKE REPROVOU — o sweep caro NAO foi executado ==="
+    exit 1
+  fi
+  echo "=== smoke ok $(date -Is) ==="
+else
+  echo "=== smoke PULADO: mede o caminho colunar do TheoDB, e o sistema medido e '$SISTEMA' ==="
+fi
 
 for tag in $TAGS; do
   subir "$tag" || exit 1
