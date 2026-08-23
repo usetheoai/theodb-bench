@@ -361,3 +361,40 @@ def test_the_engine_counters_reach_the_bundle_point() -> None:
     for ponto in pontos:
         assert ponto.parameters.get("engine.chunks_skipped") == 4, ponto.parameters
         assert ponto.parameters.get("engine.chunks_scanned") == 11, ponto.parameters
+
+
+def test_the_decline_reason_reaches_the_bundle_point() -> None:
+    """O motivo da recusa so existe se um leitor do bundle o encontrar.
+
+    Um caminho vetorizado que RECUSA a query e indistinguivel, pelo relogio, de um que
+    admite e e lento — e as duas leituras mandam consertar coisas opostas.
+    """
+    import dataclasses
+
+    from theodb_bench.bench.analytical import AnalyticalBenchmark
+
+    class _ComRecusa:
+        def __init__(self, d):  # type: ignore[no-untyped-def]
+            self._d = d
+
+        def __getattr__(self, n):  # type: ignore[no-untyped-def]
+            return getattr(self._d, n)
+
+        def execute_analytical(self, table, query):  # type: ignore[no-untyped-def]
+            r = self._d.execute_analytical(table, query)
+            # Repetido de proposito: a mesma recusa sai uma vez por repeticao, e o bundle
+            # quer o CONJUNTO de motivos, nao a contagem de emissoes.
+            return dataclasses.replace(
+                r, admit_declines=("agg over an expression", "agg over an expression")
+            )
+
+    adapter = _ComRecusa(_ready())
+    benchmark = AnalyticalBenchmark(_workload(paths=(ROW,), queries=QUERIES[:1], row_count=300))
+    benchmark.load(adapter)
+    pontos = benchmark.points(adapter, 1)
+
+    assert pontos
+    for ponto in pontos:
+        assert ponto.parameters.get("engine.admit_decline") == "agg over an expression", (
+            ponto.parameters
+        )
