@@ -8,6 +8,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **A guarda que existe para proteger dado descartava dado quando a corrida falhava PARCIALMENTE.** O
+  `bench-droplet.sh` colhe lendo `/root/ULTIMA_CORRIDA`, que o `bench-run.sh` só escrevia **no fim de um modo
+  bem-sucedido**. Medido em 2026-08-23: na contenção, o regime `memory-resident` produziu números e terminou
+  `rc=0`, o regime seguinte foi recusado por um portão, o marcador nunca foi escrito, e os números do
+  primeiro foram jogados fora junto com o droplet. O comentário da própria guarda diz *"ela existe para
+  proteger DADO, não para reagir a qualquer falha"* — e escrevendo o marcador só no caminho feliz ela fazia
+  exatamente o contrário. O marcador passa a ser escrito no início. **Resultado parcial é resultado.**
 - **O portão de plano do adapter do AlloyDB recusava SEMPRE, e a conclusão que produzia era favorável a nós
   e falsa.** `EXPLAIN` devolve **uma linha por nó** e o portão lia com `_fetch_one` — ou seja, só o nó de
   **cima**, que num agregado é `Aggregate` e num top-k é `Limit`. O nó de scan está sempre mais fundo, então

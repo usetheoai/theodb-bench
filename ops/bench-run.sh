@@ -42,6 +42,17 @@ SMOKE="${SMOKE:-analytical/synthetic/paths}"
 TAGS="${TAGS:-base fix}"
 PARQUET_DIR=/var/lib/postgresql/theodb-bench-parquet
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+# O marcador de coleta e escrito AQUI, no comeco — e nao so no fim de um modo bem-sucedido.
+#
+# `bench-droplet.sh` colhe lendo este arquivo; sem ele, a coleta sai com 42 e a corrida inteira e
+# descartada como "sem resultado". MEDIDO em 2026-08-23: o regime `memory-resident` da contencao
+# produziu numeros e terminou rc=0, o regime seguinte foi recusado por um portao, o marcador nunca
+# foi escrito, e os numeros do primeiro foram jogados fora junto com o droplet.
+#
+# O comentario da guarda no bench-droplet diz "a guarda existe para proteger DADO, nao para reagir a
+# qualquer falha" — e escrevendo o marcador so no caminho feliz ela fazia exatamente o contrario.
+# Resultado parcial e resultado.
+echo "$STAMP" > /root/ULTIMA_CORRIDA
 
 exec > >(tee -a /root/bench-run.log) 2>&1
 echo "=== bench-run inicio $(date -Is) suite=$SUITE tags='$TAGS' stamp=$STAMP ==="
