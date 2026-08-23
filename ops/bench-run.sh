@@ -233,6 +233,7 @@ if [ "$MODE" = "recall-casado" ]; then
     $ARG_DS | tee "/root/res-$STAMP/recall-casado.txt"
   echo "=== recall-casado fim rc=$? $(date -Is) ==="
 
+  colher_admit_trace "/root/res-$STAMP/tpch"
   echo "$STAMP" > /root/ULTIMA_CORRIDA
   echo "=== FIM $(date -Is) resultados em /root/res-$STAMP ==="
   touch /root/PRONTO
