@@ -1145,6 +1145,14 @@ def _contention_client_factory(construir: Any, tabela: Any = None) -> Any:
         aplicar = getattr(cliente, "_apply_analytical_session", None)
         if tabela is not None and callable(aplicar):
             aplicar(tabela)
+        # E PROVA o caminho antes de medir. Aplicar a GUC nao e o mesmo que ela ter efeito:
+        # o `dod` do B-058 exige verificar residencia antes de publicar qualquer numero,
+        # porque o avaliador independente do AlloyDB perdeu uma corrida inteira medindo heap
+        # sob o rotulo de colunar. Opcional pelo mesmo motivo que `aplicar`: nem todo adapter
+        # tem o gancho, e exigi-lo quebraria o `fake`.
+        provar = getattr(cliente, "assert_analytical_path", None)
+        if tabela is not None and callable(provar):
+            provar(tabela)
         return cliente
 
     return fabrica

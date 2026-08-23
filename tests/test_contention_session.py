@@ -81,3 +81,36 @@ def test_um_adapter_sem_sessao_analitica_nao_quebra() -> None:
     s = _Simples()
     _contention_client_factory(lambda: s, _tabela())()
     assert s.chamadas == ["prepare", "start", "wait_ready"]
+
+
+def test_the_contention_client_proves_the_path_before_measuring() -> None:
+    """O dod do B-058 exige verificar residencia ANTES de publicar.
+
+    A contencao aplicava a sessao analitica (ligando o pushdown) e nunca provava que o
+    plano usava o caminho declarado. Aplicar a GUC nao e o mesmo que a GUC ter efeito — e a
+    distincao custou uma corrida inteira ao avaliador independente do AlloyDB.
+    """
+    from theodb_bench.cli import _contention_client_factory
+
+    provados: list[str] = []
+
+    class _Cliente:
+        def prepare(self) -> None: ...
+        def start(self) -> None: ...
+        def wait_ready(self, timeout_seconds: float = 60.0) -> None: ...
+
+        def _apply_analytical_session(self, table) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def assert_analytical_path(self, table, query=None, probe_sql=None) -> None:  # type: ignore[no-untyped-def]
+            provados.append(table.name)
+
+    from theodb_bench.adapters.base import AnalyticalTable
+
+    tabela = AnalyticalTable(name="t", columns=("id", "amount"), path="columnar")
+    fabrica = _contention_client_factory(lambda: _Cliente(), tabela)
+    fabrica()
+
+    assert provados == ["t"], (
+        "o cliente de contencao mediu sem provar o caminho — o dod do B-058 exige o oposto"
+    )

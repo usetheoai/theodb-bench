@@ -8,6 +8,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **A contenção media sem provar o caminho, e o `dod` do [[B-058]] exige o oposto.** Ela aplicava a sessão
+  analítica — ligando `theodb.enable_columnar_agg` — e nunca verificava que o plano usava o caminho
+  declarado. **Aplicar a GUC não é o mesmo que ela ter efeito**, e essa distinção custou uma corrida inteira
+  ao avaliador independente do AlloyDB. Cada cliente de contenção passa a chamar `assert_analytical_path`
+  depois de conectar e antes de medir.
 - **A guarda que existe para proteger dado descartava dado quando a corrida falhava PARCIALMENTE.** O
   `bench-droplet.sh` colhe lendo `/root/ULTIMA_CORRIDA`, que o `bench-run.sh` só escrevia **no fim de um modo
   bem-sucedido**. Medido em 2026-08-23: na contenção, o regime `memory-resident` produziu números e terminou
