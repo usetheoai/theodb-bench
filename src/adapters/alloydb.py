@@ -180,6 +180,19 @@ class AlloyDBOmniAdapter(PgvectorAdapter):
             return
         self._execute(f"SELECT google_columnar_engine_add({_literal(table.name)})")
 
+    def _explain_text(self, sql: str) -> str:
+        """O plano INTEIRO, uma linha por nó, juntado.
+
+        `EXPLAIN` devolve uma linha por nó e `_fetch_one` traz só a primeira — que é o nó de
+        cima, nunca o de scan. MEDIDO em 2026-08-23, duas corridas: com sonda `count(*)` o
+        portão leu `Aggregate`; com sonda q18 leu `Limit`; recusou nas duas. Um portão que lê
+        só a primeira linha **recusa sempre**, e a conclusão que ele produz — "o colunar do
+        concorrente não engata" — é favorável a nós e falsa.
+        """
+        return "\n".join(
+            str(linha[0]) for linha in self._fetch_all(sql) if linha and linha[0] is not None
+        )
+
     def assert_analytical_path(
         self,
         table: AnalyticalTable,
@@ -249,8 +262,7 @@ class AlloyDBOmniAdapter(PgvectorAdapter):
             sql = self._analytical_query_sql(table, query)
         else:
             sql = f"SELECT count(*) FROM {_identifier(table.name)}"  # noqa: S608
-        plan = self._fetch_one(f"EXPLAIN (COSTS OFF) {sql}")
-        plan_text = str(plan[0]) if plan and plan[0] else ""
+        plan_text = self._explain_text(f"EXPLAIN (COSTS OFF) {sql}")
         if "columnar scan" not in plan_text:
             raise AdapterError(
                 f"the store is loaded ({used} MB) and the planner did not use the "

@@ -7,6 +7,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **O portão de plano do adapter do AlloyDB recusava SEMPRE, e a conclusão que produzia era favorável a nós
+  e falsa.** `EXPLAIN` devolve **uma linha por nó** e o portão lia com `_fetch_one` — ou seja, só o nó de
+  **cima**, que num agregado é `Aggregate` e num top-k é `Limit`. O nó de scan está sempre mais fundo, então
+  `"columnar scan" not in plan_text` era verdade em qualquer plano não-trivial. Medido em duas corridas
+  seguidas: a perna colunar do Omni abortou lendo `Aggregate` e depois `Limit`. **O nosso portão tinha a
+  mesma forma e passava** — o que é pior de encontrar, porque um portão que acerta por posição do marcador
+  acerta só enquanto o plano não mudar de forma. Os dois passam a ler o plano inteiro.
+
+### Removed
+- **O canal de coleta do `admit_decline` pelo log do servidor (`colher_admit_trace`), 24 horas depois de
+  escrito e sem nunca ter produzido um artefato.** Ele existia porque eu não conseguia verificar o handler
+  de *notice* contra servidor real e não queria depender de ter acertado o nome do campo do `Diagnostic` do
+  psycopg. **Essa razão expirou:** o handler funcionou na primeira corrida real e devolve atribuição **por
+  query**, que a lista plana do log do servidor não dá. Manter um segundo canal redundante, que nunca
+  disparou, é a complexidade que a parsimony ladder manda cortar no degrau 1.
+
 ### Added
 - **`numeric_filtered_sum` — a query que separa "o custo é do filtro" de "o custo é do texto".** O primeiro
   bundle instrumentado mostrou o colunar perdendo `filtered_sum` nas seis escalas e ganhando os dois

@@ -109,6 +109,10 @@ class _AnalyticalStub:
     def fetch_all(
         self, sql: str, parameters: tuple[object, ...] | None = None
     ) -> list[tuple[object, ...]]:
+        # Registra aqui TAMBEM: o portao de plano passou a ler pelo `fetch_all`, e um duplo
+        # que so registra no `fetch_one` faria o teste dizer "nenhuma sonda foi executada"
+        # sobre uma sonda que rodou. E a mesma classe que o portao acabou de expor.
+        self.lidos.append(sql)
         if "EXPLAIN" in sql:
             return [(self.plan,)]
         for query_id, rows in self.rows_by_query.items():
@@ -405,14 +409,16 @@ def test_the_plan_proof_is_per_query_not_per_table() -> None:
     """
 
     class _PerQueryStub(_AnalyticalStub):
-        def fetch_one(
+        # `fetch_all`, e nao `fetch_one`: o portao le o plano INTEIRO desde 2026-08-23, porque
+        # `EXPLAIN` devolve uma linha por no e a primeira e sempre o no de cima.
+        def fetch_all(
             self, sql: str, parameters: tuple[object, ...] | None = None
-        ) -> tuple[object, ...] | None:
+        ) -> list[tuple[object, ...]]:
             if "EXPLAIN" in sql and "GROUP BY" in sql:
-                return ("GroupAggregate -> Sort -> Seq Scan on t",)
+                return [("GroupAggregate",), ("  -> Sort",), ("      -> Seq Scan on t",)]
             if "EXPLAIN" in sql:
-                return ("Custom Scan (theodb_columnar_agg) on t",)
-            return super().fetch_one(sql, parameters)
+                return [("Aggregate",), ("  -> Custom Scan (theodb_columnar_agg) on t",)]
+            return super().fetch_all(sql, parameters)
 
     server = _PerQueryStub(relam="theodb_columnar")
     server.settings["theodb.enable_columnar_agg"] = ("on", "session")

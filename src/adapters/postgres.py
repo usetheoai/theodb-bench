@@ -1214,8 +1214,20 @@ class PostgresAdapter(SystemAdapter):
             probe_id = "count(*)"
             sql = f"SELECT count(*) FROM {_identifier(table.name)}"
         probe = AnalyticalQuery(id=probe_id, description="")
-        plan = self._fetch_one(f"EXPLAIN (COSTS OFF) {sql}")
-        plan_text = str(plan[0]) if plan and plan[0] else ""
+        # O plano INTEIRO, e não a primeira linha. `EXPLAIN` devolve uma linha por nó, e
+        # `_fetch_one` traz o nó de CIMA — que num agregado é o `Aggregate`, e num top-k é o
+        # `Limit`. O nó de scan está sempre mais fundo.
+        #
+        # MEDIDO em 2026-08-23 no portão irmão do AlloyDB, que tem a mesma forma: ele recusou
+        # duas corridas seguidas lendo `Aggregate` e depois `Limit`, e a conclusão que produzia
+        # — "o colunar do concorrente não engata" — era favorável a nós e falsa. Aqui a mesma
+        # leitura passava, o que é pior de encontrar: um portão que acerta por posição do
+        # marcador acerta enquanto o plano não mudar de forma.
+        plan_text = "\n".join(
+            str(linha[0])
+            for linha in self._fetch_all(f"EXPLAIN (COSTS OFF) {sql}")
+            if linha and linha[0] is not None
+        )
         if marker not in plan_text:
             raise AdapterError(
                 f"{table.name} is stored in the {table.path} path and the plan for "

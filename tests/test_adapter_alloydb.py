@@ -263,3 +263,35 @@ def test_the_rerank_depth_is_a_declared_search_knob() -> None:
         "scann.num_leaves_to_search": "80",
         "scann.pre_reordering_num_neighbors": "100",
     }
+
+
+def test_the_plan_gate_reads_the_whole_plan_not_just_its_top_node() -> None:
+    """EXPLAIN devolve UMA LINHA POR NO. O no de scan nunca e o de cima.
+
+    Medido em 2026-08-23, duas corridas: com sonda `count(*)` o portao leu `Aggregate`, com
+    sonda q18 leu `Limit`, e recusou nas duas — 'the planner did not use the columnar scan'.
+    Um portao que le so a primeira linha recusa SEMPRE, e a conclusao que ele produz ('o
+    colunar do concorrente nao engata') e favoravel a nos e falsa.
+    """
+    from theodb_bench.adapters.alloydb import AlloyDBOmniAdapter
+
+    plano = [
+        ("Limit",),
+        ("  ->  Aggregate",),
+        ("        ->  Columnar Scan on tpch_customer",),
+    ]
+
+    class _Motor(AlloyDBOmniAdapter):  # type: ignore[misc]
+        def __init__(self) -> None:
+            pass
+
+        def _fetch_one(self, sql, parameters=None):  # type: ignore[no-untyped-def]
+            if sql.startswith("EXPLAIN"):
+                raise AssertionError("o portao leu so a primeira linha do EXPLAIN")
+            return ("on", "user")
+
+        def _fetch_all(self, sql, parameters=None):  # type: ignore[no-untyped-def]
+            return plano if sql.startswith("EXPLAIN") else []
+
+    texto = _Motor()._explain_text("EXPLAIN (COSTS OFF) SELECT 1")
+    assert "columnar scan" in texto.lower(), texto
