@@ -75,6 +75,14 @@ PY
 # Vazio por default: o proprio codigo avisa que a resolucao da variavel cai no caminho quente do
 # planner, e ligar isso numa corrida de medicao mediria o trace junto.
 ADMIT_TRACE="${ADMIT_TRACE:-}"
+# `PERF=1` liga os contadores de hardware (ciclos, instrucoes, cache) via `perf stat`.
+#
+# Opt-in e nao default, e a razao e medida: o coletor anexa um `perf stat` ao processo, e
+# isso custa. Mas ate 2026-08-23 ele estava DESLIGADO EM TODA CORRIDA — medido no acervo,
+# 0 de 18 bundles tem `perf.cycles`. Duas causas empilhadas: o coletor deduzia a capacidade
+# de `perf_event_paranoid` (consertado — root contorna a politica), e nenhum script passava
+# `--perf`. Consertar a primeira sem a segunda nao mudaria nada.
+PERF="${PERF:-}"
 
 subir() {
   local tag="$1"
@@ -140,12 +148,12 @@ medir() {
     PGUSER=postgres systemd-run --scope --quiet -p "MemoryMax=$MEM_MAX" \
       /root/venv/bin/theodb-bench run "$suite" \
       --system theodb --profile "$PROFILE" --output "$saida" $arg_ds \
-      ${REPS:+--repetitions "$REPS"} \
+      ${REPS:+--repetitions "$REPS"} ${PERF:+--perf} \
       ${CPU_SET:+--cpu-set "$CPU_SET"} --memory "$MEM_MAX"
   else
     PGUSER=postgres /root/venv/bin/theodb-bench run "$suite" \
       --system theodb --profile "$PROFILE" --output "$saida" $arg_ds \
-      ${REPS:+--repetitions "$REPS"} \
+      ${REPS:+--repetitions "$REPS"} ${PERF:+--perf} \
       ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"}
   fi
   local rc=$?
@@ -309,12 +317,12 @@ if [ "$MODE" = "headtohead" ]; then
     if [ -n "$host" ]; then
       PGHOST="$host" PGPORT="$porta" PGUSER=postgres PGPASSWORD=x \
         /root/venv/bin/theodb-bench run "$SUITE" --system "$sist" --profile "$PROFILE" \
-        $ARG_DS ${REPS:+--repetitions "$REPS"} \
+        $ARG_DS ${REPS:+--repetitions "$REPS"} ${PERF:+--perf} \
         ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"} \
         --output "/root/res-$STAMP/$sist"
     else
       PGUSER=postgres /root/venv/bin/theodb-bench run "$SUITE" --system "$sist" \
-        --profile "$PROFILE" $ARG_DS ${REPS:+--repetitions "$REPS"} \
+        --profile "$PROFILE" $ARG_DS ${REPS:+--repetitions "$REPS"} ${PERF:+--perf} \
         ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"} \
         --output "/root/res-$STAMP/$sist"
     fi

@@ -60,6 +60,7 @@ class _AnalyticalStub:
         plan: str = "Seq Scan on bench_analytical_columnar",
     ) -> None:
         self.executed: list[str] = []
+        self.lidos: list[str] = []
         self.relam = relam
         self.columnar_columns = columnar_columns
         self.memory_used_mb = memory_used_mb
@@ -79,6 +80,7 @@ class _AnalyticalStub:
     def fetch_one(
         self, sql: str, parameters: tuple[object, ...] | None = None
     ) -> tuple[object, ...] | None:
+        self.lidos.append(sql)
         # The gate binds the setting name and the relation name as parameters, so
         # a stub that only inspected the SQL would answer the wrong question.
         first = str(parameters[0]) if parameters else ""
@@ -94,6 +96,10 @@ class _AnalyticalStub:
             return (self.columnar_columns,)
         if "g_columnar_engine_summary" in sql:
             return (self.memory_used_mb,)
+        for nome in ("chunks_skipped", "chunks_scanned", "stream_chunk_groups"):
+            if f"theodb_columnar_{nome}" in sql:
+                valor = getattr(self, "counters", {}).get(nome)
+                return None if valor is None else (valor,)
         if "EXPLAIN" in sql:
             return (self.plan,)
         if "count(*)" in sql:
@@ -456,3 +462,81 @@ def test_heap_reports_no_analytical_guc_because_it_applies_none() -> None:
     adapter.load_analytical(table, ROWS)
 
     assert adapter.effective_analytical_settings() == {}
+
+
+# ------------------------ os contadores do motor nunca chegaram a um bundle
+#
+# O `theodb_rs` expoe `theodb_columnar_chunks_skipped/scanned` (M150) e
+# `theodb_columnar_stream_chunk_groups` (M168) — contadores de EFEITO: dizem o que o scan
+# FEZ, e nao o que o catalogo declara. O `CLAUDE.md` os aponta como o instrumento certo de
+# residencia, contra a pergunta "a coluna esta registrada?" que custou uma corrida ao
+# avaliador independente do AlloyDB.
+#
+# Medido em 2026-08-23: o arnes nao os le em lugar nenhum, e nenhum dos 18 bundles do
+# acervo os traz. O zone-map poder ou nao estar pulando chunks e invisivel no artefato.
+#
+# Sao POR BACKEND e zerados a cada scan ("in the most recent scan"), entao a leitura tem de
+# acontecer logo depois da consulta medida e na MESMA conexao — qualquer outra ordem le o
+# scan errado.
+
+
+def test_the_engine_counters_reach_the_analytical_result() -> None:
+    server = _AnalyticalStub(relam="theodb_columnar")
+    server.settings["theodb.enable_columnar_agg"] = ("on", "session")
+    server.counters = {"chunks_skipped": 7, "chunks_scanned": 12, "stream_chunk_groups": 3}
+    adapter = _wire(TheoDBAdapter(), server)
+    table = AnalyticalTable(name="bench_analytical_columnar", columns=COLUMNS, path="columnar")
+    adapter.load_analytical(table, ROWS)
+
+    resultado = adapter.execute_analytical(table, AnalyticalQuery(id="total_rows", description=""))
+
+    assert resultado.engine_counters, "os contadores do motor nao chegam ao resultado"
+    assert resultado.engine_counters["chunks_skipped"] == 7
+    assert resultado.engine_counters["chunks_scanned"] == 12
+
+
+def test_an_engine_without_counters_reports_absence_not_zero() -> None:
+    """Zero chunks pulados e uma medida; a ausencia de contador nao e. Confundi-las diria
+    que o zone-map nao pulou nada num motor que nem tem zone-map."""
+    from theodb_bench.adapters.postgres import PgvectorAdapter
+
+    server = _AnalyticalStub(relam="heap")
+    adapter = _wire(PgvectorAdapter(), server)
+    table = AnalyticalTable(name="bench_analytical_row", columns=COLUMNS, path="row")
+    adapter.load_analytical(table, ROWS)
+
+    resultado = adapter.execute_analytical(table, AnalyticalQuery(id="total_rows", description=""))
+    assert resultado.engine_counters == {}, "um motor sem contadores nao deve inventar zeros"
+
+
+def test_the_plan_probe_works_on_a_schema_it_was_not_written_for() -> None:
+    """MEDIDO em 2026-08-23: o portao de plano quebrou no TPC-H com
+    `column "amount" does not exist`.
+
+    Sem query, ele caia no template de `filtered_sum`, que tem `amount` e `category`
+    CRAVADOS — colunas do esquema sintetico analitico. Liga-lo ao TPC-H ontem assumiu que
+    ele era generico, e ele nao era: nunca tinha sido exercitado fora do esquema para o
+    qual foi escrito.
+
+    A sonda sem query passa a ser `count(*)`, que existe em qualquer tabela E e admitida
+    pelo pushdown (fixado em `am/columnar.rs::b106_the_admission_surface_is_what_it_is`).
+    """
+    server = _AnalyticalStub(relam="theodb_columnar")
+    server.settings["theodb.enable_columnar_agg"] = ("on", "session")
+    server.plan = "Custom Scan (theodb_columnar_agg)"
+    adapter = _wire(TheoDBAdapter(), server)
+    # Um esquema que NAO tem `amount` nem `category` — como as tabelas do TPC-H.
+    tabela = AnalyticalTable(
+        name="tpch_customer",
+        columns=("c_custkey", "c_name"),
+        column_types=("integer", "text"),
+        path="columnar",
+    )
+
+    adapter.assert_analytical_path(tabela)  # sem query: nao pode explodir
+
+    explicados = [s for s in server.lidos if "EXPLAIN" in s]
+    assert explicados, "nenhuma sonda de plano foi executada"
+    assert not any("amount" in s for s in explicados), (
+        f"a sonda ainda usa uma coluna que a tabela nao tem: {explicados}"
+    )

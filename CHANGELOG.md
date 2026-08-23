@@ -8,6 +8,31 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **`perf` estava desligado em TODA corrida, por duas causas empilhadas — medido: 0 de 18 bundles do acervo
+  têm `perf.cycles`.** (1) O `PerfStatCollector` tinha a **própria cópia** da dedução
+  `perf_event_paranoid <= 2`, a mesma que foi corrigida em `environment.py` no dia anterior — root contorna a
+  política, e o arnês roda como root no host de medição. Ele agora **tenta**, e quando falha carrega a
+  mensagem do próprio `perf` em vez de uma paráfrase. (2) Nenhum script de operação passava `--perf`.
+  **Consertar a primeira sem a segunda não mudaria nada** — e foi por isso que o conserto de ontem não
+  produziu um único contador.
+- **A sonda de plano do portão de residência tinha o nome da coluna cravado.** Sem query, ela caía no template
+  de `filtered_sum`, com `amount` e `category` — colunas do esquema sintético analítico. Ligá-la na suíte
+  TPC-H expôs isso: a corrida morreu com `column "amount" does not exist` sobre `tpch_customer`. A sonda sem
+  query passa a ser `count(*)`, que existe em qualquer esquema **e** é admitida pelo pushdown, o que a
+  superfície de admissão medida confirma.
+
+### Added
+- **Os contadores de efeito do motor chegam ao artefato.** `theodb_columnar_chunks_skipped` / `chunks_scanned`
+  / `stream_chunk_groups` existem desde o M150/M168 e **o arnês nunca os leu** — se o zone-map estava podando
+  chunks era invisível no bundle. São lidos **depois do cronômetro e na mesma conexão**, porque são por backend
+  e zerados a cada scan; qualquer outra ordem lê o scan errado. Saem em `points[].parameters` como
+  `engine.<nome>`, pelo mesmo caminho que a configuração usa. **Vazio para motores que não os têm, e vazio não
+  é zero:** zero chunk-groups podados é uma medida; ausência de contador não é.
+- **`PERF=1` e `ADMIT_TRACE=1` nos scripts de operação**, ligando os contadores de hardware e o motivo de
+  recusa do agregado colunar. Ambos opt-in: o primeiro anexa um `perf stat` ao processo, e o segundo cai no
+  caminho quente do planner — ligá-los por default mediria o instrumento junto com o produto.
+
+### Fixed
 - **O `MODE=contention` media, imprimia e não guardava nada — a corrida inteira era colhida como vazia.** Ele
   escrevia o JSON só em stdout, sem tocar em `/root/res-$STAMP` nem marcar `ULTIMA_CORRIDA`, que é o que a
   coleta lê. **Medido em 2026-08-22:** os dois regimes mediram, o portão reportou *"nenhum resultado foi

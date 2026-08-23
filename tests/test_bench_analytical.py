@@ -294,3 +294,70 @@ def test_a_system_that_applies_no_analytical_guc_adds_nothing_to_the_point() -> 
     assert points
     for point in points:
         assert not [k for k in point.parameters if k.startswith("theodb.")]
+
+
+def test_the_engine_counters_reach_the_measurement() -> None:
+    """Ler os contadores e nao os carregar ate o artefato para no mesmo lugar de sempre.
+
+    O `stage_seconds` e o `bytes_read` ja fazem esse caminho; os contadores de efeito nao
+    faziam nenhum. Um numero que morre no adapter e indistinguivel de um que nunca foi lido.
+    """
+    from theodb_bench.bench.analytical import AnalyticalBenchmark
+
+    class _AdapterComContadores:
+        def __init__(self, delegado):  # type: ignore[no-untyped-def]
+            self._d = delegado
+
+        def __getattr__(self, nome):  # type: ignore[no-untyped-def]
+            return getattr(self._d, nome)
+
+        def execute_analytical(self, table, query):  # type: ignore[no-untyped-def]
+            import dataclasses
+
+            r = self._d.execute_analytical(table, query)
+            return dataclasses.replace(r, engine_counters={"chunks_skipped": 5, "chunks_scanned": 9})
+
+    base = _ready()
+    adapter = _AdapterComContadores(base)
+    benchmark = AnalyticalBenchmark(_workload(paths=(ROW,), queries=QUERIES[:1], row_count=300))
+    benchmark.load(adapter)
+    medidas = benchmark.run(adapter, load_first=False)
+
+    assert medidas
+    for m in medidas:
+        assert m.engine_counters == {"chunks_skipped": 5, "chunks_scanned": 9}, (
+            f"{m.query_id}: os contadores nao chegaram a medida"
+        )
+
+
+def test_the_engine_counters_reach_the_bundle_point() -> None:
+    """Ler, propagar e nao publicar e o defeito do B-105 com outro nome.
+
+    Os contadores entram em `points[].parameters`, pelo mesmo caminho que o B-102 usou para
+    a configuracao: e um objeto aberto de escalares, ja declarado no schema, e o lugar onde
+    quem le o bundle procura o contexto daquele ponto.
+    """
+    import dataclasses
+
+    from theodb_bench.bench.analytical import AnalyticalBenchmark
+
+    class _ComContadores:
+        def __init__(self, d):  # type: ignore[no-untyped-def]
+            self._d = d
+
+        def __getattr__(self, n):  # type: ignore[no-untyped-def]
+            return getattr(self._d, n)
+
+        def execute_analytical(self, table, query):  # type: ignore[no-untyped-def]
+            r = self._d.execute_analytical(table, query)
+            return dataclasses.replace(r, engine_counters={"chunks_skipped": 4, "chunks_scanned": 11})
+
+    adapter = _ComContadores(_ready())
+    benchmark = AnalyticalBenchmark(_workload(paths=(ROW,), queries=QUERIES[:1], row_count=300))
+    benchmark.load(adapter)
+    pontos = benchmark.points(adapter, 1)
+
+    assert pontos
+    for ponto in pontos:
+        assert ponto.parameters.get("engine.chunks_skipped") == 4, ponto.parameters
+        assert ponto.parameters.get("engine.chunks_scanned") == 11, ponto.parameters

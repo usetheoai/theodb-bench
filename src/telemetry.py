@@ -291,13 +291,29 @@ class PerfStatCollector(Collector):
         if which("perf") is None:
             self._reason = "perf not on PATH"
             return
-        paranoid_path = _PROC / "sys/kernel/perf_event_paranoid"
+        # TENTA, em vez de ler `perf_event_paranoid`.
+        #
+        # Este coletor tinha a própria cópia da dedução `paranoid <= 2`, e ela está errada pela
+        # mesma razão que a de `environment.py` estava: a política restringe usuário SEM
+        # privilégio, root a contorna, e o arnês roda como root no host de medição. Medido em
+        # 2026-08-22 com `paranoid=4`: `perf stat -e task-clock` devolveu `1.19 msec`.
+        #
+        # Consertar uma cópia e deixar a outra é por que **0 de 18 bundles** do acervo têm
+        # `perf.cycles` medido — a capacidade foi corrigida e o coletor continuou recusando.
         try:
-            paranoid = int(paranoid_path.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            paranoid = None
-        if paranoid is not None and paranoid > 2:
-            self._reason = f"perf_event_paranoid={paranoid} denies per-process counters"
+            sonda = subprocess.run(  # noqa: S603
+                ["perf", "stat", "-e", self.events[0], "--", "true"],
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            self._reason = f"perf probe failed: {type(exc).__name__}"
+            return
+        if sonda.returncode != 0:
+            # A mensagem do próprio `perf` diz mais que qualquer paráfrase nossa.
+            detalhe = (sonda.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+            self._reason = f"perf refused: {detalhe[-1] if detalhe else 'unknown'}"
             return
         argv = [
             "perf",

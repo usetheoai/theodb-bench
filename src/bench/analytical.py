@@ -228,6 +228,9 @@ class QueryMeasurement:
     latency: LatencySummary | None = None
     wall_seconds: float | None = None
     rows_processed: int | None = None
+    engine_counters: dict[str, int] = field(default_factory=dict)
+    """Contadores de EFEITO do motor sobre o scan medido — o que ele FEZ, não o que o
+    catálogo declara. Vazio para motores que não expõem nenhum; vazio **não é zero**."""
     bytes_read: int | None = None
     rows_per_second: float | None = None
     bytes_per_second: float | None = None
@@ -357,6 +360,7 @@ class AnalyticalBenchmark:
         measurement.latency = summarise_latency(latencies)
         measurement.wall_seconds = min(latencies) / 1000.0 if latencies else None
         if last is not None:
+            measurement.engine_counters = dict(last.engine_counters)
             measurement.rows_processed = last.rows_processed
             measurement.bytes_read = last.bytes_read
             measurement.stage_seconds = dict(last.stage_seconds)
@@ -491,6 +495,12 @@ class AnalyticalBenchmark:
                     # se o default tivesse rodado (B-102). Chaveado pelo nome da GUC,
                     # que ja e inequivoco e nao pede mudanca de schema.
                     point.parameters.update(adapter.effective_analytical_settings())
+                    # E os contadores de EFEITO do motor sobre este scan, prefixados para
+                    # nao colidirem com parametro de workload. Ler e propagar sem publicar
+                    # e o defeito do [[B-105]] com outro nome: o numero existiria e nenhum
+                    # leitor do bundle o veria.
+                    for nome, valor in (measurement.engine_counters or {}).items():
+                        point.parameters[f"engine.{nome}"] = valor
                     if measurement.status != "measured" or measurement.latency is None:
                         # `invalid` e vocabulario INTERNO desta familia; o artefato conhece
                         # `measured | unsupported | skipped | failed`. Uma medida invalidada —

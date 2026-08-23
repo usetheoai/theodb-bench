@@ -334,6 +334,18 @@ class AnalyticalResult:
     """Where a scan spent its time: metadata, pruning, read, decode, filter,
     aggregate. A single wall time cannot say which of those a change moved."""
 
+    engine_counters: dict[str, int] = field(default_factory=dict)
+    """Contadores de EFEITO que o motor expõe sobre o scan que acabou de rodar.
+
+    Dizem o que o scan FEZ — quantos chunk-groups o zone-map pulou, quantos foram examinados
+    — e não o que o catálogo declara. É a distinção que custou uma corrida inteira ao
+    avaliador independente do AlloyDB, que provou residência lendo um catálogo de
+    registro.
+
+    Vazio para motores que não expõem nada. **Vazio não é zero**: zero chunk-groups pulados
+    é uma medida, e ausência de contador não é — confundi-las diria que o zone-map não podou
+    nada num motor que não tem zone-map."""
+
 
 class SystemAdapter(ABC):
     """Everything the runner needs in order to measure one system."""

@@ -171,3 +171,68 @@ def test_collector_set_serialises_which_collectors_ran() -> None:
     assert payload["collectors"] == ["process", "perf"]
     assert payload["enabled"] == ["process"]
     assert "overhead_seconds" in payload
+
+
+# ------------------------ o coletor de perf tinha COPIA da checagem que eu ja consertara
+#
+# Em 2026-08-22 consertei `capture_capabilities()` para MEDIR se o perf funciona, em vez de
+# deduzir de `perf_event_paranoid <= 2` — porque root contorna a politica e o arnes roda como
+# root no host de medicao. Medido la: `perf stat` devolveu 1,19 ms com paranoid=4.
+#
+# O `PerfStatCollector` tinha a MESMA deducao, escrita de novo. Consertar um e deixar o outro
+# e por que 0 de 18 bundles do acervo tem `perf.cycles` medido.
+
+
+def test_the_perf_collector_probes_instead_of_reading_the_policy(monkeypatch) -> None:
+    """A recusa tem de vir de uma TENTATIVA, nao do valor de perf_event_paranoid.
+
+    Testa COMPORTAMENTO e nao o texto do fonte: a primeira versao deste teste procurava a
+    string `perf_event_paranoid` no codigo e passou a reprovar quando o conserto acrescentou
+    um comentario explicando por que aquela variavel NAO e usada. Um teste que proibe
+    documentar a razao esta medindo a coisa errada.
+    """
+    import subprocess as sp
+
+    from theodb_bench import telemetry as t
+
+    chamadas: list[list[str]] = []
+
+    def _falso_run(argv, **kw):  # type: ignore[no-untyped-def]
+        chamadas.append(list(argv))
+        return sp.CompletedProcess(argv, 1, stdout=b"", stderr=b"nope\n")
+
+    monkeypatch.setattr(t.subprocess, "run", _falso_run)
+    monkeypatch.setattr(t, "which", lambda _: "/usr/bin/perf")
+
+    c = t.PerfStatCollector(pid=1)
+    c._start()
+
+    assert chamadas, "o coletor decidiu sem TENTAR — nenhuma sonda foi executada"
+    assert chamadas[0][:2] == ["perf", "stat"], chamadas[0]
+    assert c._reason and "nope" in c._reason, (
+        f"a recusa devia carregar a mensagem do proprio perf, e nao uma parafrase: {c._reason}"
+    )
+
+
+def test_the_perf_collector_agrees_with_a_real_perf_run() -> None:
+    """O que o coletor DIZ e o que `perf stat` FAZ nao podem divergir."""
+    import subprocess
+    from shutil import which
+
+    from theodb_bench.telemetry import PerfStatCollector
+
+    c = PerfStatCollector(pid=1)
+    c._start()
+    recusou = c._reason is not None
+    if which("perf") is None:
+        assert recusou, "sem perf no PATH a recusa e obrigatoria"
+        return
+    funciona = (
+        subprocess.run(
+            ["perf", "stat", "-e", "task-clock", "--", "true"], capture_output=True, timeout=30
+        ).returncode
+        == 0
+    )
+    if funciona:
+        assert not recusou, f"perf funciona e o coletor recusou: {c._reason}"
+    c._stop()

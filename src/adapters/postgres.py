@@ -977,6 +977,31 @@ class PostgresAdapter(SystemAdapter):
     #: Applied and then read back from `pg_settings`, exactly as the search knobs
     #: are: a GUC that ships off and silently stays off is how a measurement ends
     #: up describing a configuration nobody ran.
+    #: Contadores de efeito que este motor expõe, por nome curto → função SQL.
+    #:
+    #: Lidos LOGO APÓS a consulta medida e na MESMA conexão, porque são por backend e
+    #: zerados a cada scan ("in the most recent scan", `am/columnar.rs:60`). Qualquer outra
+    #: ordem lê o scan errado, e uma segunda conexão lê um backend que não mediu nada.
+    #:
+    #: A leitura acontece depois de o cronômetro parar — ela não entra na latência.
+    ENGINE_COUNTERS: ClassVar[dict[str, str]] = {}
+
+    def _read_engine_counters(self) -> dict[str, int]:
+        """Os contadores desta corrida, ou `{}` para um motor que não os tem.
+
+        Falha de leitura devolve ausência e NÃO zero: um zero aqui leria como "o zone-map
+        não podou nada", que é uma afirmação sobre o motor, e não sobre o instrumento.
+        """
+        lidos: dict[str, int] = {}
+        for nome, funcao in type(self).ENGINE_COUNTERS.items():
+            try:
+                linha = self._fetch_one(f"SELECT {funcao}()")
+            except Exception:  # noqa: BLE001 — ausência é a resposta certa aqui
+                continue
+            if linha is not None and linha[0] is not None:
+                lidos[nome] = int(linha[0])
+        return lidos
+
     ANALYTICAL_SESSION_SETTINGS: ClassVar[dict[str, dict[str, str]]] = {}
 
     #: Plan fragment that proves the path was used, per path name. A path absent
@@ -1064,9 +1089,13 @@ class PostgresAdapter(SystemAdapter):
         started = time.perf_counter()
         rows = self._fetch_all(sql)
         elapsed = time.perf_counter() - started
+        # DEPOIS do cronômetro, e na mesma conexão: os contadores são por backend e zerados
+        # a cada scan, então esta é a única ordem que lê o scan que acabou de ser medido.
+        contadores = self._read_engine_counters()
         return AnalyticalResult(
             rows=tuple(tuple(row) for row in rows),
             wall_seconds=elapsed,
+            engine_counters=contadores,
         )
 
     def assert_analytical_path(
@@ -1120,8 +1149,22 @@ class PostgresAdapter(SystemAdapter):
         # (25 456 kB spilled) -> GroupAggregate, and runs 14x slower than heap.
         # A gate that probed one query and generalised would call the second one
         # pushed down.
-        probe = query if query is not None else AnalyticalQuery(id="filtered_sum", description="")
-        sql = self._analytical_query_sql(table, probe)
+        # COM query: a dela, porque a cobertura do pushdown depende da forma (o parágrafo
+        # acima). SEM query: `count(*)`, que é o único agregado que existe em QUALQUER
+        # esquema — e que a superfície de admissão medida confirma ser admitido.
+        #
+        # A versão anterior caía no template de `filtered_sum`, com `amount` e `category`
+        # CRAVADOS. Medido em 2026-08-23, ao ligar este portão na suíte TPC-H: a corrida
+        # morreu com `column "amount" does not exist` sobre `tpch_customer`. O portão nunca
+        # tinha sido exercitado fora do esquema para o qual foi escrito, e quem o ligou
+        # (eu) supôs que fosse genérico.
+        if query is not None:
+            probe_id = query.id
+            sql = self._analytical_query_sql(table, query)
+        else:
+            probe_id = "count(*)"
+            sql = f"SELECT count(*) FROM {_identifier(table.name)}"
+        probe = AnalyticalQuery(id=probe_id, description="")
         plan = self._fetch_one(f"EXPLAIN (COSTS OFF) {sql}")
         plan_text = str(plan[0]) if plan and plan[0] else ""
         if marker not in plan_text:
@@ -1487,6 +1530,15 @@ class TheoDBAdapter(PgvectorAdapter):
     #: measures columnar storage without its pushdown, which is a path already
     #: known to lose to heap -- and publishing that as "our columnar" would be
     #: the same error as measuring ScaNN with its AH quantizer off.
+    #: Os três contadores de efeito do colunar. `stream_chunk_groups` conta CHAMADAS de
+    #: `next()` e não chunk-groups — o próprio motor documenta a diferença, e um scan completo
+    #: de 1M linhas lê 101 e não 100, porque a chamada terminal conta e não entrega nada.
+    ENGINE_COUNTERS: ClassVar[dict[str, str]] = {
+        "chunks_skipped": "theodb_columnar_chunks_skipped",
+        "chunks_scanned": "theodb_columnar_chunks_scanned",
+        "stream_chunk_groups": "theodb_columnar_stream_chunk_groups",
+    }
+
     ANALYTICAL_SESSION_SETTINGS: ClassVar[dict[str, dict[str, str]]] = {
         "columnar": {"theodb.enable_columnar_agg": "on"}
     }
