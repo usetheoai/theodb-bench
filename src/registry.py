@@ -294,9 +294,13 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
             #
             # Com isso nao da para distinguir "temos teto de recall" de "nao varremos alto o
             # suficiente", e as duas coisas sao muito diferentes: a primeira e achado de
-            # arquitetura, a segunda e lacuna de medicao. 512/1024/2048 levam a curva ate onde a
-            # pergunta se resolve.
-            search_sweep={"ef_search": (16, 64, 256, 512, 1024, 2048)},
+            # arquitetura, a segunda e lacuna de medicao.
+            #
+            # O TETO e 1000 nos dois, e nao por acaso: `MAX_EF_SEARCH` do TheoDB e definido como
+            # "pgvector's hnsw.ef_search ceiling" (`am/guc.rs:25`). Pedir 2048 fez o `SET` falhar e o
+            # arnes classificar o servidor como inalcancavel — corrida INVALID, medido em 2026-08-23.
+            # 1000 e o ultimo ponto que existe, e por isso a curva termina onde termina.
+            search_sweep={"ef_search": (16, 64, 256, 512, 1000)},
         ),
         default_repetitions=3,
     ),
