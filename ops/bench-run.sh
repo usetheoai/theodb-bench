@@ -522,9 +522,16 @@ subir "$PRIMEIRA" || exit 1
 # Sistema externo: sobe o conteiner ANTES de medir, do mesmo jeito que os modos comparativos ja
 # faziam. Sem isto, `--system alloydbomni` mede contra um servidor que nao existe.
 if [ "$SISTEMA" != "theodb" ]; then
-  docker pull "$OMNI_IMAGE" >/dev/null 2>&1 || { echo "FALHA: pull do Omni"; exit 1; }
-  subir_externo omni "$OMNI_IMAGE" 55460 || exit 1
-  PGPASSWORD=x psql -h 127.0.0.1 -p 55460 -U postgres -tAc "select 'omni: '||version()" 2>&1 | head -1 || true
+  # A imagem depende do sistema: `alloydbomni` traz o `scann`; `pgvector` e a referencia SOTA do
+  # nosso proprio `hnsw` — mesma familia de indice, que e o que o ADR-0033 nomeia como a meta
+  # ("paridade vetorial classe-pgvector"). Comparar grafo com quantizador mede trade-off, nao paridade.
+  case "$SISTEMA" in
+    pgvector) IMG_EXT="$PGVECTOR_IMAGE" ;;
+    *)        IMG_EXT="$OMNI_IMAGE" ;;
+  esac
+  docker pull "$IMG_EXT" >/dev/null 2>&1 || { echo "FALHA: pull de $IMG_EXT"; exit 1; }
+  subir_externo ext "$IMG_EXT" 55460 || exit 1
+  PGPASSWORD=x psql -h 127.0.0.1 -p 55460 -U postgres -tAc "select '$SISTEMA: '||version()" 2>&1 | head -1 || true
 fi
 
 # O smoke exercita heap+colunar+parquet+oraculo do TheoDB. Contra um sistema externo ele reprovaria
