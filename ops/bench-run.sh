@@ -101,10 +101,19 @@ PERF="${PERF:-}"
 # `not measured`, com o bundle nomeado `...-scann-ah-theodb-...`. O arnes nao errou; ele mediu
 # exatamente o que lhe foi pedido, contra o sistema errado.
 SISTEMA="${SISTEMA:-theodb}"
-# O DSN acompanha o sistema: `theodb` roda no socket local; qualquer externo roda no contêiner que
-# `subir_externo` levanta na 55460. Resolver aqui, e nao no `medir()`, mantem os dois em UM lugar.
-ARG_DSN=""
-[ "$SISTEMA" != "theodb" ] && ARG_DSN="--dsn postgresql://postgres:x@127.0.0.1:55460/postgres"
+# O endereco acompanha o sistema. `theodb` roda no socket local; qualquer externo roda no conteiner
+# que `subir_externo` levanta na 55460.
+#
+# Por VARIAVEL DE AMBIENTE, e nao por flag: o subcomando `run` NAO tem `--dsn` (so `tpch` e
+# `contention` tem), e o adapter cai em `postgresql:///postgres` — URI de host vazio, que o libpq
+# resolve por `PGHOST`/`PGPORT`. Usar o mecanismo que a plataforma ja oferece e o degrau 3 da
+# parsimony ladder; adicionar uma flag ao CLI seria o degrau 6 para o mesmo efeito.
+#
+# MEDIDO em 2026-08-23: a tentativa com `--dsn` morreu em `unrecognized arguments` e custou um droplet.
+PG_EXTERNO=""
+if [ "$SISTEMA" != "theodb" ]; then
+  PG_EXTERNO="PGHOST=127.0.0.1 PGPORT=55460 PGUSER=postgres PGPASSWORD=x"
+fi
 
 
 subir() {
@@ -168,14 +177,14 @@ medir() {
   # nativo para criar esse cgroup (degrau 3 da parsimony ladder), e sem ele os perfis `nightly` e
   # `release` sao inalcancaveis.
   if [ -n "$MEM_MAX" ] && command -v systemd-run >/dev/null 2>&1; then
-    PGUSER=postgres systemd-run --scope --quiet -p "MemoryMax=$MEM_MAX" \
+    env ${PG_EXTERNO:-PGUSER=postgres} systemd-run --scope --quiet -p "MemoryMax=$MEM_MAX" \
       /root/venv/bin/theodb-bench run "$suite" \
-      --system "$SISTEMA" $ARG_DSN --profile "$PROFILE" --output "$saida" $arg_ds \
+      --system "$SISTEMA" --profile "$PROFILE" --output "$saida" $arg_ds \
       ${REPS:+--repetitions "$REPS"} ${PERF:+--perf} \
       ${CPU_SET:+--cpu-set "$CPU_SET"} --memory "$MEM_MAX"
   else
-    PGUSER=postgres /root/venv/bin/theodb-bench run "$suite" \
-      --system "$SISTEMA" $ARG_DSN --profile "$PROFILE" --output "$saida" $arg_ds \
+    env ${PG_EXTERNO:-PGUSER=postgres} /root/venv/bin/theodb-bench run "$suite" \
+      --system "$SISTEMA" --profile "$PROFILE" --output "$saida" $arg_ds \
       ${REPS:+--repetitions "$REPS"} ${PERF:+--perf} \
       ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"}
   fi
