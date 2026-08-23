@@ -933,6 +933,11 @@ class PostgresAdapter(SystemAdapter):
         # query, and the benchmark's own correctness check caught it -- the run
         # came back INVALID rather than reporting a fast wrong number.
         "filtered_sum": ("SELECT sum(amount) FROM {table} WHERE category = 'a' AND amount > 0"),
+        # Gêmeo numérico do de cima: mesma forma, seletividade casada (12,14% vs 12,37%), e a
+        # ÚNICA diferença é a coluna do primeiro predicado — texto vira inteiro.
+        "numeric_filtered_sum": (
+            "SELECT sum(amount) FROM {table} WHERE quantity < 13 AND amount > 0"
+        ),
     }
 
     def _analytical_column_types(self, table: AnalyticalTable | None = None) -> str:

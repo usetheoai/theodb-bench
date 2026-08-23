@@ -189,7 +189,8 @@ def test_upstream_postgres_refuses_the_columnar_path() -> None:
 
 
 @pytest.mark.parametrize(
-    "query_id", ["total_rows", "sum_amount", "group_by_category", "filtered_sum"]
+    "query_id",
+    ["total_rows", "sum_amount", "group_by_category", "filtered_sum", "numeric_filtered_sum"],
 )
 def test_every_declared_query_has_sql(query_id: str) -> None:
     server = _AnalyticalStub()

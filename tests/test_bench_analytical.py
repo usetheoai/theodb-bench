@@ -398,3 +398,36 @@ def test_the_decline_reason_reaches_the_bundle_point() -> None:
         assert ponto.parameters.get("engine.admit_decline") == "agg over an expression", (
             ponto.parameters
         )
+
+
+def test_the_numeric_filter_selects_the_same_share_as_the_text_filter() -> None:
+    """As duas so respondem 'o custo e do filtro ou do texto?' se a fracao casar.
+
+    Se `numeric_filtered_sum` selecionar metade das linhas de `filtered_sum`, a diferenca de
+    tempo mede SELETIVIDADE, e a conclusao sobre tipo de coluna seria um artefato do desenho.
+    """
+    from theodb_bench.bench.analytical import AnalyticalWorkload, generate_rows
+
+    linhas = generate_rows(AnalyticalWorkload(row_count=200_000, seed=20260821))
+    n = len(linhas)
+    texto = sum(1 for r in linhas if r[2] == "a" and float(r[1]) > 0) / n
+    numerico = sum(1 for r in linhas if int(r[3]) < 13 and float(r[1]) > 0) / n
+
+    assert abs(texto - numerico) / texto < 0.05, (
+        f"seletividades divergem: texto={texto:.4%} numerico={numerico:.4%}"
+    )
+
+
+def test_the_suite_can_separate_the_filter_cost_from_the_text_cost() -> None:
+    """B-106: as duas hipoteses vivas mandam consertar coisas OPOSTAS.
+
+    Medido em 2026-08-23: o colunar perde `filtered_sum` nas seis escalas e ganha os dois
+    agregados sem filtro. `filtered_sum` filtra por coluna de TEXTO, e sem um filtro
+    puramente numerico as duas leituras produzem exatamente os mesmos numeros.
+    """
+    from theodb_bench.bench.analytical import QUERIES
+
+    ids = {q.id for q in QUERIES}
+    assert "numeric_filtered_sum" in ids, (
+        f"sem filtro numerico a suite nao discrimina; tem apenas {sorted(ids)}"
+    )

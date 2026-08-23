@@ -75,6 +75,10 @@ def _analytical_scan(
         index = list(columns).index("amount")
         category = list(columns).index("category")
         return [row for row in rows if row[category] == "a" and float(row[index]) > 0]
+    if query_id == "numeric_filtered_sum":
+        index = list(columns).index("amount")
+        quantity = list(columns).index("quantity")
+        return [row for row in rows if int(row[quantity]) < 13 and float(row[index]) > 0]
     return list(rows)
 
 
@@ -83,7 +87,7 @@ def _analytical_aggregate(
 ) -> tuple[tuple[Any, ...], ...]:
     if query_id in {"total_rows"}:
         return ((len(rows),),)
-    if query_id in {"sum_amount", "filtered_sum"}:
+    if query_id in {"sum_amount", "filtered_sum", "numeric_filtered_sum"}:
         return ((round(sum(float(row[1]) for row in rows), 6),),)
     if query_id == "group_by_category":
         totals: dict[Any, float] = {}

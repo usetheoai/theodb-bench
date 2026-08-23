@@ -56,6 +56,15 @@ QUERIES: Final[tuple[AnalyticalQuery, ...]] = (
         id="group_by_category", description="Group and aggregate by a low-cardinality key."
     ),
     AnalyticalQuery(id="filtered_sum", description="Filter on two columns, then aggregate."),
+    AnalyticalQuery(
+        id="numeric_filtered_sum",
+        description=(
+            "O gêmeo NUMÉRICO de `filtered_sum`: mesma forma, mesma seletividade, e a única "
+            "diferença é que o predicado de igualdade sobre texto vira um de faixa sobre inteiro. "
+            "Existe para separar duas hipóteses que mandam consertar coisas opostas — ver "
+            "`wiki/benchmarks/b106-colunar-perde-onde-ha-filtro.md`."
+        ),
+    ),
 )
 
 
@@ -187,6 +196,13 @@ def expected_answer(rows: Sequence[tuple[Any, ...]], query_id: str) -> tuple[tup
         return tuple((key, round(value, 6)) for key, value in sorted(totals.items()))
     if query_id == "filtered_sum":
         selected = [row for row in rows if row[2] == "a" and float(row[1]) > 0]
+        return ((round(sum(float(row[1]) for row in selected), 6),),)
+    if query_id == "numeric_filtered_sum":
+        # `quantity < 13` é escolhido pela SELETIVIDADE, não por gosto: com `quantity` uniforme
+        # em [1,50) ele seleciona 12,14% contra os 12,37% de `category='a' AND amount > 0`.
+        # Se as frações divergissem, a diferença de tempo mediria seletividade e a conclusão
+        # sobre tipo de coluna seria artefato do desenho. Travado por teste.
+        selected = [row for row in rows if int(row[3]) < 13 and float(row[1]) > 0]
         return ((round(sum(float(row[1]) for row in selected), 6),),)
     raise ConfigError(
         f"no oracle for query {query_id!r}", context=ErrorContext(phase=Phase.OFFLINE)

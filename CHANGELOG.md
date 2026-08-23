@@ -7,6 +7,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`numeric_filtered_sum` — a query que separa "o custo é do filtro" de "o custo é do texto".** O primeiro
+  bundle instrumentado mostrou o colunar perdendo `filtered_sum` nas seis escalas e ganhando os dois
+  agregados sem filtro; `filtered_sum` filtra por coluna de **texto**, e sem um filtro puramente numérico as
+  duas leituras produzem exatamente os mesmos números — e mandam consertar coisas opostas. O gêmeo tem a
+  **mesma forma e seletividade casada** (12,14% contra 12,37%, travado por teste): a única diferença é que o
+  predicado de igualdade sobre texto vira um de faixa sobre inteiro. Se as frações divergissem, a diferença
+  de tempo mediria seletividade e a conclusão sobre tipo de coluna seria artefato do desenho ([[B-106]]).
+
 ### Fixed
 - **A sonda do portão de residência não usava a query que ia ser medida, e isso matou a perna colunar do
   AlloyDB Omni nos dois fatores de escala.** O `run_tpch_suite` chamava o portão sem SQL, então ele caía no
