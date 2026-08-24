@@ -651,7 +651,15 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
             k=10,
             warmup_queries=100,
             indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
-            search_sweep={"ef_search": (64,)},
+            # UM ponto de operacao nao responde paridade, e isso foi MEDIDO em 2026-08-24. Com `ef=64`
+            # cravado para todos, a 1M o TheoDB entrega recall 0,9097 e o pgvector 0,9275 — uma
+            # diferenca de 0,0178, ACIMA do limiar de 0,01 com que o proprio arnes recusa veredito
+            # entre pontos de qualidade diferente. Comparar throughput ali reportaria como mais
+            # rapido quem fez menos trabalho.
+            #
+            # Com varredura cada sistema ganha uma curva, e a comparacao passa a ser possivel a
+            # recall CASADO — que e a unica forma honesta de comparar velocidade.
+            search_sweep={"ef_search": (32, 64, 128, 256)},
             load=LoadModel(clients=16),
         ),
         default_repetitions=3,

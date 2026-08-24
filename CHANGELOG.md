@@ -32,6 +32,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   nenhuma quantidade de `ef_search` distingue as duas.
 
 ### Changed
+- `vector/sift1m/concurrency` varre `ef_search` em quatro pontos (era um só) — com um ponto cravado os sistemas caem em recalls diferentes e a comparação de vazão fica sem sentido (#B-049)
 - O bundle passa a **declarar** a semântica de repetição em `repetition_policy` — o schema já a previa (TRD 6.8) e nada a emitia, então nenhum bundle dizia se o índice era reconstruído entre repetições (#B-049)
 - `vector/sift1m/hnsw` varre `ef_search` até 1000 (era 256) — a região onde o reparo de encontrabilidade mostrou ganho a 100 k nunca tinha sido sondada a 1M (#B-108)
 - **A varredura de `ef_search` do `vector/sift/hnsw` vai até 2048, porque em 256 ela acabava antes da
