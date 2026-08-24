@@ -22,6 +22,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   o que o keepalive sozinho não faz.
 
 ### Added
+- `--index-repetitions N` reconstrói o índice N vezes por ponto — `--repetitions` repetia só a medição, e toda conclusão sobre recall repousava sobre um grafo construído uma vez (#B-049)
 - Adapter e suíte para o VectorChord (`vchordrq`/RaBitQ) — fecha o único eixo que o B-057 deixou explicitamente não medido (#B-057)
 - **Suíte `vector/sift/hnsw-efc`, que separa duas causas do teto de recall medido no [[B-108]].** Ela varia
   `ef_construction` — o único parâmetro de **build** do grafo — com a varredura de busca só no topo. **Se o
@@ -30,6 +31,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   nenhuma quantidade de `ef_search` distingue as duas.
 
 ### Changed
+- O bundle passa a **declarar** a semântica de repetição em `repetition_policy` — o schema já a previa (TRD 6.8) e nada a emitia, então nenhum bundle dizia se o índice era reconstruído entre repetições (#B-049)
 - `vector/sift1m/hnsw` varre `ef_search` até 1000 (era 256) — a região onde o reparo de encontrabilidade mostrou ganho a 100 k nunca tinha sido sondada a 1M (#B-108)
 - **A varredura de `ef_search` do `vector/sift/hnsw` vai até 2048, porque em 256 ela acabava antes da
   pergunta.** Medido contra o pgvector no mesmo `m=16`: no mesmo knob o grafo deles entrega mais recall e o

@@ -427,6 +427,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             adapter_factory=partial(adapter.build, **adapter_overrides(args.build_timeout)),
             baseline_dir=args.baseline,
             profile=profile,
+            index_repetitions=args.index_repetitions,
             repetitions=repetitions,
             results_root=args.output,
             collect_perf_telemetry=args.perf,
@@ -969,6 +970,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile", default=ProfileName.SMOKE.value, choices=[p.value for p in ProfileName]
     )
     run.add_argument("--repetitions", type=int, default=None)
+    run.add_argument(
+        "--index-repetitions",
+        type=int,
+        default=1,
+        help="quantas vezes o INDICE e reconstruido por ponto (default 1). `--repetitions` repete só "
+        "a MEDICAO: o indice era construido uma vez, e toda conclusao sobre recall repousava sobre um "
+        "grafo so. Medido no B-108: o mesmo build da de 30 a 44 nos inalcancaveis entre corridas",
+    )
     run.add_argument("--output", type=Path, default=DEFAULT_RESULTS_ROOT)
     run.add_argument("--perf", action="store_true", help="enable hardware counter collection")
     run.add_argument(

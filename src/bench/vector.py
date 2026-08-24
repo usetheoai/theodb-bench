@@ -232,6 +232,9 @@ class RepetitionResult:
     duration_seconds: float
     latency: LatencySummary
     recall: float | None
+    #: UMA entrada por CONSTRUCAO do indice. Com `index_repetitions=1` (o default) a lista tem um
+    #: elemento e o comportamento e o de sempre; com N ela carrega N construcoes independentes, que e
+    #: o que permite separar variancia de BUILD de variancia de MEDICAO.
     build_seconds: float | None = None
     index_size_bytes: int | None = None
     load: dict[str, Any] | None = None
@@ -283,8 +286,12 @@ class PointResult:
     #: reprodutivel. MEDIDO em 2026-08-24: um A/B a 1M reportou `build_seconds: [157, 157]` e eu li
     #: como variancia baixa; eram a mesma medicao duas vezes. `bench/graph.py:266` ja fazia certo
     #: (`series["build_seconds"] = [self.build_seconds]`); o vetorial e que divergia.
-    build_seconds: float | None = None
-    index_size_bytes: int | None = None
+    #:
+    #: LISTA e nao escalar desde a mesma data: com `index_repetitions > 1` ha N construcoes por ponto,
+    #: e cada uma tem o seu tempo e o seu tamanho. Com o default 1 a lista tem um elemento e o bundle
+    #: fica identico ao de antes.
+    build_seconds_runs: list[float] = field(default_factory=list)
+    index_size_bytes_runs: list[int] = field(default_factory=list)
 
     def metric_series(self) -> dict[str, list[float]]:
         """Per-metric values across repetitions, for aggregation.
@@ -304,10 +311,10 @@ class PointResult:
                 value = getattr(repetition.latency, name)
                 if isinstance(value, float):
                     series.setdefault(f"latency_{name}_ms", []).append(value)
-        if self.build_seconds is not None:
-            series["build_seconds"] = [self.build_seconds]
-        if self.index_size_bytes is not None:
-            series["index_size_bytes"] = [float(self.index_size_bytes)]
+        if self.build_seconds_runs:
+            series["build_seconds"] = list(self.build_seconds_runs)
+        if self.index_size_bytes_runs:
+            series["index_size_bytes"] = [float(v) for v in self.index_size_bytes_runs]
         return series
 
 
@@ -727,8 +734,26 @@ class VectorBenchmark:
         make_client: Callable[[], SystemAdapter] | None = None,
         k: int | None = None,
         label: str | None = None,
+        index_repetitions: int = 1,
     ) -> PointResult:
-        """Build, warm up and measure one configuration."""
+        """Build, warm up and measure one configuration.
+
+        `index_repetitions` reconstroi o INDICE N vezes, cada uma seguida das suas `repetitions` de
+        medicao. Existe porque `repetitions` sozinho repete apenas a MEDICAO: o indice era construido
+        uma vez, e toda conclusao sobre recall repousava sobre um grafo so. MEDIDO em 2026-08-24 no
+        [[B-108]]: o mesmo build produz de 30 a 44 nos inalcancaveis entre corridas, e um delta de
+        recall de +0,0015 e indistinguivel dessa variancia sem reamostrar a construcao.
+
+        Ate aqui isso se fazia fabricando tags distintas em `ops/bench-run.sh`, o que reconstroi a
+        imagem Docker inteira por perna — muito mais caro, e fora do bundle.
+
+        Default 1: o custo e o de sempre a menos que alguem peca outro.
+        """
+        if index_repetitions < 1:
+            raise ConfigError(
+                f"index_repetitions deve ser >= 1, recebido {index_repetitions}",
+                context=ErrorContext(phase=Phase.PREFLIGHT),
+            )
         label = (
             label
             if label is not None
@@ -737,19 +762,43 @@ class VectorBenchmark:
         point = PointResult(label=label, parameters={**index.parameters, **search})
 
         spec = self.workload.table_spec()
-        try:
-            # Other configurations' indexes go first: leaving them lets the
-            # system choose between two indexes on the same column.
-            adapter.drop_indexes(spec)
-            build = adapter.build_index(spec, index)
-        except UnsupportedCapabilityError as exc:
-            point.status = "unsupported"
-            point.status_detail = exc.message
-            return point
+        for construcao in range(1, index_repetitions + 1):
+            try:
+                # Other configurations' indexes go first: leaving them lets the
+                # system choose between two indexes on the same column.
+                # Com `index_repetitions > 1` isto tambem derruba o indice da construcao ANTERIOR,
+                # que e o que torna cada uma independente em vez de medir o mesmo grafo N vezes.
+                adapter.drop_indexes(spec)
+                build = adapter.build_index(spec, index)
+            except UnsupportedCapabilityError as exc:
+                point.status = "unsupported"
+                point.status_detail = exc.message
+                point.repetitions.clear()
+                point.build_seconds_runs.clear()
+                point.index_size_bytes_runs.clear()
+                return point
 
-        point.build_seconds = build.seconds
-        point.index_size_bytes = build.index_size_bytes
+            point.build_seconds_runs.append(build.seconds)
+            if build.index_size_bytes is not None:
+                point.index_size_bytes_runs.append(build.index_size_bytes)
 
+            if not self._medir_construcao(
+                adapter, point, search, repetitions, make_client, k, construcao
+            ):
+                return point
+        return point
+
+    def _medir_construcao(
+        self,
+        adapter: SystemAdapter,
+        point: PointResult,
+        search: dict[str, Any],
+        repetitions: int,
+        make_client: Callable[[], SystemAdapter] | None,
+        k: int | None,
+        construcao: int,
+    ) -> bool:
+        """Aquece e mede UMA construcao. Devolve False quando o ponto virou `unsupported`."""
         adapter.set_search_parameters(search)
         # B-060 — record what the server has IN FORCE next to what was requested.
         #
@@ -767,7 +816,12 @@ class VectorBenchmark:
         try:
             self.warm_up(adapter)
             for repetition in range(1, repetitions + 1):
-                result = self.measure(adapter, repetition, make_client, k=k)
+                # O numero da repeticao segue global entre construcoes: duas construcoes com tres
+                # repeticoes dao 1..6, e nao 1..3 duas vezes. Repetir o indice tornaria dois
+                # resultados distintos indistinguiveis no bundle.
+                result = self.measure(
+                    adapter, (construcao - 1) * repetitions + repetition, make_client, k=k
+                )
                 point.repetitions.append(result)
         except UnsupportedCapabilityError as exc:
             # A shape the system has no path for -- a batch probe, say. The point
@@ -776,17 +830,30 @@ class VectorBenchmark:
             point.status = "unsupported"
             point.status_detail = exc.message
             point.repetitions.clear()
-        return point
+            point.build_seconds_runs.clear()
+            point.index_size_bytes_runs.clear()
+            return False
+        return True
 
     def points(
         self,
         adapter: SystemAdapter,
         repetitions: int,
         make_client: Callable[[], SystemAdapter] | None = None,
+        index_repetitions: int = 1,
     ) -> list[PointResult]:
         """Every configuration measured, in order."""
         return [
-            self.run_point(adapter, index, search, repetitions, make_client, k=k, label=label)
+            self.run_point(
+                adapter,
+                index,
+                search,
+                repetitions,
+                make_client,
+                k=k,
+                label=label,
+                index_repetitions=index_repetitions,
+            )
             for label, (index, search), k in self.configurations_with_k()
         ]
 

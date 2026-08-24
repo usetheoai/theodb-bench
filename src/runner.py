@@ -69,6 +69,8 @@ class RunRequest:
     profile: Profile = field(default_factory=lambda: get_profile("smoke"))
     benchmark_version: int = 1
     repetitions: int = 1
+    #: Quantas vezes o INDICE e reconstruido por ponto. 1 mantem o custo de sempre.
+    index_repetitions: int = 1
     results_root: Path = Path("results")
     isolation: IsolationPlan = field(default_factory=IsolationPlan)
     collect_process_telemetry: bool = True
@@ -119,6 +121,22 @@ def _benchmark_payload(request: RunRequest) -> dict[str, Any]:
             "operations": warmup,
         },
         "repetitions": request.repetitions,
+        # A semantica de repeticao passa a ser DECLARADA no bundle. O schema ja previa
+        # `repetition_policy` (TRD 6.8) e nada a emitia: so uma fixture de teste a preenchia, entao
+        # nenhum bundle jamais disse se o indice era reconstruido entre repeticoes — e a resposta era
+        # `false`, calada. Um leitor que compare desvio-padrao de recall entre dois bundles precisa
+        # saber se ele mede variancia de MEDICAO ou de CONSTRUCAO, e sao coisas diferentes.
+        #
+        # Os quatro `false` sao verdadeiros e uteis: o arnes nao reinicia o servidor, nao derruba
+        # cache e nao restaura a base entre repeticoes. Declarar isso e o que permite a quem le
+        # calibrar o que o numero cobre.
+        "repetition_policy": {
+            "rebuild_index": request.index_repetitions > 1,
+            "restart_system": False,
+            "drop_caches": False,
+            "restore_database": False,
+            "restart_client_only": False,
+        },
     }
 
 
@@ -278,7 +296,14 @@ def run_benchmark(request: RunRequest) -> RunOutcome:
         # The factory the runner already holds is exactly what a client
         # population needs: one connection per client, opened the same way the
         # measured one was.
-        points.extend(benchmark.points(adapter, request.repetitions, request.adapter_factory))
+        points.extend(
+            benchmark.points(
+                adapter,
+                request.repetitions,
+                request.adapter_factory,
+                index_repetitions=request.index_repetitions,
+            )
+        )
         collectors.stop()
 
         bundle.write_artifact("system", adapter.system_payload())
