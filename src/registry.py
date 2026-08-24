@@ -330,6 +330,32 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
             search_sweep={"ef_search": (16, 64, 256, 512, 1000)},
         ),
     ),
+    "vector/glove1m/m-sweep": BenchmarkEntry(
+        id="vector/glove1m/m-sweep",
+        requires_dataset="glove-100-angular",
+        description=(
+            "GloVe-100 inteiro varrendo o GRAU DO GRAFO. Medido em 2026-08-24: com `m=16` a nossa "
+            "curva termina em recall 0,9396, porque `ef_search` tem teto de 1000 (o mesmo do "
+            "pgvector) e ali a regua acaba. As curvas publicadas pelo ANN-Benchmarks vivem "
+            "principalmente entre 0,95 e 0,999, e as entradas de la varrem `m` ate 48-96. Com `m` "
+            "cravado em 16 nos nao ENTRAMOS nessa faixa neste corpus — e isso e limite de parametro, "
+            "nao de motor, o que e diferente e so uma varredura distingue."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_183_514,
+            dimension=100,
+            query_count=500,
+            k=10,
+            metric="cosine",
+            warmup_queries=50,
+            indexes=(
+                IndexSpec(kind="hnsw", parameters={"m": 16}),
+                IndexSpec(kind="hnsw", parameters={"m": 32}),
+                IndexSpec(kind="hnsw", parameters={"m": 48}),
+            ),
+            search_sweep={"ef_search": (256, 512, 1000)},
+        ),
+    ),
     "vector/sift/rabitq": BenchmarkEntry(
         id="vector/sift/rabitq",
         requires_dataset="sift-128-euclidean",
