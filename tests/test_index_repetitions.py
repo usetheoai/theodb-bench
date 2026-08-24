@@ -82,3 +82,33 @@ def test_zero_construcoes_e_RECUSADO(tmp_path: Path) -> None:
             repetitions=1,
             index_repetitions=0,
         )
+
+
+def test_o_artefato_result_tambem_traz_o_build_UMA_vez_por_construcao(tmp_path: Path) -> None:
+    """Dois artefatos do mesmo bundle nao podem discordar.
+
+    MEDIDO em 2026-08-24: ao mover o build para o ponto eu esqueci o `result`, que lia da repeticao.
+    O `statistics` reportava build de 33,65 s e o `result` nao mencionava build nenhum — um consumidor
+    que lesse o segundo concluiria que o dado nao foi coletado.
+    """
+    saida = _bundle(tmp_path, repetitions=3, index_repetitions=2)
+    result = saida.bundle.read_artifact("result")
+    stats = saida.bundle.read_artifact("statistics")
+
+    conferidos = 0
+    for ponto_r, ponto_s in zip(result["points"], stats["points"], strict=True):
+        no_stats = ponto_s["metrics"].get("build_seconds")
+        if no_stats is None:
+            continue
+        conferidos += 1
+        no_result = [
+            r["resources"]["build_seconds"]
+            for r in ponto_r["repetitions"]
+            if "build_seconds" in r.get("resources", {})
+        ]
+        assert len(no_result) == no_stats["repetitions"] == 2, (
+            f"{ponto_r['label']}: result traz {len(no_result)} builds, statistics diz "
+            f"{no_stats['repetitions']} — os dois artefatos discordam"
+        )
+        assert no_result == no_stats["values"]
+    assert conferidos, "nenhum ponto com build — o teste passaria trivialmente"

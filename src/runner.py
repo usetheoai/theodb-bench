@@ -140,6 +140,33 @@ def _benchmark_payload(request: RunRequest) -> dict[str, Any]:
     }
 
 
+def _recursos_da_repeticao(point: PointResult, indice: int) -> dict[str, Any]:
+    """Metricas do INDICE, na primeira repeticao de cada construcao — e so nela.
+
+    O build acontece antes das repeticoes, nao dentro delas. Repeti-lo em todas transformaria UMA
+    medicao em N valores iguais, e quem agregasse veria desvio-padrao zero e concluiria
+    reprodutibilidade perfeita. MEDIDO em 2026-08-24: um A/B a 1M trouxe `[157, 157]` e a leitura
+    foi "variancia baixa"; eram a mesma medicao duas vezes.
+
+    Com `index_repetitions > 1` ha M construcoes e M x N repeticoes, entao a construcao `i` cabe na
+    repeticao `i * N`. Quem agrega o campo obtem M valores — o numero de construcoes de verdade.
+    """
+    builds = point.build_seconds_runs
+    tamanhos = point.index_size_bytes_runs
+    if not builds and not tamanhos:
+        return {}
+    por_build = max(1, len(point.repetitions) // max(1, len(builds) or len(tamanhos)))
+    if indice % por_build != 0:
+        return {}
+    qual = indice // por_build
+    recursos: dict[str, Any] = {}
+    if qual < len(builds):
+        recursos["build_seconds"] = builds[qual]
+    if qual < len(tamanhos):
+        recursos["index_size_bytes"] = tamanhos[qual]
+    return recursos
+
+
 def _result_payload(run_id: str, points: list[PointResult]) -> dict[str, Any]:
     return {
         "schema_version": RESULT_SCHEMA_VERSION,
@@ -176,20 +203,9 @@ def _result_payload(run_id: str, points: list[PointResult]) -> dict[str, Any]:
                             if repetition.recall is not None
                             else {}
                         ),
-                        "resources": {
-                            **(
-                                {"build_seconds": repetition.build_seconds}
-                                if repetition.build_seconds is not None
-                                else {}
-                            ),
-                            **(
-                                {"index_size_bytes": repetition.index_size_bytes}
-                                if repetition.index_size_bytes is not None
-                                else {}
-                            ),
-                        },
+                        "resources": _recursos_da_repeticao(point, indice),
                     }
-                    for repetition in point.repetitions
+                    for indice, repetition in enumerate(point.repetitions)
                 ],
             }
             for point in points

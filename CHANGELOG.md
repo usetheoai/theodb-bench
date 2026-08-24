@@ -8,6 +8,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- O artefato `result` voltou a trazer `build_seconds` e `index_size_bytes` — uma vez por construção, não uma por repetição; ao movê-los para o ponto eu os removi do `result` e os dois artefatos do mesmo bundle passaram a discordar (#B-049)
 - `index_repetitions` chega a todo benchmark, não só ao vetorial — o runner chama todos igual, e passá-lo a um só derrubava a corrida com `sut_alive` e zero pontos, mensagem que não aponta para a causa (#B-049)
 - `build_seconds` e `index_size_bytes` deixam de ser copiados para cada repetição — uma medição virava N valores idênticos, e o desvio-padrão zero passava por reprodutibilidade perfeita (#B-049)
 - `MODE=recall-casado` respeita `SIST_B`: ele subia o AlloyDB Omni sempre, então `SIST_B=pgvector` mediria o adapter do pgvector contra um servidor Omni (#B-059)
