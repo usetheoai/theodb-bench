@@ -30,6 +30,19 @@ SIST_B="${SIST_B:-}"
 ADMIT_TRACE="${ADMIT_TRACE:-}"
 PERF="${PERF:-}"
 SISTEMA="${SISTEMA:-theodb}"
+
+# Opcoes de ssh/scp compartilhadas. `ConnectTimeout` limita SO a conexao — depois de conectado, uma
+# transferencia pode pendurar para sempre, e foi o que aconteceu.
+#
+# MEDIDO em 2026-08-24: o `scp` do bundle do git ficou pendurado 59 MINUTOS com o droplet de pe e
+# `load average 0.00` — ocioso, pagando, sem nada rodando. E o pior tipo de falha deste script,
+# porque derrota a protecao mais cara dele: o `trap EXIT` so destroi quando o script SAI, e um
+# processo pendurado nunca sai. A guarda existia e o defeito passou por baixo dela.
+#
+# `ServerAliveInterval=15` + `ServerAliveCountMax=4` derrubam a conexao apos 60 s sem resposta — o
+# mecanismo nativo do proprio ssh (degrau 3 da parsimony ladder). O `timeout` externo nas
+# transferencias e o cinto de seguranca: ele limita o tempo TOTAL, que nem o keepalive limita.
+SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
 # Parametros do modo contencao. Precisam estar AQUI e serem encaminhados abaixo: o `bench-run.sh` roda
 # no host remoto, e uma variavel exportada aqui nao atravessa o `ssh`. MEDIDO em 2026-08-22: declarei
 # `CONT_LINHAS=10000000` na linha de comando, ela nao foi encaminhada, e o executor remoto usou o
@@ -73,11 +86,11 @@ limpar() {
     echo ">>> colhendo resultados antes de destruir"
     mkdir -p "$DESTINO"
     # So a corrida DESTA execucao. `res-*` varreria tambem o que veio dentro do snapshot.
-    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "root@$IP" \
+    timeout 300 ssh $SSH_OPTS -o ConnectTimeout=10 "root@$IP" \
       'st=$(cat /root/ULTIMA_CORRIDA 2>/dev/null); [ -n "$st" ] || exit 42
        tar -czf /root/resultados.tgz "/root/res-$st" /root/bench-run.log 2>/dev/null' 2>/dev/null
     [ $? -eq 42 ] && SEM_RESULTADO=1
-    if scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q "root@$IP:/root/resultados.tgz" "$DESTINO/$NOME.tgz" 2>/dev/null \
+    if timeout 600 scp $SSH_OPTS -o ConnectTimeout=10 -q "root@$IP:/root/resultados.tgz" "$DESTINO/$NOME.tgz" 2>/dev/null \
        && [ -s "$DESTINO/$NOME.tgz" ] && tar -tzf "$DESTINO/$NOME.tgz" >/dev/null 2>&1; then
       COLHIDO=1; echo "    $DESTINO/$NOME.tgz ($(du -h "$DESTINO/$NOME.tgz" | cut -f1))"
     else
@@ -196,8 +209,9 @@ done
 ssh -o StrictHostKeyChecking=no "root@$IP" true || { echo "FALHA: ssh nunca respondeu"; exit 1; }
 
 echo "=== enviando codigo e provisionando ==="
-scp -o StrictHostKeyChecking=no -q "$(dirname "$0")/provision.sh" "$(dirname "$0")/bench-run.sh" "root@$IP:/root/"
-ssh -o StrictHostKeyChecking=no "root@$IP" 'chmod +x /root/provision.sh /root/bench-run.sh'
+timeout 300 scp $SSH_OPTS -q "$(dirname "$0")/provision.sh" "$(dirname "$0")/bench-run.sh" "root@$IP:/root/" \
+  || { echo "FALHA: scp dos scripts nao completou em 5 min"; exit 1; }
+timeout 60 ssh $SSH_OPTS "root@$IP" 'chmod +x /root/provision.sh /root/bench-run.sh'
 
 # O ARNES precisa chegar antes do provisionamento: `provision.sh` cria o venv A PARTIR de /root/bench,
 # em modo editavel, porque so assim `schemas/` fica ao lado do pacote. Medido: sem este envio, um host
@@ -215,7 +229,8 @@ git -C "$BENCH_REPO" bundle create "$TMP/bench.bundle" HEAD --branches 2>/dev/nu
   || git -C "$BENCH_REPO" bundle create "$TMP/bench.bundle" HEAD \
   || { echo "FALHA: git bundle do arnes"; exit 1; }
 BENCH_SHA="$(git -C "$BENCH_REPO" rev-parse --short HEAD)"
-scp -o StrictHostKeyChecking=no -q "$TMP/bench.bundle" "root@$IP:/root/"
+timeout 600 scp $SSH_OPTS -q "$TMP/bench.bundle" "root@$IP:/root/" \
+  || { echo "FALHA: scp do bundle nao completou em 10 min"; exit 1; }
 ssh -o StrictHostKeyChecking=no "root@$IP" \
   'rm -rf /root/bench 2>/dev/null; git clone -q /root/bench.bundle /root/bench 2>&1 | tail -2
    git -C /root/bench status --porcelain | head -3' \

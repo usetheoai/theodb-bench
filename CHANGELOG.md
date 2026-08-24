@@ -7,6 +7,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Um `scp` pendurado deixou um droplet ocioso por 59 minutos, e a proteção mais cara do script não
+  disparou.** `ConnectTimeout` limita apenas a **conexão**; depois de conectado, uma transferência pode
+  pendurar indefinidamente. Medido: o `scp` do bundle travou com o droplet de pé, `load average 0.00`, nada
+  rodando — **pagando por nada**. E o `trap EXIT` que garante a destruição só dispara quando o script
+  **sai**, e um processo pendurado nunca sai: a guarda existia e o defeito passou por baixo dela. Todo
+  `ssh`/`scp` passa a usar `ServerAliveInterval=15` + `ServerAliveCountMax=4` (o mecanismo nativo do ssh,
+  que derruba a conexão após 60 s sem resposta) **e** um `timeout` externo, que limita o tempo **total** —
+  o que o keepalive sozinho não faz.
+
 ### Added
 - **Suíte `vector/sift/hnsw-efc`, que separa duas causas do teto de recall medido no [[B-108]].** Ela varia
   `ef_construction` — o único parâmetro de **build** do grafo — com a varredura de busca só no topo. **Se o
