@@ -45,6 +45,10 @@ CAPABILITIES: Final[tuple[str, ...]] = (
     # ships both -- a bundled fork of pgvector *and* scann -- and a comparison
     # that conflated them would measure the fork under the name of the engine.
     "vector_scann",
+    # VectorChord's `vchordrq` — RaBitQ inside PostgreSQL. Distinto de `vector_quantized`, que e
+    # generico, porque a pergunta do [[B-057]] e sobre ESTE quantizador: o ADR-0036 o nomeia como o
+    # melhor permissivo, e um rotulo generico faria uma corrida contra SQ8 responder por ele.
+    "vector_rabitq",
     "vector_quantized",
     "vector_filtered",
     "lexical",

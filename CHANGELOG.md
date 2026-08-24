@@ -19,6 +19,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   o que o keepalive sozinho não faz.
 
 ### Added
+- Adapter e suíte para o VectorChord (`vchordrq`/RaBitQ) — fecha o único eixo que o B-057 deixou explicitamente não medido (#B-057)
 - **Suíte `vector/sift/hnsw-efc`, que separa duas causas do teto de recall medido no [[B-108]].** Ela varia
   `ef_construction` — o único parâmetro de **build** do grafo — com a varredura de busca só no topo. **Se o
   teto sobe com um grafo melhor construído, ele é do build (conectividade); se não sobe, é da busca** (a

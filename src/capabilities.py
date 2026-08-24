@@ -68,6 +68,7 @@ _KIND_TO_CAPABILITY: Final[dict[str, str]] = {
     "hnsw": "vector_hnsw",
     "ivfflat": "vector_ivfflat",
     "scann": "vector_scann",
+    "rabitq": "vector_rabitq",
 }
 
 

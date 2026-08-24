@@ -55,7 +55,11 @@ def test_the_summary_counts_what_is_reachable() -> None:
 
     reachable = sum(1 for row in matrix if row.reachable)
 
-    assert reachable == 11, f"expected 11 of {len(CAPABILITIES)} reachable, got {reachable}"
+    # 12 e nao 11 desde 2026-08-24: `vector_rabitq` entrou no vocabulario com adapter que a
+    # declara (`vectorchord`) E suite que a mede (`vector/sift/rabitq`). O numero so sobe quando
+    # as DUAS pontas existem — declarar capacidade sem suite continua contando como nao-alcancada,
+    # que e o ponto deste teste.
+    assert reachable == 12, f"expected 12 of {len(CAPABILITIES)} reachable, got {reachable}"
 
 
 def test_the_rendered_table_names_every_capability() -> None:
@@ -68,7 +72,7 @@ def test_the_rendered_table_names_every_capability() -> None:
 def test_the_rendered_table_carries_the_count_it_is_read_for() -> None:
     rendered = render_capability_matrix()
 
-    assert f"11 of {len(CAPABILITIES)}" in rendered
+    assert f"12 of {len(CAPABILITIES)}" in rendered
 
 
 def test_the_readme_table_is_the_generated_one() -> None:
@@ -89,7 +93,7 @@ def test_the_cli_prints_the_matrix(capsys: pytest.CaptureFixture[str]) -> None:
     from theodb_bench.cli import main
 
     assert main(["capabilities"]) == 0
-    assert "11 of 14" in capsys.readouterr().out
+    assert "12 of 15" in capsys.readouterr().out
 
 
 # ------------------------ B-104: declarada nao e medida, e a matriz nao distinguia

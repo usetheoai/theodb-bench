@@ -76,6 +76,12 @@ def _theodb_factory(**kwargs: Any) -> SystemAdapter:
     return TheoDBAdapter(**kwargs)
 
 
+def _vectorchord_factory(**kwargs: Any) -> SystemAdapter:
+    from theodb_bench.adapters.vectorchord import VectorChordAdapter
+
+    return VectorChordAdapter(**kwargs)
+
+
 def _alloydbomni_factory(**kwargs: Any) -> SystemAdapter:
     from theodb_bench.adapters.alloydb import AlloyDBOmniAdapter
 
@@ -104,6 +110,16 @@ ADAPTERS: Final[dict[str, AdapterEntry]] = {
         name="theodb",
         description="TheoDB: PostgreSQL 18 with the theodb_rs extension.",
         factory=_theodb_factory,
+        requires=("psycopg",),
+    ),
+    "vectorchord": AdapterEntry(
+        name="vectorchord",
+        description=(
+            "VectorChord: PostgreSQL com o access method vchordrq (RaBitQ na base). "
+            "Medido contra tensorchord/vchord-postgres:pg17-v0.4.3, que serve "
+            "PostgreSQL 17.4. AGPL — medimos, nao distribuimos."
+        ),
+        factory=_vectorchord_factory,
         requires=("psycopg",),
     ),
     "alloydbomni": AdapterEntry(
@@ -269,6 +285,37 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
             },
         ),
         default_repetitions=3,
+    ),
+    "vector/sift/rabitq": BenchmarkEntry(
+        id="vector/sift/rabitq",
+        requires_dataset="sift-128-euclidean",
+        description=(
+            "SIFT descriptors against VectorChord's vchordrq (RaBitQ) at the same "
+            "corpus size, queries and k as vector/sift/hnsw, so the frontiers read "
+            "at matched recall. Closes the one axis B-057 left explicitly unmeasured."
+        ),
+        workload=VectorWorkload(
+            corpus_size=100_000,
+            dimension=128,
+            query_count=500,
+            k=10,
+            warmup_queries=50,
+            # TRES `lists`, e nao um: o particionamento e parametro de BUILD, e eu nao tenho medida
+            # nossa da regra do VectorChord para escolhe-lo. Cravar um valor seria declarar um numero
+            # que ninguem mediu; varrer tres faz a propria suite responder qual manda — a mesma forma
+            # de `vector/sift/hnsw-efc`, e a mesma licao do joelho do `pre_reordering` do ScaNN, onde
+            # o default rasa media dois tercos do recall alcancavel.
+            indexes=(
+                IndexSpec(kind="rabitq", parameters={"lists": 256}),
+                IndexSpec(kind="rabitq", parameters={"lists": 1024}),
+                IndexSpec(kind="rabitq", parameters={"lists": 4096}),
+            ),
+            # `rq_probes` e nao `probes`: ver o adapter. A faixa vai de raso a quase-exaustivo para
+            # que a fronteira tenha os dois extremos — sem o extremo alto nao da para distinguir
+            # "tem teto de recall" de "nao varremos alto o suficiente", que foi exatamente o erro
+            # que a varredura do nosso hnsw carregava ate o M170.
+            search_sweep={"rq_probes": (1, 8, 32, 128, 512)},
+        ),
     ),
     "vector/sift/hnsw": BenchmarkEntry(
         id="vector/sift/hnsw",

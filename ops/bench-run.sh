@@ -30,6 +30,10 @@ MODE="${MODE:-suite}"
 # em vez de medir o guarda dele.
 OMNI_IMAGE="${OMNI_IMAGE:-google/alloydbomni:latest}"
 PGVECTOR_IMAGE="${PGVECTOR_IMAGE:-pgvector/pgvector:pg17}"
+# VectorChord: o `vchordrq` (RaBitQ) — o unico eixo que o B-057 deixou explicitamente nao medido.
+# Tag CRAVADA, nao `latest`: a versao do servidor entra no bundle lida do servidor, e uma tag movel
+# faria duas corridas com o mesmo rotulo medirem binarios diferentes.
+VECTORCHORD_IMAGE="${VECTORCHORD_IMAGE:-tensorchord/vchord-postgres:pg17-v0.4.3}"
 # MEDIDO em 2026-08-22: 1M linhas de `(id, value)` no colunar ocupam **3.248 kB** — a compressao e
 # tao boa que o regime `exceeds-cache` com 32 MB de `shared_buffers` nao excedia NADA. Declarar um
 # regime nao o torna verdadeiro, e medir "fora do cache" com o dado inteiro dentro dele mediria a
@@ -542,6 +546,7 @@ if [ "$SISTEMA" != "theodb" ]; then
   # ("paridade vetorial classe-pgvector"). Comparar grafo com quantizador mede trade-off, nao paridade.
   case "$SISTEMA" in
     pgvector) IMG_EXT="$PGVECTOR_IMAGE" ;;
+    vectorchord) IMG_EXT="$VECTORCHORD_IMAGE" ;;
     *)        IMG_EXT="$OMNI_IMAGE" ;;
   esac
   docker pull "$IMG_EXT" >/dev/null 2>&1 || { echo "FALHA: pull de $IMG_EXT"; exit 1; }
