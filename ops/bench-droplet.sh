@@ -7,6 +7,24 @@
 # depende do caminho feliz nao acontece justamente quando mais importa.
 set -uo pipefail
 
+# RODA DE UMA COPIA. O bash le um script por DESLOCAMENTO DE BYTE, nao de uma vez: editar o arquivo
+# enquanto ele executa faz o interpretador retomar no meio de uma linha. Medido em 2026-08-24 — uma
+# corrida de A/B perdeu as duas pernas com `erro de sintaxe proximo ao token inesperado \'(\'` na
+# linha 274 porque eu acrescentei uma variavel no topo do arquivo com a corrida em voo. O `bash -n`
+# depois passava: o arquivo estava certo, o PROCESSO e que tinha perdido a posicao.
+#
+# Uma corrida dura ~40 min e ninguem lembra de nao tocar no arnes durante ela. Copiar e re-executar
+# custa milissegundos e remove a classe inteira.
+if [ -z "${BENCH_DROPLET_COPIA:-}" ]; then
+  _copia="$(mktemp -t bench-droplet.XXXXXX.sh)"
+  cat "$0" > "$_copia"
+  # A copia sai depois que a corrida termina, inclusive se ela morrer.
+  BENCH_DROPLET_COPIA=1 bash "$_copia" "$@"
+  _rc=$?
+  rm -f "$_copia"
+  exit $_rc
+fi
+
 SNAPSHOT="${SNAPSHOT:-theo-bench-base}"       # nome do snapshot provisionado; vazio => ubuntu limpa
 REGIAO="${REGIAO:-nyc1}"
 TAMANHO="${TAMANHO:-g-16vcpu-64gb}"
