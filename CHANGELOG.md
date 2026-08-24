@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Suíte `vector/sift/hnsw-efc`, que separa duas causas do teto de recall medido no [[B-108]].** Ela varia
+  `ef_construction` — o único parâmetro de **build** do grafo — com a varredura de busca só no topo. **Se o
+  teto sobe com um grafo melhor construído, ele é do build (conectividade); se não sobe, é da busca** (a
+  descida gulosa para cedo apesar de o vizinho estar no grafo). As duas apontam para código diferente, e
+  nenhuma quantidade de `ef_search` distingue as duas.
+
 ### Changed
 - **A varredura de `ef_search` do `vector/sift/hnsw` vai até 2048, porque em 256 ela acabava antes da
   pergunta.** Medido contra o pgvector no mesmo `m=16`: no mesmo knob o grafo deles entrega mais recall e o

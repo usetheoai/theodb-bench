@@ -263,7 +263,7 @@ it.
 | capability | adapters que declaram | suítes que medem |
 |---|---|---|
 | `vector_exact` | `alloydbomni`, `pgvector`, `postgres`, `theodb` | 5 |
-| `vector_hnsw` | `alloydbomni`, `pgvector`, `theodb` | 11 |
+| `vector_hnsw` | `alloydbomni`, `pgvector`, `theodb` | 12 |
 | `vector_ivfflat` | `alloydbomni`, `pgvector`, `theodb` | 2 |
 | `vector_scann` | `alloydbomni` | 3 |
 | `vector_quantized` | `theodb` | 3 |

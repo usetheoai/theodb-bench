@@ -880,6 +880,37 @@ BENCHMARKS["analytical/crossover/row-count"] = BenchmarkEntry(
 )
 
 
+BENCHMARKS["vector/sift/hnsw-efc"] = BenchmarkEntry(
+    id="vector/sift/hnsw-efc",
+    requires_dataset="sift-128-euclidean",
+    description=(
+        "O mesmo corpus e o mesmo `m` do `vector/sift/hnsw`, variando `ef_construction` — o unico "
+        "parametro de BUILD do grafo. Existe para separar duas causas do teto de recall medido no "
+        "B-108: se o teto SOBE com um grafo melhor construido, ele e do BUILD (conectividade); se NAO "
+        "sobe, e da BUSCA (a descida gulosa para cedo apesar de o vizinho estar no grafo). As duas "
+        "apontam para codigo diferente, e nenhuma quantidade de `ef_search` distingue as duas."
+    ),
+    workload=VectorWorkload(
+        corpus_size=100_000,
+        dimension=128,
+        query_count=500,
+        k=10,
+        warmup_queries=50,
+        indexes=(
+            # 64 e o DEFAULT dos dois motores — a linha de base que produziu o teto de 0,9972.
+            IndexSpec(kind="hnsw", parameters={"m": 16, "ef_construction": 64}),
+            IndexSpec(kind="hnsw", parameters={"m": 16, "ef_construction": 256}),
+            # 1000 e o teto da reloption (`MAX_HNSW_EF_CONSTRUCTION`, am/options.rs:37).
+            IndexSpec(kind="hnsw", parameters={"m": 16, "ef_construction": 1000}),
+        ),
+        # So o TOPO da varredura de busca: o teto so aparece em recall alto, e medir a curva inteira
+        # tres vezes gastaria o triplo para responder a mesma pergunta.
+        search_sweep={"ef_search": (256, 1000)},
+    ),
+    default_repetitions=3,
+)
+
+
 def get_benchmark(benchmark_id: str) -> BenchmarkEntry:
     if benchmark_id not in BENCHMARKS:
         raise ConfigError(
