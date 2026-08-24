@@ -561,9 +561,31 @@ else
   echo "=== smoke PULADO: mede o caminho colunar do TheoDB, e o sistema medido e '$SISTEMA' ==="
 fi
 
+# GUCS_LEGS mede a MESMA suite, no MESMO binario e na MESMA maquina, uma vez por conjunto de GUCs
+# (separados por ';'). E isto que um A/B de GUC exige: duas corridas em droplets diferentes carregam
+# a variacao entre maquinas junto com o efeito, e a variacao medida de QPS aqui e de 8-11%.
+#
+# A configuracao vai para o DISCO ao lado do bundle, nao so para o log. O manifesto do arnes nao
+# registra PGOPTIONS, entao sem isto o resultado seria mais um numero cuja configuracao ninguem
+# declarou — exatamente o defeito que [[b102-configuracao-nao-declarada]] registra.
 for tag in $TAGS; do
   subir "$tag" || exit 1
-  medir "$tag" "$SUITE" "/root/res-$STAMP/$tag" || echo "AVISO: $tag terminou nao-zero (bundle preservado)"
+  if [ -z "${GUCS_LEGS:-}" ]; then
+    medir "$tag" "$SUITE" "/root/res-$STAMP/$tag" || echo "AVISO: $tag terminou nao-zero (bundle preservado)"
+    continue
+  fi
+  n=0
+  echo "$GUCS_LEGS" | tr ';' '\n' | while IFS= read -r perna; do
+    [ -z "$perna" ] && continue
+    n=$((n + 1))
+    _o=""; for g in $perna; do _o="$_o -c $g"; done
+    PGOPTIONS="${_o# }"; export PGOPTIONS
+    dest="/root/res-$STAMP/$tag-perna$n"
+    mkdir -p "$dest"
+    printf '%s\n' "$perna" > "$dest/gucs.txt"
+    echo "-- perna $n: PGOPTIONS='$PGOPTIONS' --"
+    medir "$tag" "$SUITE" "$dest" || echo "AVISO: $tag perna$n terminou nao-zero (bundle preservado)"
+  done
 done
 
 # Registra QUAL corrida acabou de rodar. Sem isto a coleta faz `tar /root/res-*` e varre tambem os
