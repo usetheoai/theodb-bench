@@ -34,6 +34,26 @@ PGVECTOR_IMAGE="${PGVECTOR_IMAGE:-pgvector/pgvector:pg17}"
 # Tag CRAVADA, nao `latest`: a versao do servidor entra no bundle lida do servidor, e uma tag movel
 # faria duas corridas com o mesmo rotulo medirem binarios diferentes.
 VECTORCHORD_IMAGE="${VECTORCHORD_IMAGE:-tensorchord/vchord-postgres:pg17-v0.4.3}"
+
+# A imagem do sistema EXTERNO, escolhida pelo nome do sistema — e RECUSANDO o desconhecido.
+#
+# Havia duas selecoes: uma no `MODE=suite` (que caia no Omni por omissao) e nenhuma no
+# `MODE=recall-casado`, que subia o Omni SEMPRE, mesmo com `SIST_B=pgvector`. Nesse caso o adapter do
+# pgvector conversaria com um servidor Omni na 55460 e devolveria numero plausivel do servidor errado —
+# a mesma classe de `SISTEMA` cravado que ja custou tres suites inalcancaveis.
+#
+# O `*)` cai em FALHA e nao no Omni: um sistema sem imagem declarada e um pedido que ninguem consegue
+# atender, e responder com o servidor de outro produto e pior que recusar.
+imagem_de() {
+  case "$1" in
+    alloydbomni) echo "$OMNI_IMAGE" ;;
+    pgvector)    echo "$PGVECTOR_IMAGE" ;;
+    vectorchord) echo "$VECTORCHORD_IMAGE" ;;
+    *)
+      echo "FALHA: sistema externo '$1' nao tem imagem declarada em bench-run.sh" >&2
+      return 1 ;;
+  esac
+}
 # MEDIDO em 2026-08-22: 1M linhas de `(id, value)` no colunar ocupam **3.248 kB** — a compressao e
 # tao boa que o regime `exceeds-cache` com 32 MB de `shared_buffers` nao excedia NADA. Declarar um
 # regime nao o torna verdadeiro, e medir "fora do cache" com o dado inteiro dentro dele mediria a
@@ -258,13 +278,14 @@ if [ "$MODE" = "recall-casado" ]; then
   SIST_A="${SIST_A:-theodb}"
   SIST_B="${SIST_B:-alloydbomni}"
 
-  docker pull "$OMNI_IMAGE" >/dev/null 2>&1 || { echo "FALHA: pull do Omni"; exit 1; }
+  IMG_B="$(imagem_de "$SIST_B")" || exit 1
+  docker pull "$IMG_B" >/dev/null 2>&1 || { echo "FALHA: pull de $IMG_B"; exit 1; }
   subir "${TAGS%% *}" || exit 1
-  subir_externo omni "$OMNI_IMAGE" 55460 || exit 1
+  subir_externo ext "$IMG_B" 55460 || exit 1
 
   echo "-- proveniencia, lida de cada servidor --"
   PGUSER=postgres psql -h /var/run/postgresql -tAc "select 'theodb: '||version()" 2>&1 | head -1 || true
-  PGPASSWORD=x psql -h 127.0.0.1 -p 55460 -U postgres -tAc "select 'omni:   '||version()" 2>&1 | head -1 || true
+  PGPASSWORD=x psql -h 127.0.0.1 -p 55460 -U postgres -tAc "select '$SIST_B: '||version()" 2>&1 | head -1 || true
 
   ARG_DS=""
   DS="$(dataset_exigido "$SUITE_A")"
@@ -544,11 +565,7 @@ if [ "$SISTEMA" != "theodb" ]; then
   # A imagem depende do sistema: `alloydbomni` traz o `scann`; `pgvector` e a referencia SOTA do
   # nosso proprio `hnsw` — mesma familia de indice, que e o que o ADR-0033 nomeia como a meta
   # ("paridade vetorial classe-pgvector"). Comparar grafo com quantizador mede trade-off, nao paridade.
-  case "$SISTEMA" in
-    pgvector) IMG_EXT="$PGVECTOR_IMAGE" ;;
-    vectorchord) IMG_EXT="$VECTORCHORD_IMAGE" ;;
-    *)        IMG_EXT="$OMNI_IMAGE" ;;
-  esac
+  IMG_EXT="$(imagem_de "$SISTEMA")" || exit 1
   docker pull "$IMG_EXT" >/dev/null 2>&1 || { echo "FALHA: pull de $IMG_EXT"; exit 1; }
   subir_externo ext "$IMG_EXT" 55460 || exit 1
   PGPASSWORD=x psql -h 127.0.0.1 -p 55460 -U postgres -tAc "select '$SISTEMA: '||version()" 2>&1 | head -1 || true
