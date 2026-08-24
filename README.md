@@ -264,10 +264,12 @@ it.
 
 **12 of 15 capabilities are reachable by a real adapter.**
 
+**12 of 15 capabilities are reachable by a real adapter.**
+
 | capability | adapters que declaram | suítes que medem |
 |---|---|---|
 | `vector_exact` | `alloydbomni`, `pgvector`, `postgres`, `theodb`, `vectorchord` | 5 |
-| `vector_hnsw` | `alloydbomni`, `pgvector`, `theodb`, `vectorchord` | 13 |
+| `vector_hnsw` | `alloydbomni`, `pgvector`, `theodb`, `vectorchord` | 14 |
 | `vector_ivfflat` | `alloydbomni`, `pgvector`, `theodb`, `vectorchord` | 2 |
 | `vector_scann` | `alloydbomni` | 3 |
 | `vector_rabitq` | `vectorchord` | 1 |
@@ -281,6 +283,8 @@ it.
 | `graph` | `theodb` | 1 |
 | `vectorizer` | — | **0** |
 | `ai_sql` | — | **0** |
+
+A dash is not a gap in this table — it is the measured state. `rerank`, `vectorizer` and `ai_sql` each reach an external model, and without an endpoint there is nothing to measure; a stub would put a number where an absence belongs.
 
 A dash is not a gap in this table — it is the measured state. `rerank`, `vectorizer` and `ai_sql` each reach an external model, and without an endpoint there is nothing to measure; a stub would put a number where an absence belongs.
 

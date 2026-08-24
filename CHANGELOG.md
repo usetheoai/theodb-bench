@@ -24,6 +24,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   o que o keepalive sozinho não faz.
 
 ### Added
+- Suíte `vector/glove1m/hnsw` no corpus inteiro do ANN-Benchmarks (1 183 514 vetores) — a de 100 k mede 8% do corpus e não produz número que se possa olhar ao lado dos deles (#B-073)
 - Corpus `glove-100-angular` e suíte `vector/glove/hnsw` — a primeira medição vetorial fora do SIFT-128/L2; as opclasses de cosseno existiam desde sempre e nunca tinham sido exercitadas (#B-073)
 - `--index-repetitions N` reconstrói o índice N vezes por ponto — `--repetitions` repetia só a medição, e toda conclusão sobre recall repousava sobre um grafo construído uma vez (#B-049)
 - Adapter e suíte para o VectorChord (`vchordrq`/RaBitQ) — fecha o único eixo que o B-057 deixou explicitamente não medido (#B-057)

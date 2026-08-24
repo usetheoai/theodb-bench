@@ -308,6 +308,28 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
             search_sweep={"ef_search": (16, 64, 256, 512, 1000)},
         ),
     ),
+    "vector/glove1m/hnsw": BenchmarkEntry(
+        id="vector/glove1m/hnsw",
+        requires_dataset="glove-100-angular",
+        description=(
+            "GloVe-100 no corpus INTEIRO — 1 183 514 vetores, que e o tamanho que o ANN-Benchmarks "
+            "publica. Existe separada da suite de 100 k pelo mesmo motivo que `vector/sift1m` e "
+            "separada de `vector/sift`: mudar o `corpus_size` da suite existente tornaria os bundles "
+            "ja publicados incomparaveis com os novos. Um subconjunto de 8% e substancialmente mais "
+            "facil, entao so esta suite produz numero que se possa OLHAR ao lado do deles — e mesmo "
+            "assim eles medem biblioteca em processo e nos medimos banco por conexao."
+        ),
+        workload=VectorWorkload(
+            corpus_size=1_183_514,
+            dimension=100,
+            query_count=500,
+            k=10,
+            metric="cosine",
+            warmup_queries=50,
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (16, 64, 256, 512, 1000)},
+        ),
+    ),
     "vector/sift/rabitq": BenchmarkEntry(
         id="vector/sift/rabitq",
         requires_dataset="sift-128-euclidean",
