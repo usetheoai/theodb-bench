@@ -277,9 +277,22 @@ class PointResult:
     status: str = "measured"
     status_detail: str | None = None
     repetitions: list[RepetitionResult] = field(default_factory=list)
+    #: O build acontece UMA vez por ponto, antes das repeticoes. Fica aqui, e nao em cada
+    #: `RepetitionResult`, porque copia-lo para todas transforma UMA medicao em N valores iguais no
+    #: bundle — e quem calcular desvio-padrao ve zero e conclui que o build e perfeitamente
+    #: reprodutivel. MEDIDO em 2026-08-24: um A/B a 1M reportou `build_seconds: [157, 157]` e eu li
+    #: como variancia baixa; eram a mesma medicao duas vezes. `bench/graph.py:266` ja fazia certo
+    #: (`series["build_seconds"] = [self.build_seconds]`); o vetorial e que divergia.
+    build_seconds: float | None = None
+    index_size_bytes: int | None = None
 
     def metric_series(self) -> dict[str, list[float]]:
-        """Per-metric values across repetitions, for aggregation."""
+        """Per-metric values across repetitions, for aggregation.
+
+        `build_seconds` e `index_size_bytes` entram com UM valor: eles descrevem o indice, que e
+        construido uma vez por ponto. Reamostra-los exige reconstruir o indice, o que hoje se faz com
+        tags distintas na mesma corrida — ver `ops/bench-run.sh`.
+        """
         series: dict[str, list[float]] = {}
         for repetition in self.repetitions:
             throughput = repetition.throughput
@@ -291,10 +304,10 @@ class PointResult:
                 value = getattr(repetition.latency, name)
                 if isinstance(value, float):
                     series.setdefault(f"latency_{name}_ms", []).append(value)
-            if repetition.build_seconds is not None:
-                series.setdefault("build_seconds", []).append(repetition.build_seconds)
-            if repetition.index_size_bytes is not None:
-                series.setdefault("index_size_bytes", []).append(float(repetition.index_size_bytes))
+        if self.build_seconds is not None:
+            series["build_seconds"] = [self.build_seconds]
+        if self.index_size_bytes is not None:
+            series["index_size_bytes"] = [float(self.index_size_bytes)]
         return series
 
 
@@ -734,6 +747,9 @@ class VectorBenchmark:
             point.status_detail = exc.message
             return point
 
+        point.build_seconds = build.seconds
+        point.index_size_bytes = build.index_size_bytes
+
         adapter.set_search_parameters(search)
         # B-060 — record what the server has IN FORCE next to what was requested.
         #
@@ -752,8 +768,6 @@ class VectorBenchmark:
             self.warm_up(adapter)
             for repetition in range(1, repetitions + 1):
                 result = self.measure(adapter, repetition, make_client, k=k)
-                result.build_seconds = build.seconds
-                result.index_size_bytes = build.index_size_bytes
                 point.repetitions.append(result)
         except UnsupportedCapabilityError as exc:
             # A shape the system has no path for -- a batch probe, say. The point

@@ -72,14 +72,32 @@ def test_every_artifact_validates_against_its_schema(tmp_path: Path, artifact: s
     validate(artifact, outcome.bundle.read_artifact(artifact))
 
 
+#: Metricas que descrevem o INDICE, nao a consulta. O indice e construido UMA vez por ponto, antes das
+#: repeticoes, entao reporta-las com N valores seria transformar uma medicao em N — e quem calculasse
+#: desvio-padrao veria zero e concluiria reprodutibilidade perfeita. MEDIDO em 2026-08-24: um A/B a 1M
+#: trouxe `build_seconds: [157, 157]` e a leitura foi "variancia baixa"; eram a mesma medicao duas vezes.
+METRICAS_DO_INDICE = {"build_seconds", "index_size_bytes"}
+
+
 def test_statistics_validate_and_keep_every_repetition(tmp_path: Path) -> None:
+    """Cada metrica MEDIDA por repeticao traz N valores; as do indice trazem UM.
+
+    A versao anterior deste teste exigia `repetitions == 3` de TODAS as metricas, incluindo as do
+    indice — ou seja, ele codificava o defeito e teria barrado o conserto.
+    """
     outcome = run_benchmark(_request(tmp_path, repetitions=3))
     payload = outcome.bundle.read_artifact("statistics")
     validate("statistics", payload)
+    vistas = set()
     for point in payload["points"]:
-        for metric in point["metrics"].values():
-            assert metric["repetitions"] == 3
-            assert len(metric["values"]) == 3
+        for nome, metric in point["metrics"].items():
+            vistas.add(nome)
+            esperado = 1 if nome in METRICAS_DO_INDICE else 3
+            assert metric["repetitions"] == esperado, f"{nome}: {metric['repetitions']} != {esperado}"
+            assert len(metric["values"]) == esperado
+    # Sem isto o teste passaria trivialmente num bundle que nao traz metrica de indice nenhuma, que e
+    # a classe `instrumento-reporta-o-pedido` que este projeto ja pagou dez vezes.
+    assert vistas & METRICAS_DO_INDICE, f"nenhuma metrica de indice no bundle; vistas: {sorted(vistas)}"
 
 
 def test_exact_search_against_the_fake_gives_perfect_recall(tmp_path: Path) -> None:

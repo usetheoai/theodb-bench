@@ -8,6 +8,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- `build_seconds` e `index_size_bytes` deixam de ser copiados para cada repetição — uma medição virava N valores idênticos, e o desvio-padrão zero passava por reprodutibilidade perfeita (#B-049)
 - `MODE=recall-casado` respeita `SIST_B`: ele subia o AlloyDB Omni sempre, então `SIST_B=pgvector` mediria o adapter do pgvector contra um servidor Omni (#B-059)
 - `bench-droplet.sh` executa a partir de uma cópia — editar o arnês com uma corrida em voo matava a corrida, porque o bash lê o script por deslocamento de byte (#B-069)
 - `GUCS` chega ao servidor: a variavel era passada inline para `env`, e o shell dividia o valor no espaco — a conexao nascia com `PGOPTIONS` invalida e a corrida morria em 1s com `sut_alive` (#B-108)
