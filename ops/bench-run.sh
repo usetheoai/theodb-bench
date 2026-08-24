@@ -113,11 +113,16 @@ SISTEMA="${SISTEMA:-theodb}"
 # GUCs aplicadas a TODA conexao da corrida, via `PGOPTIONS` — o mecanismo do proprio libpq, e nao uma
 # flag nova no CLI (que nao tem `--set`). Formato: `GUCS="theodb_hnsw.beam_descent=on"`, varias separadas
 # por espaco. E o que permite um A/B de GUC no MESMO binario, que e a disciplina do `enable_chunk_skip`.
-GUC_ENV=""
+# EXPORTA, e nao passa inline: o valor contem ESPACOS (`-c a=1 -c b=2`), e `env $VAR=...` sem aspas e
+# dividido pelo shell — o `env` recebe `PGOPTIONS=-c` e trata o resto como outra atribuicao, a conexao
+# nasce com PGOPTIONS invalida e o servidor fica inalcancavel. MEDIDO em 2026-08-24: a corrida morreu em
+# UM SEGUNDO com `sut_alive` FAIL, e eu quase concluí que o mecanismo nao servia.
 if [ -n "${GUCS:-}" ]; then
   _opts=""
   for g in $GUCS; do _opts="$_opts -c $g"; done
-  GUC_ENV="PGOPTIONS=${_opts# }"
+  PGOPTIONS="${_opts# }"
+  export PGOPTIONS
+  echo "-- GUCs da corrida: PGOPTIONS='$PGOPTIONS' --"
 fi
 
 PG_EXTERNO=""
@@ -187,13 +192,13 @@ medir() {
   # nativo para criar esse cgroup (degrau 3 da parsimony ladder), e sem ele os perfis `nightly` e
   # `release` sao inalcancaveis.
   if [ -n "$MEM_MAX" ] && command -v systemd-run >/dev/null 2>&1; then
-    env ${PG_EXTERNO:-PGUSER=postgres} $GUC_ENV systemd-run --scope --quiet -p "MemoryMax=$MEM_MAX" \
+    env ${PG_EXTERNO:-PGUSER=postgres} systemd-run --scope --quiet -p "MemoryMax=$MEM_MAX" \
       /root/venv/bin/theodb-bench run "$suite" \
       --system "$SISTEMA" --profile "$PROFILE" --output "$saida" $arg_ds \
       ${REPS:+--repetitions "$REPS"} ${PERF:+--perf} \
       ${CPU_SET:+--cpu-set "$CPU_SET"} --memory "$MEM_MAX"
   else
-    env ${PG_EXTERNO:-PGUSER=postgres} $GUC_ENV /root/venv/bin/theodb-bench run "$suite" \
+    env ${PG_EXTERNO:-PGUSER=postgres} /root/venv/bin/theodb-bench run "$suite" \
       --system "$SISTEMA" --profile "$PROFILE" --output "$saida" $arg_ds \
       ${REPS:+--repetitions "$REPS"} ${PERF:+--perf} \
       ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"}

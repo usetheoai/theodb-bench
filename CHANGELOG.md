@@ -8,6 +8,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- `GUCS` chega ao servidor: a variavel era passada inline para `env`, e o shell dividia o valor no espaco — a conexao nascia com `PGOPTIONS` invalida e a corrida morria em 1s com `sut_alive` (#B-108)
 - **Um `scp` pendurado deixou um droplet ocioso por 59 minutos, e a proteção mais cara do script não
   disparou.** `ConnectTimeout` limita apenas a **conexão**; depois de conectado, uma transferência pode
   pendurar indefinidamente. Medido: o `scp` do bundle travou com o droplet de pé, `load average 0.00`, nada
