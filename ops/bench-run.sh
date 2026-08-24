@@ -110,6 +110,16 @@ SISTEMA="${SISTEMA:-theodb}"
 # parsimony ladder; adicionar uma flag ao CLI seria o degrau 6 para o mesmo efeito.
 #
 # MEDIDO em 2026-08-23: a tentativa com `--dsn` morreu em `unrecognized arguments` e custou um droplet.
+# GUCs aplicadas a TODA conexao da corrida, via `PGOPTIONS` — o mecanismo do proprio libpq, e nao uma
+# flag nova no CLI (que nao tem `--set`). Formato: `GUCS="theodb_hnsw.beam_descent=on"`, varias separadas
+# por espaco. E o que permite um A/B de GUC no MESMO binario, que e a disciplina do `enable_chunk_skip`.
+GUC_ENV=""
+if [ -n "${GUCS:-}" ]; then
+  _opts=""
+  for g in $GUCS; do _opts="$_opts -c $g"; done
+  GUC_ENV="PGOPTIONS=${_opts# }"
+fi
+
 PG_EXTERNO=""
 if [ "$SISTEMA" != "theodb" ]; then
   PG_EXTERNO="PGHOST=127.0.0.1 PGPORT=55460 PGUSER=postgres PGPASSWORD=x"
@@ -177,13 +187,13 @@ medir() {
   # nativo para criar esse cgroup (degrau 3 da parsimony ladder), e sem ele os perfis `nightly` e
   # `release` sao inalcancaveis.
   if [ -n "$MEM_MAX" ] && command -v systemd-run >/dev/null 2>&1; then
-    env ${PG_EXTERNO:-PGUSER=postgres} systemd-run --scope --quiet -p "MemoryMax=$MEM_MAX" \
+    env ${PG_EXTERNO:-PGUSER=postgres} $GUC_ENV systemd-run --scope --quiet -p "MemoryMax=$MEM_MAX" \
       /root/venv/bin/theodb-bench run "$suite" \
       --system "$SISTEMA" --profile "$PROFILE" --output "$saida" $arg_ds \
       ${REPS:+--repetitions "$REPS"} ${PERF:+--perf} \
       ${CPU_SET:+--cpu-set "$CPU_SET"} --memory "$MEM_MAX"
   else
-    env ${PG_EXTERNO:-PGUSER=postgres} /root/venv/bin/theodb-bench run "$suite" \
+    env ${PG_EXTERNO:-PGUSER=postgres} $GUC_ENV /root/venv/bin/theodb-bench run "$suite" \
       --system "$SISTEMA" --profile "$PROFILE" --output "$saida" $arg_ds \
       ${REPS:+--repetitions "$REPS"} ${PERF:+--perf} \
       ${CPU_SET:+--cpu-set "$CPU_SET"} ${MEM_MAX:+--memory "$MEM_MAX"}
