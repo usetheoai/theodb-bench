@@ -504,6 +504,7 @@ class GraphBenchmark:
         adapter: SystemAdapter,
         repetitions: int,
         make_client: Callable[[], SystemAdapter] | None = None,
+        index_repetitions: int = 1,
     ) -> list[GraphPoint]:
         """Um ponto por workload declarado — e, quando pedido, um ponto irmao para o baseline.
 
@@ -516,6 +517,14 @@ class GraphBenchmark:
         mesmas ferramentas que comparam dois sistemas — dobrar um dentro do outro pediria um leitor
         especial.
         """
+        # Aceita e RECUSA acima de 1: este benchmark nao constroi indice por ponto, e ignorar
+        # produziria um bundle declarando `rebuild_index: true` sem nada reconstruido.
+        if index_repetitions != 1:
+            raise ConfigError(
+                f"{type(self).__name__} nao reconstroi indice por ponto; index_repetitions="
+                f"{index_repetitions} nao tem efeito e seria declarado no bundle como se tivesse",
+                context=ErrorContext(phase=Phase.PREFLIGHT),
+            )
         del make_client
         pontos: list[GraphPoint] = []
         for nome in self.workload.workloads:

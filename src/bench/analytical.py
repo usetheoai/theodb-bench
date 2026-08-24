@@ -471,6 +471,7 @@ class AnalyticalBenchmark:
         adapter: SystemAdapter,
         repetitions: int,
         make_client: Callable[[], SystemAdapter] | None = None,
+        index_repetitions: int = 1,
     ) -> list[PointResult]:
         """Every query on every path, as one point each.
 
@@ -484,6 +485,14 @@ class AnalyticalBenchmark:
         consulta. O crossover so e legivel como UMA curva num artefato so; cinco bundles separados
         precisariam de costura manual, e o `compare` compara dois.
         """
+        # Aceita e RECUSA acima de 1: este benchmark nao constroi indice por ponto, e ignorar
+        # produziria um bundle declarando `rebuild_index: true` sem nada reconstruido.
+        if index_repetitions != 1:
+            raise ConfigError(
+                f"{type(self).__name__} nao reconstroi indice por ponto; index_repetitions="
+                f"{index_repetitions} nao tem efeito e seria declarado no bundle como se tivesse",
+                context=ErrorContext(phase=Phase.PREFLIGHT),
+            )
         contagens = self.workload.row_count_sweep or (self.workload.row_count,)
         by_label: dict[str, PointResult] = {}
         for n_linhas in contagens:

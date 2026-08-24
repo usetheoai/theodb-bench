@@ -30,7 +30,11 @@ class Benchmark(Protocol):
         ...
 
     def points(
-        self, adapter: Any, repetitions: int, make_client: Callable[[], Any] | None = None
+        self,
+        adapter: Any,
+        repetitions: int,
+        make_client: Callable[[], Any] | None = None,
+        index_repetitions: int = 1,
     ) -> list[Any]:
         """Every configuration measured, as PointResults.
 
@@ -38,6 +42,16 @@ class Benchmark(Protocol):
         a client population. A benchmark that only ever issues work serially may
         ignore it, but it must accept it: the runner has no way to know which
         kind it holds, and asking would put the regime back in the caller.
+
+        `index_repetitions` segue a MESMA regra, e pelo mesmo motivo. Um benchmark sem indice para
+        reconstruir nao tem o que fazer com ele — mas tem de ACEITA-LO, senao o runner precisaria
+        saber qual tipo segura. MEDIDO em 2026-08-24: eu passei o argumento so do lado do runner, e o
+        smoke analitico morreu com zero pontos e `sut_alive` FAIL — uma mensagem que nao aponta para
+        a causa nenhuma. Custou um droplet.
+
+        Quem nao reconstroi indice deve RECUSAR `index_repetitions > 1` em vez de ignorar: ignorar
+        produziria um bundle declarando `rebuild_index: true` sem nada ter sido reconstruido, que e
+        pior que o erro.
         """
         ...
 

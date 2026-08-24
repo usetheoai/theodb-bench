@@ -712,6 +712,7 @@ class RetrievalBenchmark:
         adapter: SystemAdapter,
         repetitions: int,
         make_client: Callable[[], Any] | None = None,
+        index_repetitions: int = 1,
     ) -> list[RetrievalPoint]:
         """Um ponto por (pipeline, clientes), com uma repeticao por passada.
 
@@ -722,6 +723,14 @@ class RetrievalBenchmark:
         a segunda so aparece com mais de um cliente, e era justamente o que o arnes nao sabia
         produzir.
         """
+        # Aceita e RECUSA acima de 1: este benchmark nao constroi indice por ponto, e ignorar
+        # produziria um bundle declarando `rebuild_index: true` sem nada reconstruido.
+        if index_repetitions != 1:
+            raise ConfigError(
+                f"{type(self).__name__} nao reconstroi indice por ponto; index_repetitions="
+                f"{index_repetitions} nao tem efeito e seria declarado no bundle como se tivesse",
+                context=ErrorContext(phase=Phase.PREFLIGHT),
+            )
         pontos: list[RetrievalPoint] = []
         contagens = self.workload.client_sweep or (1,)
         for pipeline in self.workload.pipelines:
