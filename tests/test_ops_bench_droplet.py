@@ -89,3 +89,43 @@ def test_a_copia_e_removida_ao_fim(tmp_path: Path):
     """Uma corrida por hora deixando lixo em /tmp seria um vazamento lento e silencioso."""
     _rodar(tmp_path, com_guarda=True)
     assert list(tmp_path.glob("bench-droplet.*")) == []
+
+
+def test_nenhum_caminho_e_derivado_de_dollar_zero(tmp_path: Path):
+    """A guarda faz `$0` apontar para /tmp, então derivar caminho dele passou a estar ERRADO.
+
+    Medido em 2026-08-24: a primeira versão da guarda quebrou o portão de refs — ele reportou
+    `nao resolve em ` com caminho VAZIO, porque `$(dirname "$0")/../../theo-db` a partir de /tmp não
+    existe. O portão estava certo; o caminho é que tinha sumido. Cinco lugares faziam isso.
+    """
+    texto = DROPLET.read_text(encoding="utf-8")
+    codigo = [
+        linha
+        for linha in texto.splitlines()
+        if not linha.lstrip().startswith("#") and 'dirname "$0"' in linha
+    ]
+    assert codigo == [], f"ainda derivam caminho de $0: {codigo}"
+
+
+def test_AQUI_aponta_para_o_diretorio_real_mesmo_executando_da_copia(tmp_path: Path):
+    """O que substituiu `dirname "$0"` tem de sobreviver à re-execução — senão o conserto só troca
+    um caminho errado por outro."""
+    real = tmp_path / "ops"
+    real.mkdir()
+    alvo = real / "corrida.sh"
+    alvo.write_text(
+        "#!/usr/bin/env bash\nset -uo pipefail\n"
+        'AQUI="${BENCH_DROPLET_AQUI:-$(cd "$(dirname "$0")" && pwd)}"\n'
+        'export BENCH_DROPLET_AQUI="$AQUI"\n'
+        + _guarda()
+        + 'echo "AQUI=$AQUI"\necho "ZERO=$0"\n',
+        encoding="utf-8",
+    )
+    env = {**os.environ, "TMPDIR": str(tmp_path)}
+    saida = subprocess.run(
+        ["bash", str(alvo)], capture_output=True, text=True, env=env, timeout=30
+    )
+    assert saida.returncode == 0, saida.stdout + saida.stderr
+    linhas = dict(l.split("=", 1) for l in saida.stdout.splitlines() if "=" in l)
+    assert linhas["AQUI"] == str(real), saida.stdout
+    assert linhas["ZERO"] != str(alvo), "executou do proprio arquivo — a guarda nao teve efeito"

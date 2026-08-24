@@ -15,6 +15,13 @@ set -uo pipefail
 #
 # Uma corrida dura ~40 min e ninguem lembra de nao tocar no arnes durante ela. Copiar e re-executar
 # custa milissegundos e remove a classe inteira.
+# O diretorio REAL do script, resolvido ANTES da copia. Depois dela `$0` aponta para /tmp, e cinco
+# lugares aqui derivavam caminho de `dirname "$0"` — repositorios, `bench-run.sh`, `provision.sh` e o
+# proprio portao de variaveis. Medido em 2026-08-24: a primeira versao da guarda quebrou o portao de
+# refs com `nao resolve em ` e caminho VAZIO, porque `../../theo-db` a partir de /tmp nao existe.
+AQUI="${BENCH_DROPLET_AQUI:-$(cd "$AQUI" && pwd)}"
+export BENCH_DROPLET_AQUI="$AQUI"
+
 if [ -z "${BENCH_DROPLET_COPIA:-}" ]; then
   _copia="$(mktemp -t bench-droplet.XXXXXX.sh)"
   cat "$0" > "$_copia"
@@ -78,8 +85,8 @@ MEM_MAX="${MEM_MAX:-}"
 # construida a partir dele NO HOST. E assim que se compara dois commits: mesma maquina, mesmo dia,
 # mesmos parametros, diferindo so no codigo. `nome` sozinho assume que a imagem ja existe.
 TAGS="${TAGS:-fix:HEAD}"
-DB_REPO="${DB_REPO:-$(cd "$(dirname "$0")/../../theo-db" 2>/dev/null && pwd)}"
-BENCH_REPO="${BENCH_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
+DB_REPO="${DB_REPO:-$(cd "$AQUI/../../theo-db" 2>/dev/null && pwd)}"
+BENCH_REPO="${BENCH_REPO:-$(cd "$AQUI/.." && pwd)}"
 DESTINO="${DESTINO:-./resultados}"
 MANTER="${MANTER:-0}"                          # MANTER=1 nao destroi (depuracao); custa US$ 0,75/h
 # Teto para a chamada de medicao remota. MEDIDO em 2026-08-21: a corrida terminou no droplet com
@@ -182,7 +189,7 @@ for spec in $TAGS; do
   }
 done
 
-RUN_SCRIPT="$(dirname "$0")/bench-run.sh"
+RUN_SCRIPT="$AQUI/bench-run.sh"
 
 # PORTAO: toda funcao chamada em bench-run.sh existe em bench-run.sh.
 #
@@ -230,7 +237,7 @@ done
 ssh -o StrictHostKeyChecking=no "root@$IP" true || { echo "FALHA: ssh nunca respondeu"; exit 1; }
 
 echo "=== enviando codigo e provisionando ==="
-timeout 300 scp $SSH_OPTS -q "$(dirname "$0")/provision.sh" "$(dirname "$0")/bench-run.sh" "root@$IP:/root/" \
+timeout 300 scp $SSH_OPTS -q "$AQUI/provision.sh" "$AQUI/bench-run.sh" "root@$IP:/root/" \
   || { echo "FALHA: scp dos scripts nao completou em 5 min"; exit 1; }
 timeout 60 ssh $SSH_OPTS "root@$IP" 'chmod +x /root/provision.sh /root/bench-run.sh'
 
@@ -296,7 +303,7 @@ TAGS="${NOMES# }"
 # Manter isto como lista na cabeca ja falhou uma vez — CONT_LINHAS existia dos dois lados,
 # nao era repassada, e uma corrida declarou 10M enquanto rodava 40M. A lista nao e o
 # conserto; o portao e. Ele le o proprio bench-run.sh e compara.
-FALTANDO=$(python3 - "$(dirname "$0")/bench-run.sh" "$0" <<'PYEOF'
+FALTANDO=$(python3 - "$AQUI/bench-run.sh" "$AQUI/bench-droplet.sh" <<'PYEOF'
 import re, sys
 # `^\s*` e nao `^`: variavel definida DENTRO de um bloco de modo vem indentada, e a versao
 # ancorada na coluna zero nao a via. Encontrado em 2026-08-22 ao criar SUITE_A/SUITE_B
