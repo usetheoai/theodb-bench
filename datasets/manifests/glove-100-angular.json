@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "glove-100-angular",
+  "version": "ann-benchmarks-2018",
+  "description": "GloVe: 1 183 514 embeddings de palavras em 100 dimensoes, com 10 000 consultas e os 100 vizinhos exatos sob distancia ANGULAR, como reempacotado pelo ANN-Benchmarks. Existe para quebrar a monocultura do corpus: ate 2026-08-24 toda suite vetorial do arnes era SIFT-128 sob L2, entao 'nosso recall' era uma afirmacao sobre descritores de imagem em distancia euclidiana e mais nada. Aqui a metrica e cosseno e o dado e texto — clusterizado de um jeito que descritor de imagem nao e. As opclasses theodb_hnsw_cosine_ops e theodb_hnsw_ip_ops existem desde sempre e NUNCA foram medidas; este corpus e o que torna a primeira delas mensuravel.",
+  "source": { "url": "http://ann-benchmarks.com/glove-100-angular.hdf5" },
+  "license": {
+    "name": "unverified - GloVe (Stanford NLP, PDDL/ODC-BY) reempacotado pelo ANN-Benchmarks",
+    "redistributable": false
+  },
+  "files": [
+    {
+      "path": "glove-100-angular.hdf5",
+      "sha256": "544af1d5e84e112cd4749571dcfd8ca109818a572f850af75a3a09e093a953c4",
+      "size_bytes": 485413888,
+      "url": "http://ann-benchmarks.com/glove-100-angular.hdf5",
+      "role": "corpus"
+    }
+  ],
+  "preprocess": {
+    "version": 1,
+    "description": "Nenhum. O HDF5 e lido como publicado; as distancias publicadas nunca sao lidas, e o recall e recomputado a partir dos vetores. IMPORTANTE: os vetores do GloVe NAO vem normalizados, e 'angular' aqui significa distancia de cosseno — que e o que a opclass de cosseno implementa. Normaliza-los mudaria o corpus e tornaria a comparacao com quem le o arquivo publicado incomparavel."
+  },
+  "properties": {
+    "corpus_size": 1183514,
+    "dimension": 100,
+    "query_count": 10000,
+    "metric": "cosine",
+    "neighbours_per_query": 100
+  }
+}

@@ -286,6 +286,28 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
         ),
         default_repetitions=3,
     ),
+    "vector/glove/hnsw": BenchmarkEntry(
+        id="vector/glove/hnsw",
+        requires_dataset="glove-100-angular",
+        description=(
+            "GloVe-100 sob distancia de COSSENO — a primeira suite vetorial do arnes que nao e "
+            "SIFT-128 sob L2. Ate 2026-08-24 toda medicao vetorial saia de um corpus so, entao "
+            "'nosso recall' era uma afirmacao sobre descritores de imagem em distancia euclidiana. "
+            "As opclasses de cosseno existem desde sempre e nunca tinham sido exercitadas."
+        ),
+        workload=VectorWorkload(
+            corpus_size=100_000,
+            dimension=100,
+            query_count=500,
+            k=10,
+            metric="cosine",
+            warmup_queries=50,
+            # Mesmo `m` e mesma varredura de `ef` da suite de SIFT: a pergunta e o que muda com o
+            # CORPUS e a METRICA, e mudar os knobs junto tornaria a diferenca inatribuivel.
+            indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
+            search_sweep={"ef_search": (16, 64, 256, 512, 1000)},
+        ),
+    ),
     "vector/sift/rabitq": BenchmarkEntry(
         id="vector/sift/rabitq",
         requires_dataset="sift-128-euclidean",
