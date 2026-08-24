@@ -393,7 +393,16 @@ BENCHMARKS: Final[dict[str, BenchmarkEntry]] = {
             k=10,
             warmup_queries=50,
             indexes=(IndexSpec(kind="hnsw", parameters={"m": 16}),),
-            search_sweep={"ef_search": (64, 256)},
+            # ESTENDIDA em 2026-08-24, e pelo mesmo motivo que o M170 estendeu a suite de 100 k: a
+            # varredura acabava ANTES da pergunta. A 1M o `ef=256` entrega recall 0,9892, e toda a
+            # regiao onde o reparo de encontrabilidade mostrou ganho a 100 k — `ef` 512 e 1000, com
+            # recall 0,9997 a 0,9999 — nunca foi sondada nesta escala. Sem os dois pontos altos nao
+            # da para distinguir "o ganho nao existe a 1M" de "nao medimos onde ele estaria", e as
+            # duas coisas levam a decisoes opostas.
+            #
+            # Isto MUDA o que a suite significa: bundles anteriores a esta data tem tres pontos, nao
+            # cinco. Comparar contagem de pontos entre eles e comparar suites diferentes.
+            search_sweep={"ef_search": (64, 256, 512, 1000)},
         ),
         default_repetitions=3,
     ),

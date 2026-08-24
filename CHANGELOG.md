@@ -29,6 +29,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   nenhuma quantidade de `ef_search` distingue as duas.
 
 ### Changed
+- `vector/sift1m/hnsw` varre `ef_search` até 1000 (era 256) — a região onde o reparo de encontrabilidade mostrou ganho a 100 k nunca tinha sido sondada a 1M (#B-108)
 - **A varredura de `ef_search` do `vector/sift/hnsw` vai até 2048, porque em 256 ela acabava antes da
   pergunta.** Medido contra o pgvector no mesmo `m=16`: no mesmo knob o grafo deles entrega mais recall e o
   nosso mais vazão — trade-off consistente —, mas a nossa curva terminava em 0,9952 e a deles chegava a
