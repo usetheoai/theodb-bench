@@ -99,12 +99,16 @@ def test_nenhum_caminho_e_derivado_de_dollar_zero(tmp_path: Path):
     existe. O portão estava certo; o caminho é que tinha sumido. Cinco lugares faziam isso.
     """
     texto = DROPLET.read_text(encoding="utf-8")
+    # UMA ocorrencia e correta e necessaria: a definicao do proprio AQUI, que roda ANTES da copia e
+    # e protegida pela variavel de ambiente depois dela. Qualquer outra esta errada.
     codigo = [
-        linha
+        linha.strip()
         for linha in texto.splitlines()
         if not linha.lstrip().startswith("#") and 'dirname "$0"' in linha
     ]
-    assert codigo == [], f"ainda derivam caminho de $0: {codigo}"
+    assert codigo == [
+        'AQUI="${BENCH_DROPLET_AQUI:-$(cd "$(dirname "$0")" && pwd)}"'
+    ], f"ainda derivam caminho de $0: {codigo}"
 
 
 def test_AQUI_aponta_para_o_diretorio_real_mesmo_executando_da_copia(tmp_path: Path):

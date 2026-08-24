@@ -19,7 +19,7 @@ set -uo pipefail
 # lugares aqui derivavam caminho de `dirname "$0"` — repositorios, `bench-run.sh`, `provision.sh` e o
 # proprio portao de variaveis. Medido em 2026-08-24: a primeira versao da guarda quebrou o portao de
 # refs com `nao resolve em ` e caminho VAZIO, porque `../../theo-db` a partir de /tmp nao existe.
-AQUI="${BENCH_DROPLET_AQUI:-$(cd "$AQUI" && pwd)}"
+AQUI="${BENCH_DROPLET_AQUI:-$(cd "$(dirname "$0")" && pwd)}"
 export BENCH_DROPLET_AQUI="$AQUI"
 
 if [ -z "${BENCH_DROPLET_COPIA:-}" ]; then
