@@ -7,6 +7,12 @@
 set -uo pipefail
 
 SUITE="${SUITE:-analytical/crossover/row-count}"
+# Variaveis de ambiente do BUILD do indice, passadas ao container. Diferente de PGOPTIONS/GUCS:
+# aquelas sao GUCs de SESSAO, aplicadas ao abrir a conexao; estas sao lidas pela extensao no momento
+# em que o GRAFO e construido (THEODB_HNSW_EXTEND_CANDIDATES, THEODB_HNSW_PARALLEL_THRESHOLD). Uma
+# GUC de sessao nao alcanca uma decisao de build, e trocar uma pela outra mede o parametro errado
+# CALADO. Formato: string pronta, ex: ENV_BUILD="-e THEODB_HNSW_EXTEND_CANDIDATES=0".
+ENV_BUILD="${ENV_BUILD:-}"
 PROFILE="${PROFILE:-research}"
 # Repeticoes por ponto. Vazio = o `default_repetitions` da suite decide, que e o
 # comportamento que existia. Precisa ser exposto porque o perfil `release` — o UNICO que o
@@ -160,6 +166,7 @@ subir() {
   docker rm -f theodb >/dev/null 2>&1 || true
   docker run -d --name theodb -e POSTGRES_HOST_AUTH_METHOD=trust \
     ${ADMIT_TRACE:+-e THEODB_ADMIT_TRACE=1} \
+    ${ENV_BUILD:+$ENV_BUILD} \
     -v /var/run/postgresql:/var/run/postgresql --shm-size=8g \
     "theodb:$tag" \
     -c shared_buffers=16GB -c maintenance_work_mem=8GB \

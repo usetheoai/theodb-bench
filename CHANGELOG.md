@@ -24,6 +24,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   o que o keepalive sozinho não faz.
 
 ### Added
+- `ENV_BUILD` passa variáveis de ambiente do build do índice ao container — GUC de sessão não alcança decisão tomada na construção do grafo (#B-110)
 - Suíte `vector/glove1m/m-sweep` varre o grau do grafo — com `m=16` a curva termina em recall 0,9396 porque `ef_search` tem teto de 1000, e a faixa que o ANN-Benchmarks publica começa acima disso (#B-073)
 - Suíte `vector/glove1m/hnsw` no corpus inteiro do ANN-Benchmarks (1 183 514 vetores) — a de 100 k mede 8% do corpus e não produz número que se possa olhar ao lado dos deles (#B-073)
 - Corpus `glove-100-angular` e suíte `vector/glove/hnsw` — a primeira medição vetorial fora do SIFT-128/L2; as opclasses de cosseno existiam desde sempre e nunca tinham sido exercitadas (#B-073)
