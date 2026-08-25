@@ -8,6 +8,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Tarballs de resultado deixam de ser versionados — eles entravam no `git bundle` enviado a cada provisionamento, e 6,7 MB dos 7,5 MB de toda corrida eram resultado velho, crescendo a cada medição (#B-069)
 - O artefato `result` voltou a trazer `build_seconds` e `index_size_bytes` — uma vez por construção, não uma por repetição; ao movê-los para o ponto eu os removi do `result` e os dois artefatos do mesmo bundle passaram a discordar (#B-049)
 - `index_repetitions` chega a todo benchmark, não só ao vetorial — o runner chama todos igual, e passá-lo a um só derrubava a corrida com `sut_alive` e zero pontos, mensagem que não aponta para a causa (#B-049)
 - `build_seconds` e `index_size_bytes` deixam de ser copiados para cada repetição — uma medição virava N valores idênticos, e o desvio-padrão zero passava por reprodutibilidade perfeita (#B-049)
