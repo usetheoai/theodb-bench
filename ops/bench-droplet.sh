@@ -152,11 +152,35 @@ limpar() {
     else
       echo ">>> destruindo droplet $ID"
       doctl compute droplet delete "$ID" --force || echo "!!! FALHA AO DESTRUIR $ID — destrua a mao"
+      rm -f "${MARCADORES:-}/$ID.marca" 2>/dev/null || true
     fi
   fi
   exit $rc
 }
 trap limpar EXIT INT TERM
+
+# ZELADOR. O `trap EXIT` so dispara quando o script SAI — e ele NAO sai quando a arvore de processos
+# e morta de uma vez (fim de sessao, SIGKILL, terminal fechado). MEDIDO em 2026-08-25: um droplet
+# ficou 32 minutos de pe, US$ 0,41, porque a sessao que o criou terminou antes da corrida.
+#
+# Cada corrida registra `PID ID` num marcador. Aqui, antes de criar mais um, todo marcador cujo PID
+# morreu tem o droplet destruido. Sem heuristica de tempo: uma corrida legitima de tres horas noutro
+# terminal tem PID vivo e nao e tocada.
+MARCADORES="${MARCADORES:-$HOME/.cache/theodb-bench/droplets}"
+mkdir -p "$MARCADORES"
+for marca in "$MARCADORES"/*.marca; do
+  [ -e "$marca" ] || continue
+  read -r pid_antigo id_antigo _ < "$marca" 2>/dev/null || { rm -f "$marca"; continue; }
+  if [ -n "${pid_antigo:-}" ] && kill -0 "$pid_antigo" 2>/dev/null; then
+    continue   # corrida viva: nao e orfao
+  fi
+  if [ -n "${id_antigo:-}" ]; then
+    echo ">>> ZELADOR: droplet $id_antigo ficou orfao (pid $pid_antigo morreu) — destruindo"
+    doctl compute droplet delete "$id_antigo" --force 2>/dev/null \
+      || echo "!!! ZELADOR nao conseguiu destruir $id_antigo — confira a mao"
+  fi
+  rm -f "$marca"
+done
 
 NOME="theo-bench-$(date -u +%Y%m%dT%H%M%SZ)"
 for p in $PROIBIDOS; do
@@ -228,6 +252,8 @@ fi
 ID=$(doctl compute droplet create "$NOME" --region "$REGIAO" --size "$TAMANHO" --image "$IMAGEM" \
       --ssh-keys "$SSH_KEY" --tag-names theo-test,ephemeral --wait --format ID --no-header) || exit 1
 IP=$(doctl compute droplet get "$ID" --format PublicIPv4 --no-header)
+MARCA="$MARCADORES/$ID.marca"
+echo "$$ $ID $NOME" > "$MARCA"
 echo "    id=$ID ip=$IP"
 
 echo "=== aguardando ssh ==="
